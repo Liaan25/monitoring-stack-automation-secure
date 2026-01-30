@@ -25,17 +25,8 @@ pipeline {
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить весь CDL этап (копирование и развертывание на сервер) - только CI проверки')
     }
 
-    environment {
-        // Извлекаем KAE из NAMESPACE_CI (например, kvSec_CI84324523 -> CI84324523)
-        KAE = "${params.NAMESPACE_CI}".split('_')[1]
-        
-        // Динамическое формирование имен пользователей на основе KAE
-        DEPLOY_USER = "${KAE}-lnx-mon_ci"       // CI-пользователь для развертывания
-        MON_SYS_USER = "${KAE}-lnx-mon_sys"      // Sys-пользователь для запуска сервисов
-        
-        // Путь развертывания - домашний каталог CI-пользователя
-        DEPLOY_PATH = "/home/${DEPLOY_USER}/monitoring-deployment"
-    }
+    // ВАЖНО: environment блок не поддерживает методы вроде .split()
+    // Вычисление KAE и других переменных происходит в script блоке
 
     stages {
         // ========================================================================
@@ -46,6 +37,19 @@ pipeline {
             agent { label "clearAgent&&sbel8&&!static" }
             steps {
                 script {
+                    // КРИТИЧНО: Вычисляем KAE и производные переменные
+                    // (environment блок не поддерживает .split() и другие методы)
+                    if (params.NAMESPACE_CI) {
+                        def parts = params.NAMESPACE_CI.split('_')
+                        env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                    } else {
+                        env.KAE = 'UNKNOWN'
+                    }
+                    
+                    env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                    env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                    env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    
                     // Получаем информацию о версии
                     echo "================================================"
                     echo "=== ВЕРСИЯ ПРОЕКТА - SECURE EDITION ==="
@@ -92,15 +96,30 @@ pipeline {
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     // Вычисляем DATE_INSTALL здесь, где есть контекст агента
                     env.DATE_INSTALL = sh(script: "date '+%Y%m%d_%H%M%S'", returnStdout: true).trim()
                     
                     echo "================================================"
                     echo "=== НАЧАЛО ПАЙПЛАЙНА (SECURE MODE) ==="
                     echo "================================================"
-                    echo "[INFO] Версия: ${env.VERSION_SHORT}"
+                    echo "[INFO] Версия: ${env.VERSION_SHORT ?: 'unknown'}"
                     echo "[INFO] Билд: ${currentBuild.number}"
                     echo "[INFO] DATE_INSTALL: ${env.DATE_INSTALL}"
+                    echo "[INFO] KAE: ${env.KAE}"
+                    echo "[INFO] CI-пользователь: ${env.DEPLOY_USER}"
                     
                     // Очистка workspace от старых временных файлов
                     echo "[INFO] Очистка workspace..."
@@ -121,6 +140,19 @@ pipeline {
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "================================================"
                     echo "=== ПРОВЕРКА ПАРАМЕТРОВ (SECURE EDITION) ==="
                     echo "================================================"
@@ -138,6 +170,7 @@ pipeline {
                     
                     echo "[OK] Параметры проверены"
                     echo "[INFO] Сервер: ${params.SERVER_ADDRESS}"
+                    echo "[INFO] KAE: ${env.KAE}"
                     echo "[INFO] Подключение: ${env.DEPLOY_USER}@${params.SERVER_ADDRESS}"
                     echo "[SECURITY] Архитектура: User Units Only, Min Privileges"
                 }
@@ -151,6 +184,19 @@ pipeline {
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "[INFO] === ИНФОРМАЦИЯ О КОДЕ ==="
                     echo "[INFO] Версия проекта: ${env.VERSION_SHORT}"
                     echo "[INFO] Git commit: ${env.VERSION_GIT_COMMIT_FULL}"
@@ -170,6 +216,19 @@ pipeline {
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "================================================"
                     echo "=== ДИАГНОСТИКА СЕТИ ==="
                     echo "================================================"
@@ -186,6 +245,19 @@ pipeline {
             agent { label "clearAgent&&sbel8&&!static" }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "[STEP] Получение секретов из Vault..."
                     
                     withCredentials([
@@ -252,6 +324,19 @@ echo "[INFO] Credentials получены и сохранены в temp_data_cre
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     // КРИТИЧЕСКИ ВАЖНО: Принудительно обновляем репозиторий
                     echo "[INFO] Обновление кода из Git (принудительно)..."
                     
@@ -451,6 +536,19 @@ REMOTE_EOF
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "[STEP] Запуск развертывания на удаленном сервере..."
                     echo "[INFO] Режим: БЕЗ SUDO (User Units Only)"
                     
@@ -568,6 +666,19 @@ REMOTE_EOF
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "[STEP] Проверка результатов развертывания (User Units)..."
                     withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                         writeFile file: 'check_results.sh', text: '''#!/bin/bash
@@ -630,6 +741,19 @@ ENDSSH
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     echo "[STEP] Очистка временных файлов..."
                     sh "rm -rf temp_data_cred.json"
                     withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
@@ -656,6 +780,19 @@ ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
             }
             steps {
                 script {
+                    // Вычисляем KAE и производные переменные (если еще не вычислены)
+                    if (!env.KAE) {
+                        if (params.NAMESPACE_CI) {
+                            def parts = params.NAMESPACE_CI.split('_')
+                            env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
+                        } else {
+                            env.KAE = 'UNKNOWN'
+                        }
+                        env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
+                        env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
+                        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+                    }
+                    
                     def domainName = ''
                     withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                         writeFile file: 'get_domain.sh', text: '''#!/bin/bash
