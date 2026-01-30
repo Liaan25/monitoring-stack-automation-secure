@@ -1,0 +1,164 @@
+############################################################
+# sudoers.template — шаблон прав для Monitoring Stack v4.0
+# Secure Edition - Полное соответствие требованиям ИБ
+############################################################
+#
+# ВАЖНО:
+# - Это ШАБЛОН для подстановки через IDM
+# - <KAE> заменяется на конкретное значение (напр. CI84324523)
+# - Права выдаются ТОЛЬКО для управления user-юнитами мониторинга
+# - НЕ используются широкие права (ALL, *, переменные)
+#
+############################################################
+
+Defaults    env_reset
+Defaults    secure_path="/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin"
+
+# ============================================================
+# Архитектура прав (Secure Edition)
+# ============================================================
+#
+# CI-пользователь: <KAE>-lnx-mon_ci  (интерактивная ПУЗ/ТУЗ)
+#   - Под ним работает Jenkins
+#   - Может управлять user-юнитами sys-пользователя
+#   - НЕ имеет широких sudo прав
+#
+# Sys-пользователь: <KAE>-lnx-mon_sys (nologin сервисная УЗ)
+#   - Под ним работают сервисы мониторинга
+#   - User units в ~/.config/systemd/user/
+#   - Linger включен через linuxadm-enable-linger
+#
+# ============================================================
+
+# ============================================================
+# Права для управления user-юнитами мониторинга
+# ============================================================
+#
+# CI-пользователь может выполнять systemctl --user команды
+# от имени sys-пользователя для управления сервисами:
+#   - monitoring-prometheus.service
+#   - monitoring-grafana.service
+#   - monitoring-harvest.service
+#
+# NOEXEC: защита от выполнения команд через systemctl
+# NOPASSWD: не требуется пароль (для автоматизации)
+#
+# ============================================================
+
+# Шаблон для подстановки в IDM (заменить <KAE> на реальное значение):
+#
+# <KAE>-lnx-mon_ci ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: \
+#   /usr/bin/systemctl --user daemon-reload, \
+#   /usr/bin/systemctl --user reset-failed monitoring-prometheus.service, \
+#   /usr/bin/systemctl --user reset-failed monitoring-grafana.service, \
+#   /usr/bin/systemctl --user reset-failed monitoring-harvest.service, \
+#   /usr/bin/systemctl --user enable monitoring-prometheus.service, \
+#   /usr/bin/systemctl --user enable monitoring-grafana.service, \
+#   /usr/bin/systemctl --user enable monitoring-harvest.service, \
+#   /usr/bin/systemctl --user restart monitoring-prometheus.service, \
+#   /usr/bin/systemctl --user restart monitoring-grafana.service, \
+#   /usr/bin/systemctl --user restart monitoring-harvest.service, \
+#   /usr/bin/systemctl --user stop monitoring-prometheus.service, \
+#   /usr/bin/systemctl --user stop monitoring-grafana.service, \
+#   /usr/bin/systemctl --user stop monitoring-harvest.service, \
+#   /usr/bin/systemctl --user status monitoring-prometheus.service, \
+#   /usr/bin/systemctl --user status monitoring-grafana.service, \
+#   /usr/bin/systemctl --user status monitoring-harvest.service, \
+#   /usr/bin/systemctl --user is-active monitoring-prometheus.service, \
+#   /usr/bin/systemctl --user is-active monitoring-grafana.service, \
+#   /usr/bin/systemctl --user is-active monitoring-harvest.service
+
+# Пример для KAE = CI84324523:
+CI84324523-lnx-mon_ci ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: \
+  /usr/bin/systemctl --user daemon-reload, \
+  /usr/bin/systemctl --user reset-failed monitoring-prometheus.service, \
+  /usr/bin/systemctl --user reset-failed monitoring-grafana.service, \
+  /usr/bin/systemctl --user reset-failed monitoring-harvest.service, \
+  /usr/bin/systemctl --user enable monitoring-prometheus.service, \
+  /usr/bin/systemctl --user enable monitoring-grafana.service, \
+  /usr/bin/systemctl --user enable monitoring-harvest.service, \
+  /usr/bin/systemctl --user restart monitoring-prometheus.service, \
+  /usr/bin/systemctl --user restart monitoring-grafana.service, \
+  /usr/bin/systemctl --user restart monitoring-harvest.service, \
+  /usr/bin/systemctl --user stop monitoring-prometheus.service, \
+  /usr/bin/systemctl --user stop monitoring-grafana.service, \
+  /usr/bin/systemctl --user stop monitoring-harvest.service, \
+  /usr/bin/systemctl --user status monitoring-prometheus.service, \
+  /usr/bin/systemctl --user status monitoring-grafana.service, \
+  /usr/bin/systemctl --user status monitoring-harvest.service, \
+  /usr/bin/systemctl --user is-active monitoring-prometheus.service, \
+  /usr/bin/systemctl --user is-active monitoring-grafana.service, \
+  /usr/bin/systemctl --user is-active monitoring-harvest.service
+
+# ============================================================
+# Примечания по безопасности
+# ============================================================
+#
+# 1. Никаких широких прав:
+#    ✅ Конкретные сервисы (monitoring-*.service)
+#    ✅ Конкретные действия (restart, stop, status, etc.)
+#    ✅ Конкретные пользователи (CI → sys)
+#    ❌ НЕТ символов * в путях или аргументах
+#    ❌ НЕТ переменных окружения в правилах
+#    ❌ НЕТ ALL=(ALL:ALL) прав
+#
+# 2. NOEXEC обязателен:
+#    - Защита от выполнения произвольных команд через systemctl
+#    - Соответствует требованиям таблицы 2 из руководства ИБ
+#
+# 3. User units вместо system units:
+#    - Сервисы работают в пространстве пользователя
+#    - Не требуется root для большинства операций
+#    - Соответствует методичке SberInfra
+#
+# 4. Linger:
+#    - Включается через linuxadm-enable-linger (БЕЗ sudo)
+#    - Требуется членство в группе as-admin
+#    - User units продолжают работать после logout
+#
+# 5. Управление через IDM:
+#    - Все учётные записи создаются через АС СУУПТ
+#    - Sudoers правила согласовываются с ИБ
+#    - Инстанцирование для каждого KAE через заявку
+#
+# ============================================================
+
+# ============================================================
+# Команды, которые НЕ требуют sudo (доступны для as-admin)
+# ============================================================
+#
+# Если CI-пользователь в группе as-admin, следующие команды
+# НЕ требуют sudo прав:
+#
+#   - linuxadm-enable-linger <user>    # Включение linger
+#   - linuxadm-safesystemctl ...       # Управление прикладными сервисами
+#
+# Добавление в as-admin выполняется через RLM:
+#   - Сценарий: UVS_LINUX_ADD_USERS_GROUP
+#   - Группа: as-admin
+#   - Пользователи: ${KAE}-lnx-mon_ci, ${KAE}-lnx-mon_sys
+#
+# ============================================================
+
+# ============================================================
+# Процесс внедрения
+# ============================================================
+#
+# 1. Создать УЗ через IDM:
+#    - ${KAE}-lnx-mon_ci (интерактивная)
+#    - ${KAE}-lnx-mon_sys (nologin)
+#
+# 2. Добавить в as-admin через RLM
+#
+# 3. Подать заявку в ИБ на создание sudoers правил:
+#    - Приложить этот шаблон
+#    - Указать конкретный KAE
+#    - Ожидать согласования
+#
+# 4. Настроить Jenkins:
+#    - SSH подключение под ${KAE}-lnx-mon_ci
+#    - Credentials для CI-пользователя
+#
+# 5. Протестировать на DEV стенде
+#
+# ============================================================
