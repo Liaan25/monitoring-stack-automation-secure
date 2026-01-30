@@ -104,10 +104,17 @@ Sys-пользователь: ${KAE}-lnx-mon_sys  (nologin сервисная У
 
 SERVER_ADDRESS: target-server.domain.ru
 SSH_CREDENTIALS_ID: monitoring-stack-ci-user-ssh
-NAMESPACE_CI: kvSec_CI84324523  // ВАЖНО: для вычисления KAE
-SKIP_VAULT_INSTALL: true        // Если vault-agent уже настроен
-SKIP_RPM_INSTALL: false         // Установить RPM пакеты
+NAMESPACE_CI: kvSec_CI84324523     // ВАЖНО: для вычисления KAE
+VAULT_CREDENTIAL_ID: vault-agent-dev  // Jenkins Credential ID для Vault токена
+SKIP_VAULT_INSTALL: true           // Если vault-agent уже настроен
+SKIP_RPM_INSTALL: false            // Установить RPM пакеты
 ```
+
+**Примечание**: Если credential `vault-agent-dev` не существует в Jenkins, создайте его:
+1. Jenkins → Manage Jenkins → Credentials
+2. Add Credentials → Kind: Secret text
+3. ID: `vault-agent-dev` (или другой, указанный в параметре)
+4. Secret: [Ваш Vault токен]
 
 #### Шаг 3: Проверка
 
