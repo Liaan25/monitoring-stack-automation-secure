@@ -112,9 +112,10 @@ SKIP_RPM_INSTALL: false            // Установить RPM пакеты
 
 **Примечание**: Если credential `vault-agent-dev` не существует в Jenkins, создайте его:
 1. Jenkins → Manage Jenkins → Credentials
-2. Add Credentials → Kind: Secret text
+2. Add Credentials → Kind: **Vault App Role Credential**
 3. ID: `vault-agent-dev` (или другой, указанный в параметре)
-4. Secret: [Ваш Vault токен]
+4. Role ID: [Ваш Vault Role ID]
+5. Secret ID: [Ваш Vault Secret ID]
 
 #### Шаг 3: Проверка
 

@@ -265,76 +265,102 @@ pipeline {
                     def vaultCredId = params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
                     echo "[INFO] Используется Vault Credential ID: ${vaultCredId}"
                     
-                    try {
-                        // ВАЖНО: Используем параметризованный credential ID для гибкости
-                        withCredentials([
-                            string(credentialsId: vaultCredId, variable: 'VAULT_TOKEN')
-                        ]) {
-                            // Получаем секреты из Vault и сохраняем в temp_data_cred.json
-                            sh """#!/bin/bash
-set -euo pipefail
-
-# Функция для получения секретов из Vault
-get_vault_secret() {
-    local kv_path="\$1"
-    local field="\$2"
-    
-    curl -s -k \\
-        -H "X-Vault-Token: \${VAULT_TOKEN}" \\
-        "${params.SEC_MAN_ADDR}/v1/\${kv_path}" | \\
-        jq -r ".data.data.\${field} // empty"
-}
-
-# Создаем JSON файл с credentials
-cat > temp_data_cred.json <<EOF
-{
-  "vault-agent": {
-    "role_id": "\$(get_vault_secret '${params.VAULT_AGENT_KV}' 'role_id')",
-    "secret_id": "\$(get_vault_secret '${params.VAULT_AGENT_KV}' 'secret_id')"
-  },
-  "rpm_url": {
-    "grafana": "\$(get_vault_secret '${params.RPM_URL_KV}' 'grafana')",
-    "prometheus": "\$(get_vault_secret '${params.RPM_URL_KV}' 'prometheus')",
-    "harvest": "\$(get_vault_secret '${params.RPM_URL_KV}' 'harvest')"
-  },
-  "netapp_ssh": {
-    "user": "\$(get_vault_secret '${params.NETAPP_SSH_KV}' 'user')",
-    "pass": "\$(get_vault_secret '${params.NETAPP_SSH_KV}' 'pass')"
-  },
-  "grafana_web": {
-    "user": "\$(get_vault_secret '${params.GRAFANA_WEB_KV}' 'user')",
-    "pass": "\$(get_vault_secret '${params.GRAFANA_WEB_KV}' 'pass')"
-  }
-}
-EOF
-
-echo "[INFO] Credentials получены и сохранены в temp_data_cred.json"
-"""
-                        }
-                        
-                        // Проверка файла
-                        sh '''
-                            [ ! -f "temp_data_cred.json" ] && echo "[ERROR] Файл не создан!" && exit 1
-                            
-                            if command -v jq >/dev/null 2>&1; then
-                                jq empty temp_data_cred.json 2>/dev/null || { echo "[ERROR] Невалидный JSON!"; exit 1; }
-                                echo "[OK] JSON валиден"
-                            fi
-                        '''
-                        
-                        // Сохраняем credentials для использования в CDL стадиях
-                        stash name: 'vault-credentials', includes: 'temp_data_cred.json'
-                        
-                        echo "[SUCCESS] Секреты успешно получены из Vault"
-                        
-                    } catch (Exception e) {
-                        echo "[ERROR] Ошибка при получении секретов из Vault: ${e.message}"
-                        echo "[WARNING] Credential ID '${vaultCredId}' не найден в Jenkins"
-                        echo "[INFO] Создайте credential в Jenkins: Manage Jenkins → Credentials → Add Credentials"
-                        echo "[INFO] Тип: Secret text"
-                        echo "[INFO] ID: ${vaultCredId}"
-                        error("❌ Не удалось получить данные из Vault. Проверьте наличие credential '${vaultCredId}' в Jenkins")
+                    // Формируем массив vaultSecrets для withVault плагина (как в v3.x)
+                    def vaultSecrets = []
+                    
+                    if (params.VAULT_AGENT_KV?.trim()) {
+                        vaultSecrets << [path: params.VAULT_AGENT_KV, secretValues: [
+                            [envVar: 'VA_ROLE_ID',    vaultKey: 'role_id'],
+                            [envVar: 'VA_SECRET_ID',  vaultKey: 'secret_id']
+                        ]]
                     }
+                    if (params.RPM_URL_KV?.trim()) {
+                        vaultSecrets << [path: params.RPM_URL_KV, secretValues: [
+                            [envVar: 'VA_RPM_HARVEST',    vaultKey: 'harvest'],
+                            [envVar: 'VA_RPM_PROMETHEUS', vaultKey: 'prometheus'],
+                            [envVar: 'VA_RPM_GRAFANA',    vaultKey: 'grafana']
+                        ]]
+                    }
+                    if (params.NETAPP_SSH_KV?.trim()) {
+                        vaultSecrets << [path: params.NETAPP_SSH_KV, secretValues: [
+                            [envVar: 'VA_NETAPP_SSH_ADDR', vaultKey: 'addr'],
+                            [envVar: 'VA_NETAPP_SSH_USER', vaultKey: 'user'],
+                            [envVar: 'VA_NETAPP_SSH_PASS', vaultKey: 'pass']
+                        ]]
+                    }
+                    if (params.GRAFANA_WEB_KV?.trim()) {
+                        vaultSecrets << [path: params.GRAFANA_WEB_KV, secretValues: [
+                            [envVar: 'VA_GRAFANA_WEB_USER', vaultKey: 'user'],
+                            [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
+                        ]]
+                    }
+                    
+                    if (vaultSecrets.isEmpty()) {
+                        echo "[WARNING] KV пути не заданы"
+                        // Создаем пустой JSON
+                        def emptyData = [
+                            "vault-agent": [role_id: '', secret_id: ''],
+                            "rpm_url": [harvest: '', prometheus: '', grafana: ''],
+                            "netapp_ssh": [addr: '', user: '', pass: ''],
+                            "grafana_web": [user: '', pass: '']
+                        ]
+                        writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(emptyData)
+                    } else {
+                        try {
+                            // ВАЖНО: Используем withVault() плагин (как в v3.x), а не withCredentials()
+                            // Это работает с типом credential "Vault App Role Credential"
+                            withVault([
+                                configuration: [
+                                    vaultUrl: "https://${params.SEC_MAN_ADDR}",
+                                    engineVersion: 1,
+                                    skipSslVerification: false,
+                                    vaultCredentialId: vaultCredId
+                                ],
+                                vaultSecrets: vaultSecrets
+                            ]) {
+                                // Секреты загружены в переменные окружения (VA_ROLE_ID, VA_SECRET_ID и т.д.)
+                                def data = [
+                                    "vault-agent": [
+                                        role_id: (env.VA_ROLE_ID ?: ''),
+                                        secret_id: (env.VA_SECRET_ID ?: '')
+                                    ],
+                                    "rpm_url": [
+                                        harvest: (env.VA_RPM_HARVEST ?: ''),
+                                        prometheus: (env.VA_RPM_PROMETHEUS ?: ''),
+                                        grafana: (env.VA_RPM_GRAFANA ?: '')
+                                    ],
+                                    "netapp_ssh": [
+                                        addr: (env.VA_NETAPP_SSH_ADDR ?: ''),
+                                        user: (env.VA_NETAPP_SSH_USER ?: ''),
+                                        pass: (env.VA_NETAPP_SSH_PASS ?: '')
+                                    ],
+                                    "grafana_web": [
+                                        user: (env.VA_GRAFANA_WEB_USER ?: ''),
+                                        pass: (env.VA_GRAFANA_WEB_PASS ?: '')
+                                    ]
+                                ]
+                                
+                                writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(data)
+                            }
+                        } catch (Exception e) {
+                            echo "[ERROR] Ошибка Vault: ${e.message}"
+                            error("❌ Не удалось получить данные из Vault")
+                        }
+                    }
+                    
+                    // Проверка файла
+                    sh '''
+                        [ ! -f "temp_data_cred.json" ] && echo "[ERROR] Файл не создан!" && exit 1
+                        
+                        if command -v jq >/dev/null 2>&1; then
+                            jq empty temp_data_cred.json 2>/dev/null || { echo "[ERROR] Невалидный JSON!"; exit 1; }
+                        fi
+                    '''
+                    
+                    // Сохраняем для CDL этапа
+                    stash name: 'vault-credentials', includes: 'temp_data_cred.json'
+                    
+                    echo "[SUCCESS] Данные из Vault получены"
                 }
             }
         }
