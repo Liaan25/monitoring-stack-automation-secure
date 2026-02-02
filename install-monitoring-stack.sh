@@ -1,7 +1,13 @@
 776#!/bin/bash
 # Мониторинг Stack Deployment Script
 # Компоненты: Harvest + Prometheus + Grafana
-set -euo pipefail
+
+# КРИТИЧНО: Временно отключаем set -e для диагностики
+# set -euo pipefail
+set -uo pipefail
+
+# Trap для логирования ВСЕХ команд
+trap 'echo "[TRACE] Line $LINENO: $BASH_COMMAND" >> "$DEBUG_LOG" 2>/dev/null || true' DEBUG
 
 # ============================================
 # КОНФИГУРАЦИОННЫЕ ПЕРЕМЕННЫЕ
@@ -111,10 +117,14 @@ write_diagnostic() {
 
 # Инициализация DEBUG лога с полной диагностикой
 init_debug_log() {
+    echo "[init_debug_log] START" >&2
+    
     # КРИТИЧНО: Полностью отключаем все проверки ошибок
     set +e
     set +u
     set +o pipefail
+    
+    echo "[init_debug_log] Creating file: $DEBUG_LOG" >&2
     
     # Простой заголовок без сложных команд
     {
@@ -125,14 +135,20 @@ init_debug_log() {
         echo "================================================================"
     } > "$DEBUG_LOG" 2>&1
     
+    local result=$?
+    echo "[init_debug_log] File creation result: $result" >&2
+    
     # Создать симлинк сразу
+    echo "[init_debug_log] Creating symlink: $DEBUG_SUMMARY" >&2
     ln -sf "$DEBUG_LOG" "$DEBUG_SUMMARY" 2>/dev/null
+    echo "[init_debug_log] Symlink result: $?" >&2
     
-    # Восстанавливаем строгий режим
-    set -e
-    set -u
-    set -o pipefail
+    # НЕ восстанавливаем строгий режим для диагностики!
+    # set -e
+    # set -u
+    # set -o pipefail
     
+    echo "[init_debug_log] COMPLETE" >&2
     return 0
 }
 
