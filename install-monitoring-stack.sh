@@ -111,55 +111,77 @@ write_diagnostic() {
 
 # Инициализация DEBUG лога с полной диагностикой
 init_debug_log() {
-    {
-        echo "================================================================"
-        echo "       MONITORING STACK DEPLOYMENT - DEBUG LOG"
-        echo "================================================================"
-        echo "Timestamp:       $(date '+%Y-%m-%d %H:%M:%S %Z')"
-        echo "Hostname:        $(hostname -f 2>/dev/null || hostname)"
-        echo "User:            $(whoami) (UID=$(id -u), GID=$(id -g))"
-        echo "Home:            $HOME"
-        echo "PWD:             $PWD"
-        echo "Script:          ${BASH_SOURCE[0]}"
-        echo "Script PID:      $$"
-        echo "Deploy Version:  ${DEPLOY_VERSION:-unknown}"
-        echo "Git Commit:      ${DEPLOY_GIT_COMMIT:-unknown}"
-        echo "Build Date:      ${DEPLOY_BUILD_DATE:-unknown}"
-        echo "================================================================"
-        echo ""
-        echo "=== SYSTEM INFORMATION ==="
-        echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Unknown')"
-        echo "Kernel: $(uname -r)"
-        echo "Uptime: $(uptime)"
-        echo ""
-        echo "=== ENVIRONMENT VARIABLES ==="
-        echo "RLM_API_URL=${RLM_API_URL:-<not set>}"
-        echo "SEC_MAN_ADDR=${SEC_MAN_ADDR:-<not set>}"
-        echo "NAMESPACE_CI=${NAMESPACE_CI:-<not set>}"
-        echo "KAE=${KAE:-<not set>}"
-        echo "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<not set>}"
-        echo "GRAFANA_PORT=${GRAFANA_PORT:-<not set>}"
-        echo "PROMETHEUS_PORT=${PROMETHEUS_PORT:-<not set>}"
-        echo "SKIP_VAULT_INSTALL=${SKIP_VAULT_INSTALL:-<not set>}"
-        echo "SKIP_RPM_INSTALL=${SKIP_RPM_INSTALL:-<not set>}"
-        echo ""
-        echo "=== DISK SPACE ==="
-        df -h / /home /tmp 2>/dev/null || true
-        echo ""
-        echo "=== NETWORK INFO ==="
-        ip addr show 2>/dev/null | grep -E "inet |UP" || true
-        echo ""
-        echo "=== SUDO RIGHTS CHECK ==="
-        sudo -l 2>&1 | head -20 || echo "Cannot check sudo rights"
-        echo ""
-        echo "================================================================"
-        echo "DEPLOYMENT LOG STARTED"
-        echo "================================================================"
-        echo ""
-    } > "$DEBUG_LOG" 2>&1
+    # Временно отключаем строгий режим для безопасной инициализации
+    local old_opts=$-
+    set +euo pipefail
+    
+    # Создаем файл сразу, чтобы log_debug мог в него писать
+    cat > "$DEBUG_LOG" 2>/dev/null << 'EOF_HEADER' || { echo "ERROR: Cannot create DEBUG log file" >&2; return 1; }
+================================================================
+       MONITORING STACK DEPLOYMENT - DEBUG LOG
+================================================================
+EOF_HEADER
+    
+    # Записываем информацию построчно с проверкой ошибок
+    echo "Timestamp:       $(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Hostname:        $(hostname -f 2>/dev/null || hostname 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "User:            $(whoami 2>/dev/null || echo 'Unknown') (UID=$(id -u 2>/dev/null || echo '?'), GID=$(id -g 2>/dev/null || echo '?'))" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Home:            ${HOME:-Unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "PWD:             ${PWD:-Unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Script:          ${BASH_SOURCE[0]:-Unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Script PID:      $$" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Deploy Version:  ${DEPLOY_VERSION:-unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Git Commit:      ${DEPLOY_GIT_COMMIT:-unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Build Date:      ${DEPLOY_BUILD_DATE:-unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "================================================================" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    
+    echo "=== SYSTEM INFORMATION ===" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Kernel: $(uname -r 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "Uptime: $(uptime 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    
+    echo "=== ENVIRONMENT VARIABLES ===" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "RLM_API_URL=${RLM_API_URL:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "SEC_MAN_ADDR=${SEC_MAN_ADDR:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "NAMESPACE_CI=${NAMESPACE_CI:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "KAE=${KAE:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "GRAFANA_PORT=${GRAFANA_PORT:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "PROMETHEUS_PORT=${PROMETHEUS_PORT:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "SKIP_VAULT_INSTALL=${SKIP_VAULT_INSTALL:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "SKIP_RPM_INSTALL=${SKIP_RPM_INSTALL:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    
+    echo "=== DISK SPACE ===" >> "$DEBUG_LOG" 2>/dev/null || true
+    df -h / /home /tmp 2>/dev/null >> "$DEBUG_LOG" || echo "Cannot check disk space" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    
+    echo "=== NETWORK INFO ===" >> "$DEBUG_LOG" 2>/dev/null || true
+    ip addr show 2>/dev/null | grep -E "inet |UP" >> "$DEBUG_LOG" 2>/dev/null || echo "Cannot check network" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    
+    echo "=== SUDO RIGHTS CHECK ===" >> "$DEBUG_LOG" 2>/dev/null || true
+    if sudo -l >/dev/null 2>&1; then
+        sudo -l 2>&1 | head -20 >> "$DEBUG_LOG" 2>/dev/null || echo "Error reading sudo rights" >> "$DEBUG_LOG" 2>/dev/null || true
+    else
+        echo "No sudo privileges or cannot check (this is OK for Secure Edition)" >> "$DEBUG_LOG" 2>/dev/null || true
+    fi
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    
+    echo "================================================================" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "DEPLOYMENT LOG STARTED" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "================================================================" >> "$DEBUG_LOG" 2>/dev/null || true
+    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
     
     # Создать симлинк на последний лог
     ln -sf "$DEBUG_LOG" "$DEBUG_SUMMARY" 2>/dev/null || true
+    
+    # Восстанавливаем предыдущие опции
+    [[ $old_opts == *e* ]] && set -e || true
+    [[ $old_opts == *u* ]] && set -u || true
+    [[ $old_opts == *o*pipefail* ]] && set -o pipefail || true
 }
 
 # Функция записи в DEBUG лог
