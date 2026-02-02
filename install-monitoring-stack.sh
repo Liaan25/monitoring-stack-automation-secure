@@ -1330,19 +1330,159 @@ setup_vault_config() {
         print_error "Временный файл с учетными данными не найден (проверены стандартные пути)"
         exit 1
     fi
+    
+    # ===== РАСШИРЕННАЯ ДИАГНОСТИКА SECRETS =====
+    echo "[DEBUG-SECRETS] ========================================" >&2
+    echo "[DEBUG-SECRETS] Диагностика secrets-manager-wrapper" >&2
+    echo "[DEBUG-SECRETS] ========================================" >&2
+    log_debug "========================================"
+    log_debug "ДИАГНОСТИКА: secrets extraction"
+    log_debug "========================================"
+    
+    echo "[DEBUG-SECRETS] Файл с credentials: $cred_json_path" >&2
+    log_debug "Credentials file: $cred_json_path"
+    
+    if [[ -f "$cred_json_path" ]]; then
+        echo "[DEBUG-SECRETS] ✅ Файл существует" >&2
+        echo "[DEBUG-SECRETS] Размер: $(stat -c%s "$cred_json_path" 2>/dev/null || echo "unknown") байт" >&2
+        echo "[DEBUG-SECRETS] Права: $(ls -la "$cred_json_path")" >&2
+        log_debug "✅ Credentials file exists: $(stat -c%s "$cred_json_path" 2>/dev/null || echo "unknown") bytes"
+        
+        # БЕЗОПАСНО: Показываем только структуру JSON (ключи без значений)
+        echo "[DEBUG-SECRETS] Структура JSON (только ключи):" >&2
+        jq -r 'keys | .[]' "$cred_json_path" 2>&1 >&2 || echo "[DEBUG-SECRETS] (не удалось прочитать структуру)" >&2
+        
+        # Проверяем наличие нужных полей
+        echo "[DEBUG-SECRETS] ----------------------------------------" >&2
+        echo "[DEBUG-SECRETS] Проверка наличия поля 'vault-agent':" >&2
+        if jq -e '.["vault-agent"]' "$cred_json_path" >/dev/null 2>&1; then
+            echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent' существует" >&2
+            log_debug "✅ Field 'vault-agent' exists"
+            
+            echo "[DEBUG-SECRETS] Проверка наличия 'vault-agent.role_id':" >&2
+            if jq -e '.["vault-agent"].role_id' "$cred_json_path" >/dev/null 2>&1; then
+                echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent.role_id' существует" >&2
+                log_debug "✅ Field 'vault-agent.role_id' exists"
+            else
+                echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent.role_id' НЕ существует" >&2
+                log_debug "❌ Field 'vault-agent.role_id' NOT exists"
+            fi
+            
+            echo "[DEBUG-SECRETS] Проверка наличия 'vault-agent.secret_id':" >&2
+            if jq -e '.["vault-agent"].secret_id' "$cred_json_path" >/dev/null 2>&1; then
+                echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent.secret_id' существует" >&2
+                log_debug "✅ Field 'vault-agent.secret_id' exists"
+            else
+                echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent.secret_id' НЕ существует" >&2
+                log_debug "❌ Field 'vault-agent.secret_id' NOT exists"
+            fi
+        else
+            echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent' НЕ существует" >&2
+            log_debug "❌ Field 'vault-agent' NOT exists"
+        fi
+    else
+        echo "[DEBUG-SECRETS] ❌ Файл НЕ существует" >&2
+        log_debug "❌ Credentials file NOT exists"
+    fi
+    
+    echo "[DEBUG-SECRETS] ========================================" >&2
+    echo "[DEBUG-SECRETS] Проверка secrets-manager-wrapper:" >&2
+    
+    local wrapper_path="$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh"
+    echo "[DEBUG-SECRETS] Путь: $wrapper_path" >&2
+    log_debug "Wrapper path: $wrapper_path"
+    
+    if [[ -f "$wrapper_path" ]]; then
+        echo "[DEBUG-SECRETS] ✅ Файл существует" >&2
+        echo "[DEBUG-SECRETS] Права: $(ls -la "$wrapper_path")" >&2
+        log_debug "✅ Wrapper exists: $(ls -la "$wrapper_path")"
+        
+        if [[ -x "$wrapper_path" ]]; then
+            echo "[DEBUG-SECRETS] ✅ Файл исполняемый" >&2
+            log_debug "✅ Wrapper is executable"
+        else
+            echo "[DEBUG-SECRETS] ❌ Файл НЕ исполняемый" >&2
+            log_debug "❌ Wrapper NOT executable"
+        fi
+    else
+        echo "[DEBUG-SECRETS] ❌ Файл НЕ существует" >&2
+        log_debug "❌ Wrapper NOT exists"
+    fi
+    
+    echo "[DEBUG-SECRETS] ========================================" >&2
+    
     # SECURITY: Используем secrets-manager-wrapper для безопасного извлечения секретов
     # Пишем role_id/secret_id напрямую из JSON в файлы через wrapper (автоматическая очистка)
     if [[ -x "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" ]]; then
-        "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.role_id" > "$VAULT_ROLE_ID_FILE" || {
+        echo "[DEBUG-SECRETS] Выполнение: extract_secret role_id..." >&2
+        log_debug "Executing: extract_secret for role_id"
+        
+        local role_id_stdout role_id_stderr role_id_exit
+        role_id_stdout=$(mktemp)
+        role_id_stderr=$(mktemp)
+        
+        "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.role_id" > "$role_id_stdout" 2> "$role_id_stderr"
+        role_id_exit=$?
+        
+        echo "[DEBUG-SECRETS] Exit code: $role_id_exit" >&2
+        log_debug "role_id extraction exit code: $role_id_exit"
+        
+        if [[ $role_id_exit -ne 0 ]]; then
+            echo "[DEBUG-SECRETS] ❌ ОШИБКА при извлечении role_id" >&2
+            echo "[DEBUG-SECRETS] STDOUT:" >&2
+            cat "$role_id_stdout" >&2
+            echo "[DEBUG-SECRETS] STDERR:" >&2
+            cat "$role_id_stderr" >&2
+            log_debug "❌ role_id extraction FAILED"
+            log_debug "STDOUT: $(cat "$role_id_stdout")"
+            log_debug "STDERR: $(cat "$role_id_stderr")"
+            rm -f "$role_id_stdout" "$role_id_stderr"
             print_error "Не удалось извлечь role_id через secrets-wrapper"
             exit 1
-        }
-        "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.secret_id" > "$VAULT_SECRET_ID_FILE" || {
+        else
+            echo "[DEBUG-SECRETS] ✅ role_id успешно извлечен" >&2
+            log_debug "✅ role_id extracted successfully"
+            cat "$role_id_stdout" > "$VAULT_ROLE_ID_FILE"
+            rm -f "$role_id_stdout" "$role_id_stderr"
+        fi
+        
+        echo "[DEBUG-SECRETS] ----------------------------------------" >&2
+        echo "[DEBUG-SECRETS] Выполнение: extract_secret secret_id..." >&2
+        log_debug "Executing: extract_secret for secret_id"
+        
+        local secret_id_stdout secret_id_stderr secret_id_exit
+        secret_id_stdout=$(mktemp)
+        secret_id_stderr=$(mktemp)
+        
+        "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.secret_id" > "$secret_id_stdout" 2> "$secret_id_stderr"
+        secret_id_exit=$?
+        
+        echo "[DEBUG-SECRETS] Exit code: $secret_id_exit" >&2
+        log_debug "secret_id extraction exit code: $secret_id_exit"
+        
+        if [[ $secret_id_exit -ne 0 ]]; then
+            echo "[DEBUG-SECRETS] ❌ ОШИБКА при извлечении secret_id" >&2
+            echo "[DEBUG-SECRETS] STDOUT:" >&2
+            cat "$secret_id_stdout" >&2
+            echo "[DEBUG-SECRETS] STDERR:" >&2
+            cat "$secret_id_stderr" >&2
+            log_debug "❌ secret_id extraction FAILED"
+            log_debug "STDOUT: $(cat "$secret_id_stdout")"
+            log_debug "STDERR: $(cat "$secret_id_stderr")"
+            rm -f "$secret_id_stdout" "$secret_id_stderr"
             print_error "Не удалось извлечь secret_id через secrets-wrapper"
             exit 1
-        }
+        else
+            echo "[DEBUG-SECRETS] ✅ secret_id успешно извлечен" >&2
+            log_debug "✅ secret_id extracted successfully"
+            cat "$secret_id_stdout" > "$VAULT_SECRET_ID_FILE"
+            rm -f "$secret_id_stdout" "$secret_id_stderr"
+        fi
+        
+        echo "[DEBUG-SECRETS] ========================================" >&2
     else
         print_error "secrets-manager-wrapper_launcher.sh не найден или не исполняемый"
+        log_debug "❌ Wrapper not found or not executable"
         exit 1
     fi
     # Права только на файлы (директории оставляем как настроил RLM)
