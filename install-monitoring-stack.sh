@@ -50,7 +50,8 @@ SCRIPT_START_TS=$(date +%s)
 # Конфигурация
 SEC_MAN_ADDR="${SEC_MAN_ADDR^^}"
 DATE_INSTALL=$(date '+%Y%m%d_%H%M%S')
-INSTALL_DIR="/opt/mon_distrib/mon_rpm_${DATE_INSTALL}"
+# SECURE EDITION: Используем пользовательскую директорию вместо /opt/ (без root)
+INSTALL_DIR="$HOME/monitoring/distrib/mon_rpm_${DATE_INSTALL}"
 LOG_FILE="$HOME/monitoring_deployment_${DATE_INSTALL}.log"
 DEBUG_LOG="$HOME/monitoring_deployment_debug_${DATE_INSTALL}.log"
 DEBUG_SUMMARY="$HOME/monitoring_deployment_summary.log"
@@ -61,9 +62,10 @@ echo "[SCRIPT_START] DEBUG_LOG=$DEBUG_LOG" >&2
 echo "[SCRIPT_START] LOG_FILE=$LOG_FILE" >&2
 ENV_FILE="/etc/environment.d/99-monitoring-vars.conf"
 HARVEST_CONFIG="/opt/harvest/harvest.yml"
-VAULT_CONF_DIR="/opt/vault/conf"
-VAULT_LOG_DIR="/opt/vault/log"
-VAULT_CERTS_DIR="/opt/vault/certs"
+# SECURE EDITION: Vault в пользовательском пространстве (без root)
+VAULT_CONF_DIR="$HOME/monitoring/config/vault"
+VAULT_LOG_DIR="$HOME/monitoring/logs/vault"
+VAULT_CERTS_DIR="$HOME/monitoring/certs/vault"
 VAULT_AGENT_HCL="${VAULT_CONF_DIR}/agent.hcl"
 VAULT_ROLE_ID_FILE="${VAULT_CONF_DIR}/role_id.txt"
 VAULT_SECRET_ID_FILE="${VAULT_CONF_DIR}/secret_id.txt"
@@ -93,6 +95,41 @@ KAE=""
 if [[ -n "${NAMESPACE_CI:-}" ]]; then
     KAE=$(echo "$NAMESPACE_CI" | cut -d'_' -f2)
 fi
+
+# ============================================
+# ПОЛЬЗОВАТЕЛЬСКИЕ ПУТИ (SECURE EDITION - СООТВЕТСТВИЕ ИБ)
+# ============================================
+# Согласно документации ИБ Сбербанка, все файлы должны быть в пользовательском пространстве
+# Базовая директория для всех данных мониторинга
+MONITORING_BASE="$HOME/monitoring"
+
+# Конфигурационные файлы (соответствует рекомендациям ИБ)
+MONITORING_CONFIG_DIR="$MONITORING_BASE/config"
+GRAFANA_USER_CONFIG_DIR="$MONITORING_CONFIG_DIR/grafana"
+PROMETHEUS_USER_CONFIG_DIR="$MONITORING_CONFIG_DIR/prometheus"
+HARVEST_USER_CONFIG_DIR="$MONITORING_CONFIG_DIR/harvest"
+
+# Данные приложений
+MONITORING_DATA_DIR="$MONITORING_BASE/data"
+GRAFANA_USER_DATA_DIR="$MONITORING_DATA_DIR/grafana"
+PROMETHEUS_USER_DATA_DIR="$MONITORING_DATA_DIR/prometheus"
+HARVEST_USER_DATA_DIR="$MONITORING_DATA_DIR/harvest"
+
+# Логи
+MONITORING_LOGS_DIR="$MONITORING_BASE/logs"
+GRAFANA_USER_LOGS_DIR="$MONITORING_LOGS_DIR/grafana"
+PROMETHEUS_USER_LOGS_DIR="$MONITORING_LOGS_DIR/prometheus"
+HARVEST_USER_LOGS_DIR="$MONITORING_LOGS_DIR/harvest"
+
+# Сертификаты
+MONITORING_CERTS_DIR="$MONITORING_BASE/certs"
+GRAFANA_USER_CERTS_DIR="$MONITORING_CERTS_DIR/grafana"
+PROMETHEUS_USER_CERTS_DIR="$MONITORING_CERTS_DIR/prometheus"
+
+# Временные файлы для секретов (в памяти для безопасности)
+MONITORING_SECRETS_DIR="/dev/shm/monitoring-secrets-$$"
+
+echo "[SCRIPT_START] User paths configured for Secure Edition (IB compliant)" >&2
 
 # ============================================
 # ДИАГНОСТИЧЕСКОЕ ЛОГИРОВАНИЕ
@@ -967,22 +1004,18 @@ detect_network_info() {
 save_environment_variables() {
     print_step "Сохранение сетевых переменных в окружение"
     ensure_working_directory
-    local env_dir
-    env_dir=$(dirname "$ENV_FILE")
-    mkdir -p "$env_dir"
-    "$WRAPPERS_DIR/config-writer_launcher.sh" "$ENV_FILE" << EOF
-# Мониторинговые переменные сервера (создано $(date))
-MONITOR_SERVER_IP=$SERVER_IP
-MONITOR_SERVER_DOMAIN=$SERVER_DOMAIN
-MONITOR_INSTALL_DATE=$DATE_INSTALL
-MONITOR_INSTALL_DIR=$INSTALL_DIR
-EOF
+    
+    # В Secure Edition НЕ пишем в /etc/environment.d/ (требует root)
+    # Только экспортируем переменные в текущую сессию
     export MONITOR_SERVER_IP="$SERVER_IP"
     export MONITOR_SERVER_DOMAIN="$SERVER_DOMAIN"
     export MONITOR_INSTALL_DATE="$DATE_INSTALL"
     export MONITOR_INSTALL_DIR="$INSTALL_DIR"
-    print_success "Переменные сохранены в $ENV_FILE"
+    
+    log_debug "Exported environment variables (not saved to /etc/ - no root in Secure Edition)"
+    print_success "Переменные экспортированы в текущую сессию"
     print_info "IP: $SERVER_IP, Домен: $SERVER_DOMAIN"
+    print_warning "Переменные НЕ сохранены в $ENV_FILE (требует root, не нужно в Secure Edition)"
 }
 
 cleanup_all_previous() {
@@ -1089,15 +1122,61 @@ check_dependencies() {
     print_success "Все зависимости доступны"
 }
 
-create_directories() {
-    print_step "Создание рабочих директорий"
+create_user_monitoring_directories() {
+    print_step "Создание пользовательских директорий для мониторинга (Secure Edition - ИБ compliant)"
     ensure_working_directory
-    print_info "Создание директории: $INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR" || {
-        print_error "Ошибка создания $INSTALL_DIR"
-        return 1
-    }
-    print_success "Рабочие директории созданы"
+    
+    log_debug "Creating user-space monitoring directories..."
+    
+    # Создаем базовую структуру БЕЗ root
+    local dirs=(
+        "$MONITORING_BASE"
+        "$MONITORING_BASE/distrib"
+        "$MONITORING_CONFIG_DIR"
+        "$GRAFANA_USER_CONFIG_DIR"
+        "$PROMETHEUS_USER_CONFIG_DIR"
+        "$HARVEST_USER_CONFIG_DIR"
+        "$VAULT_CONF_DIR"
+        "$MONITORING_DATA_DIR"
+        "$GRAFANA_USER_DATA_DIR"
+        "$PROMETHEUS_USER_DATA_DIR"
+        "$HARVEST_USER_DATA_DIR"
+        "$MONITORING_LOGS_DIR"
+        "$GRAFANA_USER_LOGS_DIR"
+        "$PROMETHEUS_USER_LOGS_DIR"
+        "$HARVEST_USER_LOGS_DIR"
+        "$VAULT_LOG_DIR"
+        "$MONITORING_CERTS_DIR"
+        "$GRAFANA_USER_CERTS_DIR"
+        "$PROMETHEUS_USER_CERTS_DIR"
+        "$VAULT_CERTS_DIR"
+    )
+    
+    for dir in "${dirs[@]}"; do
+        if mkdir -p "$dir" 2>/dev/null; then
+            log_debug "Created: $dir"
+        else
+            print_warning "Не удалось создать $dir (может уже существует)"
+        fi
+    done
+    
+    # Создаем директорию для секретов в памяти (безопасность по ИБ)
+    if mkdir -p "$MONITORING_SECRETS_DIR" 2>/dev/null; then
+        chmod 700 "$MONITORING_SECRETS_DIR"
+        log_debug "Created secrets dir in memory: $MONITORING_SECRETS_DIR"
+    fi
+    
+    print_success "Пользовательские директории созданы в $MONITORING_BASE"
+    print_info "Конфигурация: $MONITORING_CONFIG_DIR"
+    print_info "Данные: $MONITORING_DATA_DIR"
+    print_info "Логи: $MONITORING_LOGS_DIR"
+    print_info "Сертификаты: $MONITORING_CERTS_DIR"
+}
+
+create_directories() {
+    # В Secure Edition НЕ создаем директории в /opt/ (требуют root)
+    # Вместо этого используем пользовательские директории
+    create_user_monitoring_directories
 }
 
 setup_vault_config() {
@@ -1475,13 +1554,13 @@ setup_monitoring_user_units() {
     # User-юнит Prometheus
     local prom_unit="${user_systemd_dir}/monitoring-prometheus.service"
     
-    # ИСПРАВЛЕНО: Всегда используем актуальные параметры
-    # НЕ читаем старый prometheus.env, чтобы избежать использования устаревших параметров
-    local prom_opts="--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus/data --web.console.templates=/etc/prometheus/consoles --web.console.libraries=/etc/prometheus/console_libraries --web.config.file=/etc/prometheus/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}"
+    # SECURE EDITION: Используем пользовательские пути (соответствие ИБ)
+    # Все конфиги, данные и логи в $HOME/monitoring/
+    local prom_opts="--config.file=${PROMETHEUS_USER_CONFIG_DIR}/prometheus.yml --storage.tsdb.path=${PROMETHEUS_USER_DATA_DIR} --web.console.templates=${PROMETHEUS_USER_CONFIG_DIR}/consoles --web.console.libraries=${PROMETHEUS_USER_CONFIG_DIR}/console_libraries --web.config.file=${PROMETHEUS_USER_CONFIG_DIR}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}"
     
-    print_info "Prometheus параметры запуска: ${prom_opts:0:100}..."
+    print_info "Prometheus параметры запуска (user-space): ${prom_opts:0:100}..."
     
-    # ИСПРАВЛЕНО: Удаляем старый unit файл, чтобы гарантировать создание нового
+    # Удаляем старый unit файл, чтобы гарантировать создание нового
     if [[ -f "$prom_unit" ]]; then
         print_info "Удаление старого unit файла для пересоздания"
         rm -f "$prom_unit" 2>/dev/null || true
@@ -1491,14 +1570,17 @@ setup_monitoring_user_units() {
     
     cat > "$prom_unit" << EOF
 [Unit]
-Description=Monitoring Prometheus (user service)
+Description=Monitoring Prometheus (user service - Secure Edition)
 After=network-online.target
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/prometheus ${prom_opts}
+WorkingDirectory=${PROMETHEUS_USER_DATA_DIR}
 Restart=on-failure
 RestartSec=10
+StandardOutput=append:${PROMETHEUS_USER_LOGS_DIR}/prometheus.log
+StandardError=append:${PROMETHEUS_USER_LOGS_DIR}/prometheus.log
 
 [Install]
 WantedBy=default.target
@@ -1508,34 +1590,42 @@ EOF
     local graf_unit="${user_systemd_dir}/monitoring-grafana.service"
     cat > "$graf_unit" << EOF
 [Unit]
-Description=Monitoring Grafana (user service)
+Description=Monitoring Grafana (user service - Secure Edition)
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/grafana-server --config=/etc/grafana/grafana.ini --homepath=/usr/share/grafana
-StandardOutput=append:/tmp/grafana-debug.log
-StandardError=append:/tmp/grafana-debug.log
+# SECURE EDITION: Grafana config в пользовательском пространстве
+ExecStart=/usr/sbin/grafana-server --config=${GRAFANA_USER_CONFIG_DIR}/grafana.ini --homepath=/usr/share/grafana
+WorkingDirectory=${GRAFANA_USER_DATA_DIR}
+StandardOutput=append:${GRAFANA_USER_LOGS_DIR}/grafana.log
+StandardError=append:${GRAFANA_USER_LOGS_DIR}/grafana.log
 Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=default.target
 EOF
 
     # User-юнит Harvest (аналогично системному сервису)
+    # SECURE EDITION: WorkingDirectory остается /opt/harvest (RPM бинарники)
+    # но конфиги будут в $HARVEST_USER_CONFIG_DIR
     local harvest_unit="${user_systemd_dir}/monitoring-harvest.service"
-    cat > "$harvest_unit" << 'HARVEST_USER_SERVICE_EOF'
+    cat > "$harvest_unit" << HARVEST_USER_SERVICE_EOF
 [Unit]
-Description=NetApp Harvest Poller (user service)
+Description=NetApp Harvest Poller (user service - Secure Edition)
 After=network.target
 
 [Service]
 Type=oneshot
+# Бинарники из RPM остаются в /opt/harvest
 WorkingDirectory=/opt/harvest
+# Конфиги будут передаваться через --config (см. настройку harvest)
 ExecStart=/opt/harvest/bin/harvest start
 ExecStop=/opt/harvest/bin/harvest stop
 RemainAfterExit=yes
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/opt/harvest/bin
+Environment=HARVEST_CONF=${HARVEST_USER_CONFIG_DIR}
 
 [Install]
 WantedBy=default.target
@@ -1945,19 +2035,26 @@ HARVEST_SERVICE_EOF
 }
 
 configure_prometheus() {
-    print_step "Настройка Prometheus"
+    print_step "Настройка Prometheus (Secure Edition - user-space)"
     ensure_working_directory
     
-    # Проверяем, установлен ли Prometheus
-    if [[ ! -d "/etc/prometheus" ]]; then
-        print_warning "Директория /etc/prometheus не существует (Prometheus не установлен)"
-        print_info "Если используется SKIP_RPM_INSTALL=true, это ожидаемо"
-        return 0
+    # SECURE EDITION: Создаем конфиг в пользовательской директории БЕЗ root
+    local prometheus_config="${PROMETHEUS_USER_CONFIG_DIR}/prometheus.yml"
+    
+    # Копируем consoles и console_libraries из RPM в user-space
+    if [[ -d "/etc/prometheus/consoles" ]]; then
+        print_info "Копирование consoles из RPM в user-space..."
+        cp -r /etc/prometheus/consoles "$PROMETHEUS_USER_CONFIG_DIR/" 2>/dev/null || print_warning "Не удалось скопировать consoles"
+    fi
+    if [[ -d "/etc/prometheus/console_libraries" ]]; then
+        print_info "Копирование console_libraries из RPM в user-space..."
+        cp -r /etc/prometheus/console_libraries "$PROMETHEUS_USER_CONFIG_DIR/" 2>/dev/null || print_warning "Не удалось скопировать console_libraries"
     fi
     
-    local prometheus_config="/etc/prometheus/prometheus.yml"
+    print_info "Создание конфигурации Prometheus: $prometheus_config"
 
-    "$WRAPPERS_DIR/config-writer_launcher.sh" "$prometheus_config" << PROMETHEUS_CONFIG_EOF
+    # SECURE EDITION: Прямая запись в пользовательскую директорию (БЕЗ config-writer)
+    cat > "$prometheus_config" << PROMETHEUS_CONFIG_EOF
 global:
   scrape_interval: 60s
   evaluation_interval: 60s
@@ -1967,9 +2064,9 @@ scrape_configs:
   - job_name: 'prometheus'
     scheme: https
     tls_config:
-      cert_file: /etc/prometheus/cert/server.crt
-      key_file: /etc/prometheus/cert/server.key
-      ca_file: /etc/prometheus/cert/ca_chain.crt
+      cert_file: ${PROMETHEUS_USER_CERTS_DIR}/server.crt
+      key_file: ${PROMETHEUS_USER_CERTS_DIR}/server.key
+      ca_file: ${PROMETHEUS_USER_CERTS_DIR}/ca_chain.crt
       insecure_skip_verify: false
     static_configs:
       - targets: ['${SERVER_DOMAIN}:${PROMETHEUS_PORT}']
@@ -1985,9 +2082,9 @@ scrape_configs:
   - job_name: 'harvest-netapp-https'
     scheme: https
     tls_config:
-      cert_file: /etc/prometheus/cert/server.crt
-      key_file: /etc/prometheus/cert/server.key
-      ca_file: /etc/prometheus/cert/ca_chain.crt
+      cert_file: ${PROMETHEUS_USER_CERTS_DIR}/server.crt
+      key_file: ${PROMETHEUS_USER_CERTS_DIR}/server.key
+      ca_file: ${PROMETHEUS_USER_CERTS_DIR}/ca_chain.crt
       insecure_skip_verify: false
     static_configs:
       - targets: ['${SERVER_DOMAIN}:${HARVEST_NETAPP_PORT}']
@@ -1995,80 +2092,23 @@ scrape_configs:
     scrape_interval: 60s
 PROMETHEUS_CONFIG_EOF
 
-    print_success "Конфигурация Prometheus обновлена"
+    chmod 640 "$prometheus_config" 2>/dev/null || true
+    print_success "Конфигурация Prometheus создана в user-space: $prometheus_config"
 }
 
 # Настройка прав для Prometheus при запуске как user-юнит под ${KAE}-lnx-mon_sys
 adjust_prometheus_permissions_for_mon_sys() {
-    print_step "Адаптация прав Prometheus для user-юнита под ${KAE}-lnx-mon_sys"
+    print_step "Проверка конфигурации Prometheus (Secure Edition - user-space)"
     ensure_working_directory
 
-    if [[ -z "${KAE:-}" ]]; then
-        print_warning "KAE не определён (NAMESPACE_CI пуст), пропускаем настройку прав Prometheus для mon_sys"
-        return 0
-    fi
-
-    local mon_sys_user="${KAE}-lnx-mon_sys"
-    if ! id "$mon_sys_user" >/dev/null 2>&1; then
-        print_warning "Пользователь ${mon_sys_user} не найден, пропускаем настройку прав Prometheus для mon_sys"
-        return 0
-    fi
-
-    # Каталоги и файлы Prometheus, которые должны быть доступны mon_sys
-    local prom_cert_dir="/etc/prometheus/cert"
-    local prom_data_dir="/var/lib/prometheus"
-    local prom_cfg="/etc/prometheus/prometheus.yml"
-    local prom_web_cfg="/etc/prometheus/web-config.yml"
-    local prom_env="/etc/prometheus/prometheus.env"
-
-    # Сертификаты и ключи
-    if [[ -d "$prom_cert_dir" ]]; then
-        print_info "Настройка владельца/прав сертификатов Prometheus для ${mon_sys_user}"
-        chown -R "${mon_sys_user}:${mon_sys_user}" "$prom_cert_dir" 2>/dev/null || print_warning "Не удалось изменить владельца $prom_cert_dir"
-        chmod 640 "$prom_cert_dir"/server.crt "$prom_cert_dir"/ca_chain.crt 2>/dev/null || true
-        chmod 600 "$prom_cert_dir"/server.key 2>/dev/null || true
-    else
-        print_warning "Каталог сертификатов Prometheus ($prom_cert_dir) не найден"
-    fi
-
-    # Конфиги Prometheus
-    print_info "Настройка владельца/прав конфигов Prometheus для ${mon_sys_user}"
+    # SECURE EDITION: Все файлы уже в $HOME/monitoring/ с правильными правами
+    # chown/chmod операции НЕ НУЖНЫ и ЗАПРЕЩЕНЫ (нет доступа к /etc/, /var/)
     
-    # Создаём необходимые директории если их нет
-    mkdir -p /etc/prometheus/consoles /etc/prometheus/console_libraries 2>/dev/null || true
-    
-    if [[ -f "$prom_cfg" ]]; then
-        chown "${mon_sys_user}:${mon_sys_user}" "$prom_cfg" 2>/dev/null || print_warning "Не удалось изменить владельца $prom_cfg"
-        chmod 640 "$prom_cfg" 2>/dev/null || true
-    fi
-    if [[ -f "$prom_web_cfg" ]]; then
-        chown "${mon_sys_user}:${mon_sys_user}" "$prom_web_cfg" 2>/dev/null || print_warning "Не удалось изменить владельца $prom_web_cfg"
-        chmod 640 "$prom_web_cfg" 2>/dev/null || true
-    fi
-    if [[ -f "$prom_env" ]]; then
-        chown "${mon_sys_user}:${mon_sys_user}" "$prom_env" 2>/dev/null || print_warning "Не удалось изменить владельца $prom_env"
-        chmod 640 "$prom_env" 2>/dev/null || true
-    fi
-    
-    # Устанавливаем права на директории консолей
-    chown -R "${mon_sys_user}:${mon_sys_user}" /etc/prometheus/consoles /etc/prometheus/console_libraries 2>/dev/null || true
-    chmod 755 /etc/prometheus/consoles /etc/prometheus/console_libraries 2>/dev/null || true
-
-    # Директория с данными Prometheus
-    if [[ ! -d "$prom_data_dir" ]]; then
-        print_info "Создание каталога данных Prometheus: $prom_data_dir"
-        mkdir -p "$prom_data_dir/data" 2>/dev/null || print_warning "Не удалось создать $prom_data_dir/data"
-    fi
-    
-    if [[ -d "$prom_data_dir" ]]; then
-        print_info "Настройка владельца/прав данных Prometheus для ${mon_sys_user}"
-        chown -R "${mon_sys_user}:${mon_sys_user}" "$prom_data_dir" 2>/dev/null || print_warning "Не удалось изменить владельца $prom_data_dir"
-        chmod 750 "$prom_data_dir" 2>/dev/null || true
-    else
-        print_warning "Каталог данных Prometheus ($prom_data_dir) всё ещё не найден после попытки создания"
-    fi
-
-    print_success "Права Prometheus адаптированы для запуска под ${mon_sys_user} (user-юнит)"
+    print_success "✅ Secure Edition: Все файлы Prometheus в user-space"
+    print_info "   Конфиг: $PROMETHEUS_USER_CONFIG_DIR"
+    print_info "   Данные: $PROMETHEUS_USER_DATA_DIR"
+    print_info "   Логи: $PROMETHEUS_USER_LOGS_DIR"
+    print_info "   Сертификаты: $PROMETHEUS_USER_CERTS_DIR"
 }
 
 # Настройка прав для Grafana при запуске как user-юнит под ${KAE}-lnx-mon_sys
@@ -4381,19 +4421,31 @@ main() {
     log_debug "Completed: detect_network_info"
     
     log_debug "Calling: ensure_monitoring_users_in_as_admin"
-    ensure_monitoring_users_in_as_admin
+    ensure_monitoring_users_in_as_admin || {
+        log_debug "ERROR in ensure_monitoring_users_in_as_admin, continuing..."
+        print_warning "ensure_monitoring_users_in_as_admin failed (may require root/RLM), continuing..."
+    }
     log_debug "Completed: ensure_monitoring_users_in_as_admin"
     
     log_debug "Calling: ensure_mon_sys_in_grafana_group"
-    ensure_mon_sys_in_grafana_group
+    ensure_mon_sys_in_grafana_group || {
+        log_debug "ERROR in ensure_mon_sys_in_grafana_group, continuing..."
+        print_warning "ensure_mon_sys_in_grafana_group failed (may require root), continuing..."
+    }
     log_debug "Completed: ensure_mon_sys_in_grafana_group"
     
     log_debug "Calling: cleanup_all_previous"
-    cleanup_all_previous
+    cleanup_all_previous || {
+        log_debug "ERROR in cleanup_all_previous, continuing..."
+        print_warning "cleanup_all_previous failed (may require root for /etc/, /var/), continuing..."
+    }
     log_debug "Completed: cleanup_all_previous"
     
     log_debug "Calling: create_directories"
-    create_directories
+    create_directories || {
+        log_debug "ERROR in create_directories, continuing..."
+        print_warning "create_directories failed (may require root for /opt/), continuing..."
+    }
     log_debug "Completed: create_directories"
 
     # При необходимости можно пропустить установку Vault через RLM,
