@@ -1683,6 +1683,23 @@ load_config_from_json() {
     print_step "Загрузка конфигурации из параметров Jenkins"
     ensure_working_directory
     
+    echo "[DEBUG-CONFIG] ========================================" >&2
+    echo "[DEBUG-CONFIG] Диагностика load_config_from_json" >&2
+    echo "[DEBUG-CONFIG] ========================================" >&2
+    log_debug "========================================"
+    log_debug "ДИАГНОСТИКА: load_config_from_json"
+    log_debug "========================================"
+    
+    echo "[DEBUG-CONFIG] Проверка обязательных параметров:" >&2
+    echo "[DEBUG-CONFIG] NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" >&2
+    log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
+    log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
+    log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
+    log_debug "HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}"
+    
     local missing=()
     [[ -z "$NETAPP_API_ADDR" ]] && missing+=("NETAPP_API_ADDR")
     [[ -z "$GRAFANA_URL" ]] && missing+=("GRAFANA_URL")
@@ -1690,13 +1707,29 @@ load_config_from_json() {
     [[ -z "$HARVEST_URL" ]] && missing+=("HARVEST_URL")
 
     if (( ${#missing[@]} > 0 )); then
+        echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" >&2
+        log_debug "❌ Missing parameters: ${missing[*]}"
         print_error "Не заданы обязательные параметры Jenkins: ${missing[*]}"
         print_error "Эти переменные должны быть переданы через 'sudo -n env' из Jenkinsfile"
         write_diagnostic "ERROR: Не заданы параметры: ${missing[*]}"
+        
+        echo "[DEBUG-CONFIG] ========================================" >&2
+        echo "[DEBUG-CONFIG] DUMP всех ENV переменных:" >&2
+        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NAMESPACE|KAE)" | sort >&2
+        echo "[DEBUG-CONFIG] ========================================" >&2
+        
         exit 1
     fi
+    
+    echo "[DEBUG-CONFIG] ✅ Все обязательные параметры заданы" >&2
+    log_debug "✅ All required parameters are set"
 
     NETAPP_POLLER_NAME=$(echo "$NETAPP_API_ADDR" | awk -F'.' '{print toupper(substr($1,1,1)) tolower(substr($1,2))}')
+    
+    echo "[DEBUG-CONFIG] Вычислен NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME" >&2
+    log_debug "NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME"
+    echo "[DEBUG-CONFIG] ========================================" >&2
+    
     print_success "Конфигурация загружена из параметров Jenkins"
     print_info "NETAPP_API_ADDR=$NETAPP_API_ADDR, NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME"
 }
@@ -4733,10 +4766,23 @@ main() {
     fi
     write_diagnostic ""
     
+    echo "[MAIN] ========================================" >&2
+    echo "[MAIN] Вызов setup_vault_config..." >&2
+    log_debug "Calling: setup_vault_config"
+    
     setup_vault_config
+    
+    echo "[MAIN] ✅ setup_vault_config завершена успешно" >&2
+    log_debug "Completed: setup_vault_config"
     write_diagnostic "setup_vault_config выполнена"
 
+    echo "[MAIN] Вызов load_config_from_json..." >&2
+    log_debug "Calling: load_config_from_json"
+    
     load_config_from_json
+    
+    echo "[MAIN] ✅ load_config_from_json завершена успешно" >&2
+    log_debug "Completed: load_config_from_json"
 
     # При необходимости можно пропустить установку RPM-пакетов через RLM,
     # чтобы ускорить отладку (по аналогии с SKIP_VAULT_INSTALL).
