@@ -2699,8 +2699,8 @@ setup_certificates_after_install() {
                 print_success "CI-user добавлен в группу ${KAE}-lnx-va-read"
                 
                 # ВАЖНО: После добавления в группу требуется новая сессия для применения изменений
-                # Используем newgrp или копируем от имени sys_user
-                print_warning "Изменения группы применятся в новой сессии. Используем workaround через sys_user."
+                # Пробуем несколько способов копирования
+                print_warning "Изменения группы применятся в новой сессии. Пробуем несколько способов копирования..."
                 
                 # Создаем директорию перед копированием
                 mkdir -p "$VAULT_CERTS_DIR" || {
@@ -2709,15 +2709,71 @@ setup_certificates_after_install() {
                     exit 1
                 }
                 
-                # Копируем через sys_user (у него точно есть доступ)
-                if sudo -n -u "$sys_user" cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
-                    chown "$USER:$USER" "$userspace_vault_bundle" 2>/dev/null || true
-                    echo "[CERTS] ✅ Bundle скопирован через sys_user workaround" | tee /dev/stderr
-                    log_debug "✅ Bundle copied via sys_user workaround"
+                local copy_success=false
+                
+                # Способ 1: Через sys_user с sudo (если sys_user в va-read группе)
+                if id "$sys_user" 2>/dev/null | grep -q "${KAE}-lnx-va-read"; then
+                    echo "[CERTS] Способ 1: Попытка копирования через sudo -u $sys_user..." | tee /dev/stderr
+                    log_debug "Attempt 1: Copy via sudo -u $sys_user"
+                    
+                    if sudo -n -u "$sys_user" cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
+                        chown "$USER:$USER" "$userspace_vault_bundle" 2>/dev/null || true
+                        echo "[CERTS] ✅ Bundle скопирован через sudo -u $sys_user" | tee /dev/stderr
+                        log_debug "✅ Bundle copied via sudo -u $sys_user"
+                        copy_success=true
+                    else
+                        echo "[CERTS] ⚠️  Способ 1 не сработал (нет прав sudo -u $sys_user или файл недоступен)" | tee /dev/stderr
+                        log_debug "⚠️  Method 1 failed"
+                    fi
                 else
-                    echo "[CERTS] ⚠️  Не удалось скопировать через sys_user" | tee /dev/stderr
-                    log_debug "⚠️  Failed to copy via sys_user"
-                    print_error "Не удалось скопировать сертификаты. Требуется перелогин или sudo права."
+                    echo "[CERTS] ⚠️  $sys_user не в группе va-read, пропускаем способ 1" | tee /dev/stderr
+                    log_debug "⚠️  $sys_user not in va-read group, skipping method 1"
+                fi
+                
+                # Способ 2: Через cat (читаем от имени sys_user, пишем от имени ci_user)
+                if [[ "$copy_success" == false ]] && id "$sys_user" 2>/dev/null | grep -q "${KAE}-lnx-va-read"; then
+                    echo "[CERTS] Способ 2: Попытка копирования через sudo cat..." | tee /dev/stderr
+                    log_debug "Attempt 2: Copy via sudo cat"
+                    
+                    if sudo -n -u "$sys_user" cat "$system_vault_bundle" > "$userspace_vault_bundle" 2>/dev/null; then
+                        echo "[CERTS] ✅ Bundle скопирован через sudo cat" | tee /dev/stderr
+                        log_debug "✅ Bundle copied via sudo cat"
+                        copy_success=true
+                    else
+                        echo "[CERTS] ⚠️  Способ 2 не сработал" | tee /dev/stderr
+                        log_debug "⚠️  Method 2 failed"
+                    fi
+                fi
+                
+                # Способ 3: Прямое копирование (на случай если группа уже применилась)
+                if [[ "$copy_success" == false ]]; then
+                    echo "[CERTS] Способ 3: Попытка прямого копирования (группа может уже примениться)..." | tee /dev/stderr
+                    log_debug "Attempt 3: Direct copy"
+                    
+                    if cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
+                        echo "[CERTS] ✅ Bundle скопирован напрямую (группа применилась!)" | tee /dev/stderr
+                        log_debug "✅ Bundle copied directly (group applied!)"
+                        copy_success=true
+                    else
+                        echo "[CERTS] ⚠️  Способ 3 не сработал" | tee /dev/stderr
+                        log_debug "⚠️  Method 3 failed"
+                    fi
+                fi
+                
+                # Финальная проверка
+                if [[ "$copy_success" == false ]]; then
+                    echo "[CERTS] ❌ Все способы копирования не сработали" | tee /dev/stderr
+                    log_debug "❌ All copy methods failed"
+                    print_error "Не удалось скопировать сертификаты ни одним из способов"
+                    print_error ""
+                    print_error "ДИАГНОСТИКА:"
+                    print_error "  1. Пользователь добавлен в группу ${KAE}-lnx-va-read через RLM ✅"
+                    print_error "  2. Но изменения группы требуют новой сессии/перелогина"
+                    print_error "  3. sudo -u $sys_user не работает (нет прав в sudoers)"
+                    print_error ""
+                    print_error "РЕШЕНИЕ:"
+                    print_error "  Вариант 1: Перезапустите pipeline (группа уже применится) - РЕКОМЕНДУЕТСЯ"
+                    print_error "  Вариант 2: Добавьте в sudoers право на 'sudo -u $sys_user cat /opt/vault/certs/*'"
                     exit 1
                 fi
             else
