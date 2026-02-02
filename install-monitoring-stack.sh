@@ -111,77 +111,29 @@ write_diagnostic() {
 
 # Инициализация DEBUG лога с полной диагностикой
 init_debug_log() {
-    # Временно отключаем строгий режим для безопасной инициализации
-    local old_opts=$-
-    set +euo pipefail
+    # КРИТИЧНО: Полностью отключаем все проверки ошибок
+    set +e
+    set +u
+    set +o pipefail
     
-    # Создаем файл сразу, чтобы log_debug мог в него писать
-    cat > "$DEBUG_LOG" 2>/dev/null << 'EOF_HEADER' || { echo "ERROR: Cannot create DEBUG log file" >&2; return 1; }
-================================================================
-       MONITORING STACK DEPLOYMENT - DEBUG LOG
-================================================================
-EOF_HEADER
+    # Простой заголовок без сложных команд
+    {
+        echo "================================================================"
+        echo "       MONITORING STACK DEPLOYMENT - DEBUG LOG"
+        echo "================================================================"
+        echo "Init started: $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'Unknown')"
+        echo "================================================================"
+    } > "$DEBUG_LOG" 2>&1
     
-    # Записываем информацию построчно с проверкой ошибок
-    echo "Timestamp:       $(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Hostname:        $(hostname -f 2>/dev/null || hostname 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "User:            $(whoami 2>/dev/null || echo 'Unknown') (UID=$(id -u 2>/dev/null || echo '?'), GID=$(id -g 2>/dev/null || echo '?'))" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Home:            ${HOME:-Unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "PWD:             ${PWD:-Unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Script:          ${BASH_SOURCE[0]:-Unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Script PID:      $$" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Deploy Version:  ${DEPLOY_VERSION:-unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Git Commit:      ${DEPLOY_GIT_COMMIT:-unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Build Date:      ${DEPLOY_BUILD_DATE:-unknown}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "================================================================" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    # Создать симлинк сразу
+    ln -sf "$DEBUG_LOG" "$DEBUG_SUMMARY" 2>/dev/null
     
-    echo "=== SYSTEM INFORMATION ===" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Kernel: $(uname -r 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "Uptime: $(uptime 2>/dev/null || echo 'Unknown')" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
+    # Восстанавливаем строгий режим
+    set -e
+    set -u
+    set -o pipefail
     
-    echo "=== ENVIRONMENT VARIABLES ===" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "RLM_API_URL=${RLM_API_URL:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "SEC_MAN_ADDR=${SEC_MAN_ADDR:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "NAMESPACE_CI=${NAMESPACE_CI:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "KAE=${KAE:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "GRAFANA_PORT=${GRAFANA_PORT:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "PROMETHEUS_PORT=${PROMETHEUS_PORT:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "SKIP_VAULT_INSTALL=${SKIP_VAULT_INSTALL:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "SKIP_RPM_INSTALL=${SKIP_RPM_INSTALL:-<not set>}" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
-    
-    echo "=== DISK SPACE ===" >> "$DEBUG_LOG" 2>/dev/null || true
-    df -h / /home /tmp 2>/dev/null >> "$DEBUG_LOG" || echo "Cannot check disk space" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
-    
-    echo "=== NETWORK INFO ===" >> "$DEBUG_LOG" 2>/dev/null || true
-    ip addr show 2>/dev/null | grep -E "inet |UP" >> "$DEBUG_LOG" 2>/dev/null || echo "Cannot check network" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
-    
-    echo "=== SUDO RIGHTS CHECK ===" >> "$DEBUG_LOG" 2>/dev/null || true
-    if sudo -l >/dev/null 2>&1; then
-        sudo -l 2>&1 | head -20 >> "$DEBUG_LOG" 2>/dev/null || echo "Error reading sudo rights" >> "$DEBUG_LOG" 2>/dev/null || true
-    else
-        echo "No sudo privileges or cannot check (this is OK for Secure Edition)" >> "$DEBUG_LOG" 2>/dev/null || true
-    fi
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
-    
-    echo "================================================================" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "DEPLOYMENT LOG STARTED" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "================================================================" >> "$DEBUG_LOG" 2>/dev/null || true
-    echo "" >> "$DEBUG_LOG" 2>/dev/null || true
-    
-    # Создать симлинк на последний лог
-    ln -sf "$DEBUG_LOG" "$DEBUG_SUMMARY" 2>/dev/null || true
-    
-    # Восстанавливаем предыдущие опции
-    [[ $old_opts == *e* ]] && set -e || true
-    [[ $old_opts == *u* ]] && set -u || true
-    [[ $old_opts == *o*pipefail* ]] && set -o pipefail || true
+    return 0
 }
 
 # Функция записи в DEBUG лог
@@ -189,6 +141,40 @@ log_debug() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $*" >> "$DEBUG_LOG" 2>/dev/null || true
+}
+
+# Функция для добавления расширенной диагностики в DEBUG лог
+log_debug_extended() {
+    set +e
+    {
+        echo ""
+        echo "=== EXTENDED DIAGNOSTICS ==="
+        echo "Timestamp:       $(date '+%Y-%m-%d %H:%M:%S %Z')"
+        echo "Hostname:        $(hostname -f 2>/dev/null || hostname)"
+        echo "User:            $(whoami) (UID=$(id -u), GID=$(id -g))"
+        echo "Home:            $HOME"
+        echo "PWD:             $PWD"
+        echo "Script:          ${BASH_SOURCE[0]}"
+        echo "Deploy Version:  ${DEPLOY_VERSION:-unknown}"
+        echo "Git Commit:      ${DEPLOY_GIT_COMMIT:-unknown}"
+        echo ""
+        echo "=== ENVIRONMENT VARIABLES ==="
+        echo "RLM_API_URL=${RLM_API_URL:-<not set>}"
+        echo "SEC_MAN_ADDR=${SEC_MAN_ADDR:-<not set>}"
+        echo "NAMESPACE_CI=${NAMESPACE_CI:-<not set>}"
+        echo "KAE=${KAE:-<not set>}"
+        echo "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<not set>}"
+        echo "GRAFANA_PORT=${GRAFANA_PORT:-<not set>}"
+        echo "PROMETHEUS_PORT=${PROMETHEUS_PORT:-<not set>}"
+        echo ""
+        echo "=== DISK SPACE ==="
+        df -h / /home /tmp 2>/dev/null || echo "Cannot check"
+        echo ""
+        echo "=== SUDO RIGHTS ==="
+        sudo -l 2>&1 | head -10 || echo "No sudo or cannot check"
+        echo ""
+    } >> "$DEBUG_LOG" 2>&1
+    set -e
 }
 
 # Функция для логирования состояния системы при ошибке
@@ -4317,6 +4303,7 @@ main() {
     # Инициализация расширенного DEBUG лога
     init_debug_log
     log_debug "=== DEPLOYMENT STARTED ==="
+    log_debug_extended
     
     write_diagnostic "========================================="
     write_diagnostic "ДИАГНОСТИКА ВХОДНЫХ ПАРАМЕТРОВ"
