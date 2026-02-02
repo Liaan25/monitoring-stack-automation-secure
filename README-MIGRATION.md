@@ -204,14 +204,24 @@ ssh admin@pilot-server-01
 id CI84324523-lnx-mon_ci   # Должен существовать
 id CI84324523-lnx-mon_sys  # Должен существовать
 
-# 2. Проверка sudoers правил
+# 2. КРИТИЧЕСКИ ВАЖНО: Создание home директорий
+# Если пользователи только что созданы через IDM, их home директории могут отсутствовать
+sudo mkhomedir_helper CI84324523-lnx-mon_ci
+sudo mkhomedir_helper CI84324523-lnx-mon_sys
+
+# Проверка существования и прав
+ls -ld /home/CI84324523-lnx-mon_ci
+ls -ld /home/CI84324523-lnx-mon_sys
+# Должны быть: drwx------ владелец=CI84324523-lnx-mon_ci (или mon_sys)
+
+# 3. Проверка sudoers правил
 sudo -l -U CI84324523-lnx-mon_ci
 # Должны отобразиться правила для systemctl --user
 
-# 3. Проверка linuxadm
+# 4. Проверка linuxadm
 which linuxadm-enable-linger  # Должен быть доступен
 
-# 4. (Опционально) Остановка старой версии
+# 5. (Опционально) Остановка старой версии
 # Если на сервере уже развернута v3.x, остановите сервисы:
 sudo systemctl stop prometheus grafana-server harvest
 sudo systemctl disable prometheus grafana-server harvest

@@ -478,7 +478,39 @@ else
     exit 1
 fi
 
-# 2. СОЗДАЕМ ДИРЕКТОРИЮ В ДОМАШНЕМ КАТАЛОГЕ (БЕЗ sudo)
+# 2. ДИАГНОСТИКА И СОЗДАНИЕ ДИРЕКТОРИИ
+echo ""
+echo "[INFO] Проверка home директории пользователя..."
+
+# Проверяем существование home директории
+ssh -i "''' + env.SSH_KEY + '''" $SSH_OPTS \
+    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' << 'DIAG_EOF'
+set -e
+
+HOME_DIR="$HOME"
+echo "[INFO] HOME переменная: $HOME_DIR"
+
+# Проверяем существование home директории
+if [ ! -d "$HOME_DIR" ]; then
+    echo "[ERROR] Home директория $HOME_DIR не существует!"
+    echo "[INFO] Пользователь: $(whoami)"
+    echo "[INFO] UID/GID: $(id)"
+    echo "[ERROR] Необходимо создать home директорию для пользователя"
+    echo "[SOLUTION] Выполните на сервере: sudo mkhomedir_helper $(whoami)"
+    exit 1
+fi
+
+# Проверяем права на запись
+if [ ! -w "$HOME_DIR" ]; then
+    echo "[ERROR] Нет прав на запись в $HOME_DIR"
+    ls -ld "$HOME_DIR"
+    exit 1
+fi
+
+echo "[OK] Home директория существует и доступна для записи"
+DIAG_EOF
+
+# Создаем рабочую директорию
 echo ""
 echo "[INFO] Создание рабочей директории: ''' + env.DEPLOY_PATH + '''..."
 

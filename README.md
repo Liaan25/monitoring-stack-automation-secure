@@ -88,10 +88,20 @@ Sys-пользователь: ${KAE}-lnx-mon_sys  (nologin сервисная У
 #    - CI-user: ${KAE}-lnx-mon_ci
 #    - Sys-user: ${KAE}-lnx-mon_sys
 
-# 2. Подать заявку в ИБ на sudoers правила
+# 2. ВАЖНО: Создать home директории на целевых серверах
+#    Выполнить на каждом сервере:
+ssh admin@target-server
+sudo mkhomedir_helper ${KAE}-lnx-mon_ci
+sudo mkhomedir_helper ${KAE}-lnx-mon_sys
+
+# Проверка:
+ls -ld /home/${KAE}-lnx-mon_ci   # Должна существовать
+ls -ld /home/${KAE}-lnx-mon_sys  # Должна существовать
+
+# 3. Подать заявку в ИБ на sudoers правила
 #    Использовать: sudoers.template
 
-# 3. Настроить Jenkins credentials
+# 4. Настроить Jenkins credentials
 #    ID: monitoring-stack-ci-user-ssh
 #    Type: SSH Username with private key
 #    Username: ${KAE}-lnx-mon_ci

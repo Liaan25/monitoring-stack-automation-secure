@@ -40,6 +40,8 @@ SEC_MAN_ADDR="${SEC_MAN_ADDR^^}"
 DATE_INSTALL=$(date '+%Y%m%d_%H%M%S')
 INSTALL_DIR="/opt/mon_distrib/mon_rpm_${DATE_INSTALL}"
 LOG_FILE="$HOME/monitoring_deployment_${DATE_INSTALL}.log"
+DEBUG_LOG="$HOME/monitoring_deployment_debug_${DATE_INSTALL}.log"
+DEBUG_SUMMARY="$HOME/monitoring_deployment_summary.log"
 STATE_FILE="/var/lib/monitoring_deployment_state"
 ENV_FILE="/etc/environment.d/99-monitoring-vars.conf"
 HARVEST_CONFIG="/opt/harvest/harvest.yml"
@@ -102,6 +104,207 @@ DIAG_HEADER
 write_diagnostic() {
     echo "[$(date '+%H:%M:%S')] $*" >> "$DIAGNOSTIC_RLM_LOG" 2>/dev/null || true
 }
+
+# ============================================
+# РАСШИРЕННОЕ DEBUG ЛОГИРОВАНИЕ
+# ============================================
+
+# Инициализация DEBUG лога с полной диагностикой
+init_debug_log() {
+    {
+        echo "================================================================"
+        echo "       MONITORING STACK DEPLOYMENT - DEBUG LOG"
+        echo "================================================================"
+        echo "Timestamp:       $(date '+%Y-%m-%d %H:%M:%S %Z')"
+        echo "Hostname:        $(hostname -f 2>/dev/null || hostname)"
+        echo "User:            $(whoami) (UID=$(id -u), GID=$(id -g))"
+        echo "Home:            $HOME"
+        echo "PWD:             $PWD"
+        echo "Script:          ${BASH_SOURCE[0]}"
+        echo "Script PID:      $$"
+        echo "Deploy Version:  ${DEPLOY_VERSION:-unknown}"
+        echo "Git Commit:      ${DEPLOY_GIT_COMMIT:-unknown}"
+        echo "Build Date:      ${DEPLOY_BUILD_DATE:-unknown}"
+        echo "================================================================"
+        echo ""
+        echo "=== SYSTEM INFORMATION ==="
+        echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Unknown')"
+        echo "Kernel: $(uname -r)"
+        echo "Uptime: $(uptime)"
+        echo ""
+        echo "=== ENVIRONMENT VARIABLES ==="
+        echo "RLM_API_URL=${RLM_API_URL:-<not set>}"
+        echo "SEC_MAN_ADDR=${SEC_MAN_ADDR:-<not set>}"
+        echo "NAMESPACE_CI=${NAMESPACE_CI:-<not set>}"
+        echo "KAE=${KAE:-<not set>}"
+        echo "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<not set>}"
+        echo "GRAFANA_PORT=${GRAFANA_PORT:-<not set>}"
+        echo "PROMETHEUS_PORT=${PROMETHEUS_PORT:-<not set>}"
+        echo "SKIP_VAULT_INSTALL=${SKIP_VAULT_INSTALL:-<not set>}"
+        echo "SKIP_RPM_INSTALL=${SKIP_RPM_INSTALL:-<not set>}"
+        echo ""
+        echo "=== DISK SPACE ==="
+        df -h / /home /tmp 2>/dev/null || true
+        echo ""
+        echo "=== NETWORK INFO ==="
+        ip addr show 2>/dev/null | grep -E "inet |UP" || true
+        echo ""
+        echo "=== SUDO RIGHTS CHECK ==="
+        sudo -l 2>&1 | head -20 || echo "Cannot check sudo rights"
+        echo ""
+        echo "================================================================"
+        echo "DEPLOYMENT LOG STARTED"
+        echo "================================================================"
+        echo ""
+    } > "$DEBUG_LOG" 2>&1
+    
+    # Создать симлинк на последний лог
+    ln -sf "$DEBUG_LOG" "$DEBUG_SUMMARY" 2>/dev/null || true
+}
+
+# Функция записи в DEBUG лог
+log_debug() {
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $*" >> "$DEBUG_LOG" 2>/dev/null || true
+}
+
+# Функция для логирования состояния системы при ошибке
+log_system_state_on_error() {
+    {
+        echo ""
+        echo "================================================================"
+        echo "       SYSTEM STATE AT ERROR - $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "================================================================"
+        echo ""
+        echo "--- Running Processes (Monitoring) ---"
+        ps aux | grep -E "grafana|prometheus|harvest" | grep -v grep || echo "No monitoring processes found"
+        echo ""
+        echo "--- Listening Ports ---"
+        ss -tlnp 2>/dev/null | grep -E "${GRAFANA_PORT}|${PROMETHEUS_PORT}" || echo "No monitoring ports listening"
+        echo ""
+        echo "--- User Units Status (if available) ---"
+        if [[ -n "${KAE:-}" ]]; then
+            local mon_sys_user="${KAE}-lnx-mon_sys"
+            if id "$mon_sys_user" >/dev/null 2>&1; then
+                local mon_sys_uid
+                mon_sys_uid=$(id -u "$mon_sys_user" 2>/dev/null || echo "")
+                if [[ -n "$mon_sys_uid" ]]; then
+                    echo "User: $mon_sys_user (UID: $mon_sys_uid)"
+                    sudo -u "$mon_sys_user" env XDG_RUNTIME_DIR="/run/user/${mon_sys_uid}" \
+                        systemctl --user list-units --no-pager 2>&1 || echo "Cannot list user units"
+                fi
+            else
+                echo "Sys user $mon_sys_user does not exist"
+            fi
+        else
+            echo "KAE not set, cannot check user units"
+        fi
+        echo ""
+        echo "--- Recent Grafana Logs (last 30 lines) ---"
+        if [[ -f "/tmp/grafana-debug.log" ]]; then
+            tail -30 /tmp/grafana-debug.log 2>/dev/null || echo "Cannot read grafana-debug.log"
+        else
+            echo "/tmp/grafana-debug.log not found"
+        fi
+        echo ""
+        echo "--- Files in working directory ---"
+        ls -la "$PWD" 2>/dev/null || echo "Cannot list PWD"
+        echo ""
+        echo "--- Memory Usage ---"
+        free -h 2>/dev/null || echo "Cannot check memory"
+        echo ""
+        echo "================================================================"
+    } >> "$DEBUG_LOG" 2>&1
+}
+
+# Trap для отлова ошибок
+trap_error() {
+    local exit_code=$?
+    local line_number=$1
+    {
+        echo ""
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "!!! ERROR TRAPPED at line $line_number"
+        echo "!!! Exit code: $exit_code"
+        echo "!!! Last command: $BASH_COMMAND"
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+        echo "Call stack:"
+        local i=0
+        while caller $i 2>/dev/null; do
+            ((i++))
+        done
+        echo ""
+    } >> "$DEBUG_LOG" 2>&1
+    
+    log_system_state_on_error
+    create_debug_summary "$exit_code" "$(( $(date +%s) - SCRIPT_START_TS ))"
+}
+
+# Функция создания итогового резюме
+create_debug_summary() {
+    local exit_code=$1
+    local elapsed_time=$2
+    
+    {
+        echo ""
+        echo "================================================================"
+        echo "           DEPLOYMENT SUMMARY"
+        echo "================================================================"
+        echo "Exit Code:     $exit_code"
+        echo "Elapsed Time:  ${elapsed_time}s ($(awk -v s="$elapsed_time" 'BEGIN{printf "%.1f", s/60}')m)"
+        echo "Finished:      $(date '+%Y-%m-%d %H:%M:%S %Z')"
+        echo ""
+        
+        if [[ $exit_code -eq 0 ]]; then
+            echo "STATUS: ✅ SUCCESS"
+        else
+            echo "STATUS: ❌ FAILED"
+        fi
+        
+        echo ""
+        echo "=== FINAL SERVICE STATUS ==="
+        
+        if [[ -n "${KAE:-}" ]]; then
+            local mon_sys_user="${KAE}-lnx-mon_sys"
+            if id "$mon_sys_user" >/dev/null 2>&1; then
+                local mon_sys_uid
+                mon_sys_uid=$(id -u "$mon_sys_user" 2>/dev/null || echo "")
+                
+                if [[ -n "$mon_sys_uid" ]]; then
+                    for service in monitoring-prometheus monitoring-grafana monitoring-harvest; do
+                        echo -n "$service.service: "
+                        sudo -u "$mon_sys_user" env XDG_RUNTIME_DIR="/run/user/${mon_sys_uid}" \
+                            systemctl --user is-active "$service.service" 2>&1 || echo "unknown"
+                    done
+                else
+                    echo "Cannot determine sys user UID"
+                fi
+            else
+                echo "Sys user $mon_sys_user not found"
+            fi
+        else
+            echo "KAE not set"
+        fi
+        
+        echo ""
+        echo "=== LOGS LOCATION ==="
+        echo "Main Log:      $LOG_FILE"
+        echo "DEBUG Log:     $DEBUG_LOG"
+        echo "Summary Link:  $DEBUG_SUMMARY"
+        echo "Diagnostic:    $DIAGNOSTIC_RLM_LOG"
+        echo ""
+        echo "To view this log:"
+        echo "  cat $DEBUG_SUMMARY"
+        echo "  # or"
+        echo "  cat $DEBUG_LOG"
+        echo "================================================================"
+    } >> "$DEBUG_LOG" 2>&1
+}
+
+# Установить trap для автоматического логирования ошибок
+trap 'trap_error ${LINENO}' ERR
 
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -264,26 +467,31 @@ install_vault_via_rlm() {
 print_step() {
     echo "[STEP] $1" >&2
     log_message "[STEP] $1"
+    log_debug "STEP: $1"
 }
 
 print_success() {
     echo "[SUCCESS] $1" >&2
     log_message "[SUCCESS] $1"
+    log_debug "SUCCESS: $1"
 }
 
 print_error() {
     echo "[ERROR] $1" >&2
     log_message "[ERROR] $1"
+    log_debug "ERROR: $1"
 }
 
 print_warning() {
     echo "[WARNING] $1" >&2
     log_message "[WARNING] $1"
+    log_debug "WARNING: $1"
 }
 
 print_info() {
     echo "[INFO] $1" >&2
     log_message "[INFO] $1"
+    log_debug "INFO: $1"
 }
 
 # Функция логирования
@@ -603,16 +811,23 @@ ensure_working_directory() {
     print_info "Текущая рабочая директория: $current_dir"
 }
 
-# Функция проверки прав sudo
+# Функция проверки прав (Secure Edition - БЕЗ root!)
 check_sudo() {
-    print_step "Проверка прав администратора"
+    print_step "Проверка режима запуска"
     ensure_working_directory
-    if [[ $EUID -ne 0 ]]; then
-        print_error "Этот скрипт должен запускаться с правами root (sudo)"
-        print_info "Используйте: sudo $SCRIPT_NAME"
+    
+    # В Secure Edition (v4.0+) скрипт НЕ должен запускаться под root
+    if [[ $EUID -eq 0 ]]; then
+        print_error "⚠️  Скрипт запущен под root!"
+        print_error "В Secure Edition (v4.0+) скрипт должен запускаться под CI-пользователем"
+        print_error "Используйте: ./$SCRIPT_NAME (БЕЗ sudo)"
+        log_debug "ERROR: Script run as root (EUID=0), but Secure Edition requires CI-user"
         exit 1
     fi
-    print_success "Права администратора подтверждены"
+    
+    print_success "✅ Скрипт запущен под непривилегированным пользователем ($(whoami))"
+    print_info "Режим: Secure Edition (User Units Only)"
+    log_debug "Script running as user: $(whoami) (UID=$EUID)"
 }
 
 # Функция проверки и закрытия портов
@@ -4076,6 +4291,11 @@ main() {
     
     # Инициализация diagnostic log
     init_diagnostic_log
+    
+    # Инициализация расширенного DEBUG лога
+    init_debug_log
+    log_debug "=== DEPLOYMENT STARTED ==="
+    
     write_diagnostic "========================================="
     write_diagnostic "ДИАГНОСТИКА ВХОДНЫХ ПАРАМЕТРОВ"
     write_diagnostic "========================================="
@@ -4224,10 +4444,21 @@ main() {
     write_diagnostic "Elapsed time: $elapsed_m"
     write_diagnostic "========================================="
     
+    # Финализируем DEBUG лог
+    local script_exit_code=0
+    local script_end_ts=$(date +%s)
+    local elapsed=$((script_end_ts - SCRIPT_START_TS))
+    create_debug_summary "$script_exit_code" "$elapsed"
+    
     echo
     echo "================================================================"
     echo "📝 Диагностический лог сохранен в: $DIAGNOSTIC_RLM_LOG"
+    echo "📝 DEBUG лог сохранен в: $DEBUG_SUMMARY"
     echo "================================================================"
+    echo
+    echo "Для просмотра детального DEBUG лога выполните:"
+    echo "  cat $DEBUG_SUMMARY"
+    echo
     
     print_info "Удаление лог-файла установки"
     rm -rf "$LOG_FILE" || true
