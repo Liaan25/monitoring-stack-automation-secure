@@ -5,6 +5,49 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0-user-space-certs] - 2026-02-02
+
+### 🔧 Fixed - ПОЛНАЯ ПЕРЕРАБОТКА сертификатов для user-space
+
+**ПРОБЛЕМА**:
+- Скрипт падал в `copy_certs_to_dirs()` на командах требующих root:
+  - `mkdir -p /opt/harvest/cert` - требует root
+  - `mkdir -p /etc/grafana/cert` - требует root
+  - `mkdir -p /etc/prometheus/cert` - требует root
+  - `chown harvest:harvest /opt/harvest/cert` - требует root
+  - `chown root:grafana /etc/grafana/cert` - требует root
+- Все хардкод пути: `/opt/vault/certs/`, `/etc/grafana/cert/`, `/etc/prometheus/cert/`
+- Последнее сообщение: `STEP: Копирование сертификатов в целевые директории` → ТИШИНА
+
+**ИСПРАВЛЕНО**:
+- ✅ **Создана новая функция `copy_certs_to_user_dirs()`** для Secure Edition:
+  - Работает ТОЛЬКО с user-space путями: `$HOME/monitoring/certs/`, `$HOME/monitoring/config/`
+  - Harvest: `$HARVEST_USER_CONFIG_DIR/cert/harvest.{crt,key}`
+  - Grafana: `$GRAFANA_USER_CERTS_DIR/{crt.crt,key.key,grafana-client.*}`
+  - Prometheus: `$PROMETHEUS_USER_CERTS_DIR/{server.crt,server.key}`
+  - CA chain: копируется во все директории
+- ✅ **Переработана функция `setup_certificates_after_install()`**:
+  - Использует `$VAULT_CERTS_DIR/server_bundle.pem` вместо `/opt/vault/certs/`
+  - Проверяет `$PROMETHEUS_USER_CERTS_DIR/` вместо `/etc/prometheus/cert/`
+  - Расширенная диагностика `[CERTS]` на каждом шаге
+- ✅ **НЕТ операций требующих root**:
+  - Нет `mkdir -p /etc/` или `/opt/`
+  - Нет `chown` команд
+  - Только операции в `$HOME/monitoring/`
+- ✅ **Подробная диагностика**:
+  - `[CERTS] Проверка источников сертификатов...`
+  - `[CERTS-COPY] 1/3: Обработка сертификатов для Harvest...`
+  - `[CERTS-COPY] 2/3: Обработка сертификатов для Grafana...`
+  - `[CERTS-COPY] 3/3: Обработка сертификатов для Prometheus...`
+  - `[CERTS-COPY] ✅ Все сертификаты скопированы в user-space`
+
+**Результат**:
+- Сертификаты теперь полностью в user-space
+- Работает БЕЗ root прав
+- Все файлы доступны для `${KAE}-lnx-mon_ci` и `${KAE}-lnx-mon_sys`
+
+---
+
 ## [4.3.0-fix-rlm-and-certs] - 2026-02-02
 
 ### 🔧 Fixed - Скрипт падал после RLM установки из-за /etc/profile.d/

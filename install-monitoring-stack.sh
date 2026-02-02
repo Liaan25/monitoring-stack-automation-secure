@@ -1899,6 +1899,179 @@ copy_certs_to_dirs() {
     print_success "Сертификаты скопированы и проверены"
 }
 
+# SECURE EDITION: Копирование сертификатов в user-space директории (БЕЗ root)
+copy_certs_to_user_dirs() {
+    echo "[CERTS-COPY] ========================================" | tee /dev/stderr
+    echo "[CERTS-COPY] Копирование сертификатов (Secure Edition)" | tee /dev/stderr
+    echo "[CERTS-COPY] ========================================" | tee /dev/stderr
+    log_debug "========================================"
+    log_debug "copy_certs_to_user_dirs (Secure Edition)"
+    log_debug "========================================"
+    
+    print_step "Копирование сертификатов в user-space директории"
+    ensure_working_directory
+
+    local vault_bundle="$VAULT_CERTS_DIR/server_bundle.pem"
+    local grafana_client_pem="$MONITORING_CERTS_DIR/grafana/grafana-client.pem"
+    
+    echo "[CERTS-COPY] Источники сертификатов:" | tee /dev/stderr
+    echo "[CERTS-COPY]   vault_bundle=$vault_bundle" | tee /dev/stderr
+    echo "[CERTS-COPY]   grafana_client_pem=$grafana_client_pem" | tee /dev/stderr
+    log_debug "Certificate sources:"
+    log_debug "  vault_bundle=$vault_bundle"
+    log_debug "  grafana_client_pem=$grafana_client_pem"
+    
+    # ========================================
+    # 1. Harvest сертификаты
+    # ========================================
+    echo "[CERTS-COPY] 1/3: Обработка сертификатов для Harvest..." | tee /dev/stderr
+    log_debug "Processing Harvest certificates..."
+    
+    local harvest_cert_dir="$HARVEST_USER_CONFIG_DIR/cert"
+    mkdir -p "$harvest_cert_dir" || {
+        echo "[CERTS-COPY] ❌ Не удалось создать $harvest_cert_dir" | tee /dev/stderr
+        log_debug "❌ Failed to create $harvest_cert_dir"
+        print_error "Не удалось создать директорию для сертификатов Harvest: $harvest_cert_dir"
+        exit 1
+    }
+    echo "[CERTS-COPY] ✅ Создана директория: $harvest_cert_dir" | tee /dev/stderr
+    log_debug "✅ Created directory: $harvest_cert_dir"
+    
+    if [[ -f "$vault_bundle" ]]; then
+        echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
+        log_debug "Extracting key and cert from bundle"
+        openssl pkey -in "$vault_bundle" -out "$harvest_cert_dir/harvest.key" 2>/dev/null || {
+            echo "[CERTS-COPY] ❌ Не удалось извлечь ключ" | tee /dev/stderr
+            log_debug "❌ Failed to extract key"
+            print_error "Не удалось извлечь приватный ключ из $vault_bundle"
+            exit 1
+        }
+        openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$harvest_cert_dir/harvest.crt" 2>/dev/null || {
+            echo "[CERTS-COPY] ❌ Не удалось извлечь сертификат" | tee /dev/stderr
+            log_debug "❌ Failed to extract certificate"
+            print_error "Не удалось извлечь сертификат из $vault_bundle"
+            exit 1
+        }
+        echo "[CERTS-COPY] ✅ Извлечены harvest.key и harvest.crt" | tee /dev/stderr
+        log_debug "✅ Extracted harvest.key and harvest.crt"
+    else
+        echo "[CERTS-COPY] ⚠️  vault_bundle не найден, используем VAULT_CRT_FILE/VAULT_KEY_FILE" | tee /dev/stderr
+        log_debug "⚠️  vault_bundle not found, using VAULT_CRT_FILE/VAULT_KEY_FILE"
+        cp "$VAULT_CRT_FILE" "$harvest_cert_dir/harvest.crt" || exit 1
+        cp "$VAULT_KEY_FILE" "$harvest_cert_dir/harvest.key" || exit 1
+    fi
+    
+    chmod 640 "$harvest_cert_dir/harvest.crt"
+    chmod 600 "$harvest_cert_dir/harvest.key"
+    echo "[CERTS-COPY] ✅ Harvest сертификаты: $harvest_cert_dir/harvest.{crt,key}" | tee /dev/stderr
+    log_debug "✅ Harvest certificates: $harvest_cert_dir/harvest.{crt,key}"
+    
+    # ========================================
+    # 2. Grafana сертификаты
+    # ========================================
+    echo "[CERTS-COPY] 2/3: Обработка сертификатов для Grafana..." | tee /dev/stderr
+    log_debug "Processing Grafana certificates..."
+    
+    mkdir -p "$GRAFANA_USER_CERTS_DIR" || {
+        echo "[CERTS-COPY] ❌ Не удалось создать $GRAFANA_USER_CERTS_DIR" | tee /dev/stderr
+        log_debug "❌ Failed to create $GRAFANA_USER_CERTS_DIR"
+        print_error "Не удалось создать директорию для сертификатов Grafana: $GRAFANA_USER_CERTS_DIR"
+        exit 1
+    }
+    echo "[CERTS-COPY] ✅ Создана директория: $GRAFANA_USER_CERTS_DIR" | tee /dev/stderr
+    log_debug "✅ Created directory: $GRAFANA_USER_CERTS_DIR"
+    
+    if [[ -f "$vault_bundle" ]]; then
+        echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
+        log_debug "Extracting key and cert from bundle for Grafana"
+        openssl pkey -in "$vault_bundle" -out "$GRAFANA_USER_CERTS_DIR/key.key" 2>/dev/null || exit 1
+        openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$GRAFANA_USER_CERTS_DIR/crt.crt" 2>/dev/null || exit 1
+        echo "[CERTS-COPY] ✅ Извлечены key.key и crt.crt для Grafana" | tee /dev/stderr
+        log_debug "✅ Extracted key.key and crt.crt for Grafana"
+    else
+        cp "$VAULT_CRT_FILE" "$GRAFANA_USER_CERTS_DIR/crt.crt" || exit 1
+        cp "$VAULT_KEY_FILE" "$GRAFANA_USER_CERTS_DIR/key.key" || exit 1
+    fi
+    
+    chmod 640 "$GRAFANA_USER_CERTS_DIR/crt.crt"
+    chmod 600 "$GRAFANA_USER_CERTS_DIR/key.key"
+    echo "[CERTS-COPY] ✅ Grafana сертификаты: $GRAFANA_USER_CERTS_DIR/{crt.crt,key.key}" | tee /dev/stderr
+    log_debug "✅ Grafana certificates: $GRAFANA_USER_CERTS_DIR/{crt.crt,key.key}"
+    
+    # Grafana client cert (если существует)
+    if [[ -f "$grafana_client_pem" ]]; then
+        echo "[CERTS-COPY] Обработка Grafana client certificate..." | tee /dev/stderr
+        log_debug "Processing Grafana client certificate"
+        chmod 600 "$grafana_client_pem" || true
+        openssl pkey -in "$grafana_client_pem" -out "$GRAFANA_USER_CERTS_DIR/grafana-client.key" 2>/dev/null || true
+        openssl crl2pkcs7 -nocrl -certfile "$grafana_client_pem" | openssl pkcs7 -print_certs -out "$GRAFANA_USER_CERTS_DIR/grafana-client.crt" 2>/dev/null || true
+        echo "[CERTS-COPY] ✅ Grafana client cert обработан" | tee /dev/stderr
+        log_debug "✅ Grafana client cert processed"
+    else
+        echo "[CERTS-COPY] ⚠️  Grafana client cert не найден: $grafana_client_pem" | tee /dev/stderr
+        log_debug "⚠️  Grafana client cert not found: $grafana_client_pem"
+    fi
+    
+    # ========================================
+    # 3. Prometheus сертификаты
+    # ========================================
+    echo "[CERTS-COPY] 3/3: Обработка сертификатов для Prometheus..." | tee /dev/stderr
+    log_debug "Processing Prometheus certificates..."
+    
+    mkdir -p "$PROMETHEUS_USER_CERTS_DIR" || {
+        echo "[CERTS-COPY] ❌ Не удалось создать $PROMETHEUS_USER_CERTS_DIR" | tee /dev/stderr
+        log_debug "❌ Failed to create $PROMETHEUS_USER_CERTS_DIR"
+        print_error "Не удалось создать директорию для сертификатов Prometheus: $PROMETHEUS_USER_CERTS_DIR"
+        exit 1
+    }
+    echo "[CERTS-COPY] ✅ Создана директория: $PROMETHEUS_USER_CERTS_DIR" | tee /dev/stderr
+    log_debug "✅ Created directory: $PROMETHEUS_USER_CERTS_DIR"
+    
+    if [[ -f "$vault_bundle" ]]; then
+        echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
+        log_debug "Extracting key and cert from bundle for Prometheus"
+        openssl pkey -in "$vault_bundle" -out "$PROMETHEUS_USER_CERTS_DIR/server.key" 2>/dev/null || exit 1
+        openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$PROMETHEUS_USER_CERTS_DIR/server.crt" 2>/dev/null || exit 1
+        echo "[CERTS-COPY] ✅ Извлечены server.key и server.crt для Prometheus" | tee /dev/stderr
+        log_debug "✅ Extracted server.key and server.crt for Prometheus"
+    else
+        cp "$VAULT_CRT_FILE" "$PROMETHEUS_USER_CERTS_DIR/server.crt" || exit 1
+        cp "$VAULT_KEY_FILE" "$PROMETHEUS_USER_CERTS_DIR/server.key" || exit 1
+    fi
+    
+    chmod 640 "$PROMETHEUS_USER_CERTS_DIR/server.crt"
+    chmod 600 "$PROMETHEUS_USER_CERTS_DIR/server.key"
+    echo "[CERTS-COPY] ✅ Prometheus сертификаты: $PROMETHEUS_USER_CERTS_DIR/{server.crt,server.key}" | tee /dev/stderr
+    log_debug "✅ Prometheus certificates: $PROMETHEUS_USER_CERTS_DIR/{server.crt,server.key}"
+    
+    # ========================================
+    # 4. CA chain (если есть)
+    # ========================================
+    local ca_chain="$VAULT_CERTS_DIR/ca_chain.crt"
+    if [[ -f "$ca_chain" ]]; then
+        echo "[CERTS-COPY] Копирование CA chain во все директории..." | tee /dev/stderr
+        log_debug "Copying CA chain to all directories"
+        cp "$ca_chain" "$harvest_cert_dir/ca_chain.crt" || true
+        cp "$ca_chain" "$GRAFANA_USER_CERTS_DIR/ca_chain.crt" || true
+        cp "$ca_chain" "$PROMETHEUS_USER_CERTS_DIR/ca_chain.crt" || true
+        chmod 644 "$harvest_cert_dir/ca_chain.crt" "$GRAFANA_USER_CERTS_DIR/ca_chain.crt" "$PROMETHEUS_USER_CERTS_DIR/ca_chain.crt" 2>/dev/null || true
+        echo "[CERTS-COPY] ✅ CA chain скопирован" | tee /dev/stderr
+        log_debug "✅ CA chain copied"
+    else
+        echo "[CERTS-COPY] ⚠️  CA chain не найден: $ca_chain" | tee /dev/stderr
+        log_debug "⚠️  CA chain not found: $ca_chain"
+    fi
+    
+    echo "[CERTS-COPY] ========================================" | tee /dev/stderr
+    echo "[CERTS-COPY] ✅ Все сертификаты скопированы в user-space" | tee /dev/stderr
+    echo "[CERTS-COPY] ========================================" | tee /dev/stderr
+    log_debug "========================================"
+    log_debug "✅ All certificates copied to user-space"
+    log_debug "========================================"
+    
+    print_success "Сертификаты скопированы и настроены в user-space директориях"
+}
+
 # Создание user-юнитов systemd под сервисной учётной записью ${KAE}-lnx-mon_sys
 setup_monitoring_user_units() {
     print_step "Создание user-юнитов systemd для мониторинга (Prometheus/Grafana/Harvest)"
@@ -2330,26 +2503,68 @@ create_rlm_install_tasks() {
 }
 
 setup_certificates_after_install() {
-    print_step "Настройка сертификатов после установки пакетов"
+    echo "[CERTS] ========================================" | tee /dev/stderr
+    echo "[CERTS] Настройка сертификатов (Secure Edition)" | tee /dev/stderr
+    echo "[CERTS] ========================================" | tee /dev/stderr
+    log_debug "========================================"
+    log_debug "setup_certificates_after_install (Secure Edition)"
+    log_debug "========================================"
+    
+    print_step "Настройка сертификатов после установки пакетов (Secure Edition)"
     ensure_working_directory
 
+    # В Secure Edition проверяем user-space пути
+    local vault_bundle="$VAULT_CERTS_DIR/server_bundle.pem"
+    
+    echo "[CERTS] Проверка источников сертификатов..." | tee /dev/stderr
+    echo "[CERTS] vault_bundle=$vault_bundle" | tee /dev/stderr
+    echo "[CERTS] VAULT_CRT_FILE=${VAULT_CRT_FILE:-<не задан>}" | tee /dev/stderr
+    echo "[CERTS] VAULT_KEY_FILE=${VAULT_KEY_FILE:-<не задан>}" | tee /dev/stderr
+    log_debug "Checking certificate sources:"
+    log_debug "  vault_bundle=$vault_bundle"
+    log_debug "  VAULT_CRT_FILE=${VAULT_CRT_FILE:-<not set>}"
+    log_debug "  VAULT_KEY_FILE=${VAULT_KEY_FILE:-<not set>}"
+    
     # Проверяем наличие сертификатов от vault-agent (.pem) или пары .crt/.key
-    if [[ -f "/opt/vault/certs/server_bundle.pem" || ( -f "$VAULT_CRT_FILE" && -f "$VAULT_KEY_FILE" ) ]]; then
-        print_success "Найдены сертификаты, копируем в целевые директории"
-        copy_certs_to_dirs
-        # Верифицируем наличие файлов для Prometheus
-        if [[ -f "/etc/prometheus/cert/server.crt" && -f "/etc/prometheus/cert/server.key" ]]; then
+    if [[ -f "$vault_bundle" ]]; then
+        echo "[CERTS] ✅ Найден vault bundle: $vault_bundle" | tee /dev/stderr
+        log_debug "✅ Found vault bundle: $vault_bundle"
+        print_success "Найдены сертификаты от Vault Agent: $vault_bundle"
+        copy_certs_to_user_dirs
+        
+        # Верифицируем наличие файлов для Prometheus в user-space
+        if [[ -f "$PROMETHEUS_USER_CERTS_DIR/server.crt" && -f "$PROMETHEUS_USER_CERTS_DIR/server.key" ]]; then
+            echo "[CERTS] ✅ Prometheus сертификаты присутствуют в $PROMETHEUS_USER_CERTS_DIR" | tee /dev/stderr
+            log_debug "✅ Prometheus certificates present in $PROMETHEUS_USER_CERTS_DIR"
             print_success "Проверка Prometheus сертификатов: файлы присутствуют"
         else
-            print_error "Отсутствуют файлы Prometheus сертификатов в /etc/prometheus/cert/"
+            echo "[CERTS] ❌ Отсутствуют Prometheus сертификаты в $PROMETHEUS_USER_CERTS_DIR" | tee /dev/stderr
+            log_debug "❌ Missing Prometheus certificates in $PROMETHEUS_USER_CERTS_DIR"
+            print_error "Отсутствуют файлы Prometheus сертификатов в $PROMETHEUS_USER_CERTS_DIR"
             print_error "Ожидались: server.crt и server.key"
-            ls -l /etc/prometheus/cert || true
+            ls -l "$PROMETHEUS_USER_CERTS_DIR" || true
             exit 1
         fi
+    elif [[ -f "$VAULT_CRT_FILE" && -f "$VAULT_KEY_FILE" ]]; then
+        echo "[CERTS] ✅ Найдена пара сертификатов: $VAULT_CRT_FILE, $VAULT_KEY_FILE" | tee /dev/stderr
+        log_debug "✅ Found certificate pair: $VAULT_CRT_FILE, $VAULT_KEY_FILE"
+        print_success "Найдены сертификаты: $VAULT_CRT_FILE и $VAULT_KEY_FILE"
+        copy_certs_to_user_dirs
     else
-        print_error "Сертификаты от Vault не найдены: ожидается /opt/vault/certs/server_bundle.pem или пара $VAULT_CRT_FILE/$VAULT_KEY_FILE"
+        echo "[CERTS] ❌ Сертификаты не найдены!" | tee /dev/stderr
+        log_debug "❌ No certificates found!"
+        print_error "Сертификаты от Vault не найдены:"
+        print_error "  Ожидается: $vault_bundle"
+        print_error "  Или пара: $VAULT_CRT_FILE + $VAULT_KEY_FILE"
         exit 1
     fi
+    
+    echo "[CERTS] ========================================" | tee /dev/stderr
+    echo "[CERTS] ✅ setup_certificates_after_install ЗАВЕРШЕНА" | tee /dev/stderr
+    echo "[CERTS] ========================================" | tee /dev/stderr
+    log_debug "========================================"
+    log_debug "✅ setup_certificates_after_install COMPLETED"
+    log_debug "========================================"
 }
 
 configure_harvest() {
@@ -4942,6 +5157,11 @@ main() {
     echo "[MAIN] Вызов setup_certificates_after_install..." | tee /dev/stderr
     log_debug "Calling: setup_certificates_after_install"
     setup_certificates_after_install
+    echo "[MAIN] ✅ setup_certificates_after_install завершена успешно" | tee /dev/stderr
+    log_debug "Completed: setup_certificates_after_install"
+    
+    echo "[MAIN] Вызов configure_harvest..." | tee /dev/stderr
+    log_debug "Calling: configure_harvest"
     configure_harvest
     configure_prometheus
     configure_iptables
