@@ -1908,18 +1908,30 @@ copy_certs_to_user_dirs() {
     log_debug "copy_certs_to_user_dirs (Secure Edition)"
     log_debug "========================================"
     
-    print_step "Копирование сертификатов в user-space директории"
+    print_step "Распределение сертификатов по сервисам (user-space)"
     ensure_working_directory
 
+    # На этом этапе сертификаты уже должны быть в $VAULT_CERTS_DIR
     local vault_bundle="$VAULT_CERTS_DIR/server_bundle.pem"
     local grafana_client_pem="$MONITORING_CERTS_DIR/grafana/grafana-client.pem"
     
-    echo "[CERTS-COPY] Источники сертификатов:" | tee /dev/stderr
+    echo "[CERTS-COPY] Источники сертификатов (user-space):" | tee /dev/stderr
     echo "[CERTS-COPY]   vault_bundle=$vault_bundle" | tee /dev/stderr
     echo "[CERTS-COPY]   grafana_client_pem=$grafana_client_pem" | tee /dev/stderr
-    log_debug "Certificate sources:"
+    log_debug "Certificate sources (user-space):"
     log_debug "  vault_bundle=$vault_bundle"
     log_debug "  grafana_client_pem=$grafana_client_pem"
+    
+    # Проверяем что bundle существует
+    if [[ ! -f "$vault_bundle" ]]; then
+        echo "[CERTS-COPY] ❌ vault_bundle не найден: $vault_bundle" | tee /dev/stderr
+        log_debug "❌ vault_bundle not found: $vault_bundle"
+        print_error "vault_bundle не найден в user-space: $vault_bundle"
+        print_error "Эта функция должна вызываться ПОСЛЕ копирования сертификатов из /opt/vault/"
+        exit 1
+    fi
+    echo "[CERTS-COPY] ✅ vault_bundle найден: $vault_bundle" | tee /dev/stderr
+    log_debug "✅ vault_bundle found: $vault_bundle"
     
     # ========================================
     # 1. Harvest сертификаты
@@ -1937,29 +1949,22 @@ copy_certs_to_user_dirs() {
     echo "[CERTS-COPY] ✅ Создана директория: $harvest_cert_dir" | tee /dev/stderr
     log_debug "✅ Created directory: $harvest_cert_dir"
     
-    if [[ -f "$vault_bundle" ]]; then
-        echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
-        log_debug "Extracting key and cert from bundle"
-        openssl pkey -in "$vault_bundle" -out "$harvest_cert_dir/harvest.key" 2>/dev/null || {
-            echo "[CERTS-COPY] ❌ Не удалось извлечь ключ" | tee /dev/stderr
-            log_debug "❌ Failed to extract key"
-            print_error "Не удалось извлечь приватный ключ из $vault_bundle"
-            exit 1
-        }
-        openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$harvest_cert_dir/harvest.crt" 2>/dev/null || {
-            echo "[CERTS-COPY] ❌ Не удалось извлечь сертификат" | tee /dev/stderr
-            log_debug "❌ Failed to extract certificate"
-            print_error "Не удалось извлечь сертификат из $vault_bundle"
-            exit 1
-        }
-        echo "[CERTS-COPY] ✅ Извлечены harvest.key и harvest.crt" | tee /dev/stderr
-        log_debug "✅ Extracted harvest.key and harvest.crt"
-    else
-        echo "[CERTS-COPY] ⚠️  vault_bundle не найден, используем VAULT_CRT_FILE/VAULT_KEY_FILE" | tee /dev/stderr
-        log_debug "⚠️  vault_bundle not found, using VAULT_CRT_FILE/VAULT_KEY_FILE"
-        cp "$VAULT_CRT_FILE" "$harvest_cert_dir/harvest.crt" || exit 1
-        cp "$VAULT_KEY_FILE" "$harvest_cert_dir/harvest.key" || exit 1
-    fi
+    echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
+    log_debug "Extracting key and cert from bundle"
+    openssl pkey -in "$vault_bundle" -out "$harvest_cert_dir/harvest.key" 2>/dev/null || {
+        echo "[CERTS-COPY] ❌ Не удалось извлечь ключ" | tee /dev/stderr
+        log_debug "❌ Failed to extract key"
+        print_error "Не удалось извлечь приватный ключ из $vault_bundle"
+        exit 1
+    }
+    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$harvest_cert_dir/harvest.crt" 2>/dev/null || {
+        echo "[CERTS-COPY] ❌ Не удалось извлечь сертификат" | tee /dev/stderr
+        log_debug "❌ Failed to extract certificate"
+        print_error "Не удалось извлечь сертификат из $vault_bundle"
+        exit 1
+    }
+    echo "[CERTS-COPY] ✅ Извлечены harvest.key и harvest.crt" | tee /dev/stderr
+    log_debug "✅ Extracted harvest.key and harvest.crt"
     
     chmod 640 "$harvest_cert_dir/harvest.crt"
     chmod 600 "$harvest_cert_dir/harvest.key"
@@ -1981,17 +1986,12 @@ copy_certs_to_user_dirs() {
     echo "[CERTS-COPY] ✅ Создана директория: $GRAFANA_USER_CERTS_DIR" | tee /dev/stderr
     log_debug "✅ Created directory: $GRAFANA_USER_CERTS_DIR"
     
-    if [[ -f "$vault_bundle" ]]; then
-        echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
-        log_debug "Extracting key and cert from bundle for Grafana"
-        openssl pkey -in "$vault_bundle" -out "$GRAFANA_USER_CERTS_DIR/key.key" 2>/dev/null || exit 1
-        openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$GRAFANA_USER_CERTS_DIR/crt.crt" 2>/dev/null || exit 1
-        echo "[CERTS-COPY] ✅ Извлечены key.key и crt.crt для Grafana" | tee /dev/stderr
-        log_debug "✅ Extracted key.key and crt.crt for Grafana"
-    else
-        cp "$VAULT_CRT_FILE" "$GRAFANA_USER_CERTS_DIR/crt.crt" || exit 1
-        cp "$VAULT_KEY_FILE" "$GRAFANA_USER_CERTS_DIR/key.key" || exit 1
-    fi
+    echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
+    log_debug "Extracting key and cert from bundle for Grafana"
+    openssl pkey -in "$vault_bundle" -out "$GRAFANA_USER_CERTS_DIR/key.key" 2>/dev/null || exit 1
+    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$GRAFANA_USER_CERTS_DIR/crt.crt" 2>/dev/null || exit 1
+    echo "[CERTS-COPY] ✅ Извлечены key.key и crt.crt для Grafana" | tee /dev/stderr
+    log_debug "✅ Extracted key.key and crt.crt for Grafana"
     
     chmod 640 "$GRAFANA_USER_CERTS_DIR/crt.crt"
     chmod 600 "$GRAFANA_USER_CERTS_DIR/key.key"
@@ -2027,17 +2027,12 @@ copy_certs_to_user_dirs() {
     echo "[CERTS-COPY] ✅ Создана директория: $PROMETHEUS_USER_CERTS_DIR" | tee /dev/stderr
     log_debug "✅ Created directory: $PROMETHEUS_USER_CERTS_DIR"
     
-    if [[ -f "$vault_bundle" ]]; then
-        echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
-        log_debug "Extracting key and cert from bundle for Prometheus"
-        openssl pkey -in "$vault_bundle" -out "$PROMETHEUS_USER_CERTS_DIR/server.key" 2>/dev/null || exit 1
-        openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$PROMETHEUS_USER_CERTS_DIR/server.crt" 2>/dev/null || exit 1
-        echo "[CERTS-COPY] ✅ Извлечены server.key и server.crt для Prometheus" | tee /dev/stderr
-        log_debug "✅ Extracted server.key and server.crt for Prometheus"
-    else
-        cp "$VAULT_CRT_FILE" "$PROMETHEUS_USER_CERTS_DIR/server.crt" || exit 1
-        cp "$VAULT_KEY_FILE" "$PROMETHEUS_USER_CERTS_DIR/server.key" || exit 1
-    fi
+    echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
+    log_debug "Extracting key and cert from bundle for Prometheus"
+    openssl pkey -in "$vault_bundle" -out "$PROMETHEUS_USER_CERTS_DIR/server.key" 2>/dev/null || exit 1
+    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$PROMETHEUS_USER_CERTS_DIR/server.crt" 2>/dev/null || exit 1
+    echo "[CERTS-COPY] ✅ Извлечены server.key и server.crt для Prometheus" | tee /dev/stderr
+    log_debug "✅ Extracted server.key and server.crt for Prometheus"
     
     chmod 640 "$PROMETHEUS_USER_CERTS_DIR/server.crt"
     chmod 600 "$PROMETHEUS_USER_CERTS_DIR/server.key"
@@ -2513,23 +2508,65 @@ setup_certificates_after_install() {
     print_step "Настройка сертификатов после установки пакетов (Secure Edition)"
     ensure_working_directory
 
-    # В Secure Edition проверяем user-space пути
-    local vault_bundle="$VAULT_CERTS_DIR/server_bundle.pem"
+    # ВАЖНО: Vault Agent - это СИСТЕМНЫЙ СЕРВИС, который создает сертификаты в /opt/vault/certs/
+    # Мы копируем их оттуда в user-space для использования нашими мониторинговыми сервисами
+    local system_vault_bundle="/opt/vault/certs/server_bundle.pem"
+    local userspace_vault_bundle="$VAULT_CERTS_DIR/server_bundle.pem"
     
+    echo "[CERTS] ========================================" | tee /dev/stderr
     echo "[CERTS] Проверка источников сертификатов..." | tee /dev/stderr
-    echo "[CERTS] vault_bundle=$vault_bundle" | tee /dev/stderr
-    echo "[CERTS] VAULT_CRT_FILE=${VAULT_CRT_FILE:-<не задан>}" | tee /dev/stderr
-    echo "[CERTS] VAULT_KEY_FILE=${VAULT_KEY_FILE:-<не задан>}" | tee /dev/stderr
+    echo "[CERTS] ========================================" | tee /dev/stderr
+    echo "[CERTS] Системный путь (vault-agent): $system_vault_bundle" | tee /dev/stderr
+    echo "[CERTS] User-space путь: $userspace_vault_bundle" | tee /dev/stderr
+    echo "[CERTS] Альтернативные пути:" | tee /dev/stderr
+    echo "[CERTS]   VAULT_CRT_FILE=${VAULT_CRT_FILE:-<не задан>}" | tee /dev/stderr
+    echo "[CERTS]   VAULT_KEY_FILE=${VAULT_KEY_FILE:-<не задан>}" | tee /dev/stderr
     log_debug "Checking certificate sources:"
-    log_debug "  vault_bundle=$vault_bundle"
+    log_debug "  system_vault_bundle=$system_vault_bundle"
+    log_debug "  userspace_vault_bundle=$userspace_vault_bundle"
     log_debug "  VAULT_CRT_FILE=${VAULT_CRT_FILE:-<not set>}"
     log_debug "  VAULT_KEY_FILE=${VAULT_KEY_FILE:-<not set>}"
     
-    # Проверяем наличие сертификатов от vault-agent (.pem) или пары .crt/.key
-    if [[ -f "$vault_bundle" ]]; then
-        echo "[CERTS] ✅ Найден vault bundle: $vault_bundle" | tee /dev/stderr
-        log_debug "✅ Found vault bundle: $vault_bundle"
-        print_success "Найдены сертификаты от Vault Agent: $vault_bundle"
+    # Проверяем наличие сертификатов от vault-agent
+    # Приоритет 1: системный путь /opt/vault/certs/ (где vault-agent создает файлы)
+    if [[ -f "$system_vault_bundle" ]]; then
+        echo "[CERTS] ✅ Найден системный vault bundle: $system_vault_bundle" | tee /dev/stderr
+        log_debug "✅ Found system vault bundle: $system_vault_bundle"
+        print_success "Найдены сертификаты от Vault Agent: $system_vault_bundle"
+        
+        # Копируем в user-space для доступа без root
+        echo "[CERTS] Копирование сертификатов в user-space..." | tee /dev/stderr
+        log_debug "Copying certificates to user-space"
+        mkdir -p "$VAULT_CERTS_DIR" || {
+            echo "[CERTS] ❌ Не удалось создать $VAULT_CERTS_DIR" | tee /dev/stderr
+            log_debug "❌ Failed to create $VAULT_CERTS_DIR"
+            exit 1
+        }
+        cp "$system_vault_bundle" "$userspace_vault_bundle" || {
+            echo "[CERTS] ❌ Не удалось скопировать bundle" | tee /dev/stderr
+            log_debug "❌ Failed to copy bundle"
+            exit 1
+        }
+        
+        # Копируем также CA chain если есть
+        if [[ -f "/opt/vault/certs/ca_chain.crt" ]]; then
+            cp "/opt/vault/certs/ca_chain.crt" "$VAULT_CERTS_DIR/ca_chain.crt" || true
+            echo "[CERTS] ✅ CA chain скопирован" | tee /dev/stderr
+            log_debug "✅ CA chain copied"
+        fi
+        
+        # Копируем grafana client cert если есть
+        if [[ -f "/opt/vault/certs/grafana-client.pem" ]]; then
+            mkdir -p "$MONITORING_CERTS_DIR/grafana" || true
+            cp "/opt/vault/certs/grafana-client.pem" "$MONITORING_CERTS_DIR/grafana/grafana-client.pem" || true
+            echo "[CERTS] ✅ Grafana client cert скопирован" | tee /dev/stderr
+            log_debug "✅ Grafana client cert copied"
+        fi
+        
+        echo "[CERTS] ✅ Сертификаты скопированы в user-space" | tee /dev/stderr
+        log_debug "✅ Certificates copied to user-space"
+        
+        # Теперь вызываем функцию распределения по сервисам
         copy_certs_to_user_dirs
         
         # Верифицируем наличие файлов для Prometheus в user-space
@@ -2545,17 +2582,30 @@ setup_certificates_after_install() {
             ls -l "$PROMETHEUS_USER_CERTS_DIR" || true
             exit 1
         fi
+        
+    # Приоритет 2: уже скопированный user-space bundle
+    elif [[ -f "$userspace_vault_bundle" ]]; then
+        echo "[CERTS] ✅ Найден user-space vault bundle: $userspace_vault_bundle" | tee /dev/stderr
+        log_debug "✅ Found user-space vault bundle: $userspace_vault_bundle"
+        print_success "Найдены сертификаты в user-space: $userspace_vault_bundle"
+        copy_certs_to_user_dirs
+        
+    # Приоритет 3: отдельные .crt/.key файлы
     elif [[ -f "$VAULT_CRT_FILE" && -f "$VAULT_KEY_FILE" ]]; then
         echo "[CERTS] ✅ Найдена пара сертификатов: $VAULT_CRT_FILE, $VAULT_KEY_FILE" | tee /dev/stderr
         log_debug "✅ Found certificate pair: $VAULT_CRT_FILE, $VAULT_KEY_FILE"
         print_success "Найдены сертификаты: $VAULT_CRT_FILE и $VAULT_KEY_FILE"
         copy_certs_to_user_dirs
+        
     else
-        echo "[CERTS] ❌ Сертификаты не найдены!" | tee /dev/stderr
-        log_debug "❌ No certificates found!"
+        echo "[CERTS] ❌ Сертификаты не найдены ни в одном из путей!" | tee /dev/stderr
+        log_debug "❌ No certificates found in any path!"
         print_error "Сертификаты от Vault не найдены:"
-        print_error "  Ожидается: $vault_bundle"
+        print_error "  Системный путь: $system_vault_bundle"
+        print_error "  User-space путь: $userspace_vault_bundle"
         print_error "  Или пара: $VAULT_CRT_FILE + $VAULT_KEY_FILE"
+        echo "[CERTS] Проверка содержимого /opt/vault/certs/:" | tee /dev/stderr
+        ls -la /opt/vault/certs/ 2>&1 | tee /dev/stderr || echo "[CERTS] Директория не существует или недоступна" | tee /dev/stderr
         exit 1
     fi
     
