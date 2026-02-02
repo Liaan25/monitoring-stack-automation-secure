@@ -2282,26 +2282,51 @@ create_rlm_install_tasks() {
     echo "  ✅ Harvest       - Task ID: ${RLM_ID_TASK_HARVEST:-N/A}"
     echo ""
 
-    # Настройка PATH для Harvest (как в локальной установке)
+    # Настройка PATH для Harvest
+    echo "[RLM-INSTALL] Настройка PATH для Harvest..." | tee /dev/stderr
+    log_debug "Setting up Harvest PATH"
     print_info "Настройка PATH для Harvest"
+    
+    # SECURE EDITION: Пропускаем операции с /etc/ и /usr/local/bin/ (требуют root)
+    # Harvest будет запускаться через systemd user unit с явно указанным путем к исполняемому файлу
     if [[ -f "/opt/harvest/bin/harvest" ]]; then
-        ln -sf /opt/harvest/bin/harvest /usr/local/bin/harvest || true
-        print_success "Создана символическая ссылка для harvest в /usr/local/bin/"
+        echo "[RLM-INSTALL] ✅ Найден harvest: /opt/harvest/bin/harvest" | tee /dev/stderr
+        log_debug "Found harvest: /opt/harvest/bin/harvest"
+        # Не создаем симлинк в /usr/local/bin/ (требует root)
+        # ln -sf /opt/harvest/bin/harvest /usr/local/bin/harvest || true
+        print_success "Найден исполняемый файл harvest: /opt/harvest/bin/harvest"
     elif [[ -f "/opt/harvest/harvest" ]]; then
-        ln -sf /opt/harvest/harvest /usr/local/bin/harvest || true
-        print_success "Создана символическая ссылка для harvest в /usr/local/bin/"
+        echo "[RLM-INSTALL] ✅ Найден harvest: /opt/harvest/harvest" | tee /dev/stderr
+        log_debug "Found harvest: /opt/harvest/harvest"
+        # Не создаем симлинк в /usr/local/bin/ (требует root)
+        # ln -sf /opt/harvest/harvest /usr/local/bin/harvest || true
+        print_success "Найден исполняемый файл harvest: /opt/harvest/harvest"
     else
+        echo "[RLM-INSTALL] ⚠️  harvest не найден в стандартных путях" | tee /dev/stderr
+        log_debug "⚠️  harvest executable not found"
         print_warning "Исполняемый файл harvest не найден в стандартных путях"
     fi
-    cat > /etc/profile.d/harvest.sh << 'HARVEST_EOF'
-# Harvest PATH configuration
-export PATH=$PATH:/opt/harvest/bin:/opt/harvest
-HARVEST_EOF
-    chmod +x /etc/profile.d/harvest.sh
-    export PATH=$PATH:/usr/local/bin:/opt/harvest/bin:/opt/harvest
-    print_success "PATH настроен для доступа к harvest из любого места"
     
+    # SECURE EDITION: Не записываем в /etc/profile.d/ (требует root, не нужно для user units)
+    # cat > /etc/profile.d/harvest.sh << 'HARVEST_EOF'
+    # # Harvest PATH configuration
+    # export PATH=$PATH:/opt/harvest/bin:/opt/harvest
+    # HARVEST_EOF
+    # chmod +x /etc/profile.d/harvest.sh
+    
+    # Экспортируем PATH только в текущую сессию (для последующих команд в скрипте)
+    export PATH=$PATH:/opt/harvest/bin:/opt/harvest
+    echo "[RLM-INSTALL] PATH обновлен для текущей сессии: $PATH" | tee /dev/stderr
+    log_debug "PATH updated for current session"
+    print_success "PATH настроен для Harvest (в рамках текущей сессии)"
+    
+    echo "[RLM-INSTALL] ========================================" | tee /dev/stderr
+    echo "[RLM-INSTALL] ✅ create_rlm_install_tasks ЗАВЕРШЕНА" | tee /dev/stderr
+    echo "[RLM-INSTALL] ========================================" | tee /dev/stderr
     write_diagnostic "<<< ВЫХОД из create_rlm_install_tasks() - успешно"
+    log_debug "========================================"
+    log_debug "✅ create_rlm_install_tasks COMPLETED"
+    log_debug "========================================"
 }
 
 setup_certificates_after_install() {
@@ -4904,11 +4929,18 @@ main() {
     else
         write_diagnostic "Результат: FALSE - запускаем create_rlm_install_tasks"
         write_diagnostic "Действие: создаем RLM задачи для Grafana, Prometheus, Harvest"
+        echo "[MAIN] Вызов create_rlm_install_tasks..." | tee /dev/stderr
+        log_debug "Calling: create_rlm_install_tasks"
         create_rlm_install_tasks
+        echo "[MAIN] ✅ create_rlm_install_tasks завершена успешно" | tee /dev/stderr
+        log_debug "Completed: create_rlm_install_tasks"
         write_diagnostic "create_rlm_install_tasks выполнена успешно"
     fi
     write_diagnostic ""
 
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов setup_certificates_after_install..." | tee /dev/stderr
+    log_debug "Calling: setup_certificates_after_install"
     setup_certificates_after_install
     configure_harvest
     configure_prometheus
