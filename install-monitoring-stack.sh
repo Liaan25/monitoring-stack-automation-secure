@@ -716,6 +716,22 @@ ensure_user_in_va_read_group() {
         return 1
     fi
     
+    local va_read_group="${KAE}-lnx-va-read"
+    
+    # ПРОВЕРКА: Может пользователь уже в группе?
+    echo "[VA-READ] Проверка: состоит ли $user в группе $va_read_group..." | tee /dev/stderr
+    log_debug "Checking if $user is already in $va_read_group"
+    
+    if id "$user" 2>/dev/null | grep -q "$va_read_group"; then
+        echo "[VA-READ] ✅ Пользователь $user УЖЕ СОСТОИТ в группе $va_read_group" | tee /dev/stderr
+        log_debug "✅ User $user is already in $va_read_group"
+        print_success "Пользователь $user уже в группе $va_read_group (пропускаем создание RLM задачи)"
+        return 0
+    fi
+    
+    echo "[VA-READ] ⚠️  Пользователь $user НЕ в группе $va_read_group, создаем RLM задачу..." | tee /dev/stderr
+    log_debug "⚠️  User $user is not in $va_read_group, creating RLM task"
+    
     if [[ -z "${RLM_API_URL:-}" || -z "${RLM_TOKEN:-}" ]]; then
         print_warning "RLM_API_URL или RLM_TOKEN не заданы, пропускаем добавление в va-read"
         print_info "Добавьте пользователя $user в группу ${KAE}-lnx-va-read вручную через IDM"
@@ -727,7 +743,6 @@ ensure_user_in_va_read_group() {
         return 1
     fi
 
-    local va_read_group="${KAE}-lnx-va-read"
     print_info "Создание задачи RLM UVS_LINUX_ADD_USERS_GROUP для добавления $user в $va_read_group"
 
     local payload create_resp group_task_id
@@ -1770,6 +1785,9 @@ EOF
         fi
 
         # Блоки для сертификатов SBERCA (опционально, зависят от SBERCA_CERT_KV)
+        # ВАЖНО: perms = "0600" - только владелец может читать (по умолчанию)
+        # ДЛЯ ДОСТУПА ГРУППЕ: можно изменить на perms = "0640" чтобы группа va-read могла читать
+        # НО в Secure Edition мы копируем сертификаты в user-space, поэтому оставляем 0600
         if [[ -n "$SBERCA_CERT_KV" ]]; then
             cat << EOF
 
@@ -2713,7 +2731,7 @@ setup_certificates_after_install() {
                 
                 # Способ 1: Через sys_user с sudo (если sys_user в va-read группе)
                 if id "$sys_user" 2>/dev/null | grep -q "${KAE}-lnx-va-read"; then
-                    echo "[CERTS] Способ 1: Попытка копирования через sudo -u $sys_user..." | tee /dev/stderr
+                    echo "[CERTS] 🔧 Попытка копирования через sudo -u $sys_user..." | tee /dev/stderr
                     log_debug "Attempt 1: Copy via sudo -u $sys_user"
                     
                     if sudo -n -u "$sys_user" cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
@@ -2722,41 +2740,30 @@ setup_certificates_after_install() {
                         log_debug "✅ Bundle copied via sudo -u $sys_user"
                         copy_success=true
                     else
-                        echo "[CERTS] ⚠️  Способ 1 не сработал (нет прав sudo -u $sys_user или файл недоступен)" | tee /dev/stderr
-                        log_debug "⚠️  Method 1 failed"
+                        # Пробуем Способ 2: через cat
+                        echo "[CERTS] 🔧 Попытка копирования через sudo cat..." | tee /dev/stderr
+                        log_debug "Attempt 2: Copy via sudo cat"
+                        
+                        if sudo -n -u "$sys_user" cat "$system_vault_bundle" > "$userspace_vault_bundle" 2>/dev/null; then
+                            echo "[CERTS] ✅ Bundle скопирован через sudo cat" | tee /dev/stderr
+                            log_debug "✅ Bundle copied via sudo cat"
+                            copy_success=true
+                        fi
                     fi
                 else
-                    echo "[CERTS] ⚠️  $sys_user не в группе va-read, пропускаем способ 1" | tee /dev/stderr
-                    log_debug "⚠️  $sys_user not in va-read group, skipping method 1"
-                fi
-                
-                # Способ 2: Через cat (читаем от имени sys_user, пишем от имени ci_user)
-                if [[ "$copy_success" == false ]] && id "$sys_user" 2>/dev/null | grep -q "${KAE}-lnx-va-read"; then
-                    echo "[CERTS] Способ 2: Попытка копирования через sudo cat..." | tee /dev/stderr
-                    log_debug "Attempt 2: Copy via sudo cat"
-                    
-                    if sudo -n -u "$sys_user" cat "$system_vault_bundle" > "$userspace_vault_bundle" 2>/dev/null; then
-                        echo "[CERTS] ✅ Bundle скопирован через sudo cat" | tee /dev/stderr
-                        log_debug "✅ Bundle copied via sudo cat"
-                        copy_success=true
-                    else
-                        echo "[CERTS] ⚠️  Способ 2 не сработал" | tee /dev/stderr
-                        log_debug "⚠️  Method 2 failed"
-                    fi
+                    echo "[CERTS] ⚠️  $sys_user не в группе va-read" | tee /dev/stderr
+                    log_debug "⚠️  $sys_user not in va-read group"
                 fi
                 
                 # Способ 3: Прямое копирование (на случай если группа уже применилась)
                 if [[ "$copy_success" == false ]]; then
-                    echo "[CERTS] Способ 3: Попытка прямого копирования (группа может уже примениться)..." | tee /dev/stderr
+                    echo "[CERTS] 🔧 Попытка прямого копирования (возможно группа уже применилась)..." | tee /dev/stderr
                     log_debug "Attempt 3: Direct copy"
                     
                     if cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
                         echo "[CERTS] ✅ Bundle скопирован напрямую (группа применилась!)" | tee /dev/stderr
                         log_debug "✅ Bundle copied directly (group applied!)"
                         copy_success=true
-                    else
-                        echo "[CERTS] ⚠️  Способ 3 не сработал" | tee /dev/stderr
-                        log_debug "⚠️  Method 3 failed"
                     fi
                 fi
                 
@@ -2771,9 +2778,17 @@ setup_certificates_after_install() {
                     print_error "  2. Но изменения группы требуют новой сессии/перелогина"
                     print_error "  3. sudo -u $sys_user не работает (нет прав в sudoers)"
                     print_error ""
-                    print_error "РЕШЕНИЕ:"
-                    print_error "  Вариант 1: Перезапустите pipeline (группа уже применится) - РЕКОМЕНДУЕТСЯ"
-                    print_error "  Вариант 2: Добавьте в sudoers право на 'sudo -u $sys_user cat /opt/vault/certs/*'"
+                    print_error "РЕШЕНИЕ (выберите один из вариантов):"
+                    print_error ""
+                    print_error "  ⭐ Вариант 1: Перезапустите pipeline (РЕКОМЕНДУЕТСЯ)"
+                    print_error "     Группа уже применится, и прямое копирование сработает"
+                    print_error ""
+                    print_error "  Вариант 2: Добавьте в sudoers право на cat"
+                    print_error "     $USER ALL=($sys_user) NOPASSWD: /usr/bin/cat /opt/vault/certs/*"
+                    print_error ""
+                    print_error "  Вариант 3: Измените права на сертификаты в vault-agent.hcl (ЛУЧШЕЕ ДОЛГОСРОЧНОЕ РЕШЕНИЕ)"
+                    print_error "     В setup_vault_config() добавьте perms = \"0640\" в template блоки"
+                    print_error "     Тогда группа ${KAE}-lnx-va-read сможет читать сертификаты"
                     exit 1
                 fi
             else
