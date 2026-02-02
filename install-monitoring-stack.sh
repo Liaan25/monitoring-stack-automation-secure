@@ -4328,14 +4328,37 @@ main() {
     
     print_info "📝 Диагностика записывается в: $DIAGNOSTIC_RLM_LOG"
     
+    log_debug "Calling: check_sudo"
     check_sudo
+    log_debug "Completed: check_sudo"
+    
+    log_debug "Calling: check_dependencies"
     check_dependencies
+    log_debug "Completed: check_dependencies"
+    
+    log_debug "Calling: check_and_close_ports"
     check_and_close_ports
+    log_debug "Completed: check_and_close_ports"
+    
+    log_debug "Calling: detect_network_info"
     detect_network_info
+    log_debug "Completed: detect_network_info"
+    
+    log_debug "Calling: ensure_monitoring_users_in_as_admin"
     ensure_monitoring_users_in_as_admin
+    log_debug "Completed: ensure_monitoring_users_in_as_admin"
+    
+    log_debug "Calling: ensure_mon_sys_in_grafana_group"
     ensure_mon_sys_in_grafana_group
+    log_debug "Completed: ensure_mon_sys_in_grafana_group"
+    
+    log_debug "Calling: cleanup_all_previous"
     cleanup_all_previous
+    log_debug "Completed: cleanup_all_previous"
+    
+    log_debug "Calling: create_directories"
     create_directories
+    log_debug "Completed: create_directories"
 
     # При необходимости можно пропустить установку Vault через RLM,
     # если vault-agent уже установлен и настроен на целевом сервере.
