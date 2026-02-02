@@ -4660,27 +4660,40 @@ STATE_EOF
 
 # Основная функция
 main() {
-    # ВЫВОД В STDERR для диагностики
-    echo "[MAIN] Started at $(date)" >&2
+    # ===== АГРЕССИВНЫЙ ВЫВОД ДЛЯ ДИАГНОСТИКИ (В STDOUT И STDERR) =====
+    echo "========================================" | tee /dev/stderr
+    echo "[MAIN] START: main() функция запущена" | tee /dev/stderr
+    echo "[MAIN] Время: $(date)" | tee /dev/stderr
+    echo "[MAIN] PWD: $(pwd)" | tee /dev/stderr
+    echo "[MAIN] User: $(whoami)" | tee /dev/stderr
+    echo "========================================" | tee /dev/stderr
     
     log_message "=== Начало развертывания мониторинговой системы ${DEPLOY_VERSION} ==="
     ensure_working_directory
-    print_header
     
-    echo "[MAIN] Calling init_diagnostic_log" >&2
+    echo "[MAIN] Calling print_header..." | tee /dev/stderr
+    print_header
+    echo "[MAIN] print_header completed" | tee /dev/stderr
+    
+    echo "[MAIN] Calling init_diagnostic_log..." | tee /dev/stderr
     # Инициализация diagnostic log
     init_diagnostic_log
+    echo "[MAIN] init_diagnostic_log completed" | tee /dev/stderr
     
-    echo "[MAIN] Calling init_debug_log" >&2
+    echo "[MAIN] Calling init_debug_log..." | tee /dev/stderr
     # Инициализация расширенного DEBUG лога
     init_debug_log
+    echo "[MAIN] init_debug_log completed" | tee /dev/stderr
     
-    echo "[MAIN] DEBUG log created, setting up trap" >&2
+    echo "[MAIN] Setting up trap DEBUG..." | tee /dev/stderr
     # ТЕПЕРЬ устанавливаем trap DEBUG (после создания DEBUG_LOG)
     trap 'echo "[TRACE] Line $LINENO: $BASH_COMMAND" >> "$DEBUG_LOG" 2>/dev/null || true' DEBUG
+    echo "[MAIN] trap DEBUG set" | tee /dev/stderr
     
+    echo "[MAIN] Calling log_debug_extended..." | tee /dev/stderr
     log_debug "=== DEPLOYMENT STARTED ==="
     log_debug_extended
+    echo "[MAIN] log_debug_extended completed" | tee /dev/stderr
     
     write_diagnostic "========================================="
     write_diagnostic "ДИАГНОСТИКА ВХОДНЫХ ПАРАМЕТРОВ"
@@ -4705,20 +4718,29 @@ main() {
     
     print_info "📝 Диагностика записывается в: $DIAGNOSTIC_RLM_LOG"
     
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов check_sudo..." | tee /dev/stderr
     log_debug "Calling: check_sudo"
     check_sudo
+    echo "[MAIN] ✅ check_sudo completed" | tee /dev/stderr
     log_debug "Completed: check_sudo"
     
+    echo "[MAIN] Вызов check_dependencies..." | tee /dev/stderr
     log_debug "Calling: check_dependencies"
     check_dependencies
+    echo "[MAIN] ✅ check_dependencies completed" | tee /dev/stderr
     log_debug "Completed: check_dependencies"
     
+    echo "[MAIN] Вызов check_and_close_ports..." | tee /dev/stderr
     log_debug "Calling: check_and_close_ports"
     check_and_close_ports
+    echo "[MAIN] ✅ check_and_close_ports completed" | tee /dev/stderr
     log_debug "Completed: check_and_close_ports"
     
+    echo "[MAIN] Вызов detect_network_info..." | tee /dev/stderr
     log_debug "Calling: detect_network_info"
     detect_network_info
+    echo "[MAIN] ✅ detect_network_info completed" | tee /dev/stderr
     log_debug "Completed: detect_network_info"
     
     log_debug "Calling: ensure_monitoring_users_in_as_admin"
