@@ -1479,29 +1479,62 @@ setup_vault_config() {
             rm -f "$secret_id_stdout" "$secret_id_stderr"
         fi
         
-        echo "[DEBUG-SECRETS] ========================================" >&2
+        echo "[DEBUG-SECRETS] ========================================" | tee /dev/stderr
     else
         print_error "secrets-manager-wrapper_launcher.sh не найден или не исполняемый"
         log_debug "❌ Wrapper not found or not executable"
         exit 1
     fi
+    
+    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+    echo "[VAULT-CONFIG] После извлечения секретов" | tee /dev/stderr
+    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+    log_debug "========================================"
+    log_debug "POST-SECRETS: Setting permissions"
+    log_debug "========================================"
+    
+    echo "[VAULT-CONFIG] Установка прав на файлы секретов..." | tee /dev/stderr
+    echo "[VAULT-CONFIG] VAULT_ROLE_ID_FILE=$VAULT_ROLE_ID_FILE" | tee /dev/stderr
+    echo "[VAULT-CONFIG] VAULT_SECRET_ID_FILE=$VAULT_SECRET_ID_FILE" | tee /dev/stderr
+    log_debug "VAULT_ROLE_ID_FILE=$VAULT_ROLE_ID_FILE"
+    log_debug "VAULT_SECRET_ID_FILE=$VAULT_SECRET_ID_FILE"
+    
     # Права только на файлы (директории оставляем как настроил RLM)
-    chmod 640 "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>/dev/null || true
-    # Приводим владельца/группу каталога certs и файлов role_id/secret_id к тем же, что у conf
-    if [[ -d "$VAULT_CONF_DIR" && -d "$VAULT_CERTS_DIR" ]]; then
-        /usr/bin/chown --reference=/opt/vault/conf /opt/vault/certs 2>/dev/null || true
-        /usr/bin/chmod --reference=/opt/vault/conf /opt/vault/certs 2>/dev/null || true
-        /usr/bin/chown --reference=/opt/vault/conf /opt/vault/conf/role_id.txt /opt/vault/conf/secret_id.txt 2>/dev/null || true
+    if chmod 640 "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>/dev/null; then
+        echo "[VAULT-CONFIG] ✅ chmod 640 успешен" | tee /dev/stderr
+        log_debug "✅ chmod 640 successful"
+    else
+        echo "[VAULT-CONFIG] ⚠️  chmod 640 failed (не критично)" | tee /dev/stderr
+        log_debug "⚠️  chmod 640 failed"
     fi
+    
+    # SECURE EDITION: Пропускаем chown операции (нет доступа к /opt/, не нужны в user-space)
+    echo "[VAULT-CONFIG] SECURE EDITION: Пропускаем chown операции (не нужны в user-space)" | tee /dev/stderr
+    log_debug "SECURE EDITION: Skipping chown operations"
+    
+    # Приводим владельца/группу каталога certs и файлов role_id/secret_id к тем же, что у conf
+    # ЗАКОММЕНТИРОВАНО для Secure Edition - все файлы уже в $HOME с правильными правами
+    # if [[ -d "$VAULT_CONF_DIR" && -d "$VAULT_CERTS_DIR" ]]; then
+    #     /usr/bin/chown --reference=/opt/vault/conf /opt/vault/certs 2>/dev/null || true
+    #     /usr/bin/chmod --reference=/opt/vault/conf /opt/vault/certs 2>/dev/null || true
+    #     /usr/bin/chown --reference=/opt/vault/conf /opt/vault/conf/role_id.txt /opt/vault/conf/secret_id.txt 2>/dev/null || true
+    # fi
+    
+    echo "[VAULT-CONFIG] Создание vault-agent.conf..." | tee /dev/stderr
+    log_debug "Creating vault-agent.conf"
 
+    echo "[VAULT-CONFIG] Начинается блок генерации vault-agent.conf..." | tee /dev/stderr
+    log_debug "Generating vault-agent.conf content"
+    
     {
         # Базовая конфигурация агента
+        # ВАЖНО: В Secure Edition используются переменные VAULT_* вместо хардкод /opt/
         cat << EOF
-pid_file = "/opt/vault/log/vault-agent.pidfile"
+pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
 vault {
  address = "https://$SEC_MAN_ADDR"
  tls_skip_verify = "false"
- ca_path = "/opt/vault/conf/ca-trust"
+ ca_path = "$VAULT_CONF_DIR/ca-trust"
 }
 auto_auth {
  method "approle" {
@@ -1509,15 +1542,15 @@ auto_auth {
  mount_path = "auth/approle"
 
  config = {
- role_id_file_path = "/opt/vault/conf/role_id.txt"
- secret_id_file_path = "/opt/vault/conf/secret_id.txt"
+ role_id_file_path = "$VAULT_ROLE_ID_FILE"
+ secret_id_file_path = "$VAULT_SECRET_ID_FILE"
  remove_secret_id_file_after_reading = false
 }
 }
 }
 log_destination "Tengry" {
  log_format = "json"
- log_path = "/opt/vault/log"
+ log_path = "$VAULT_LOG_DIR"
  log_rotate = "5"
  log_max_size = "5mb"
  log_level = "trace"
@@ -1525,7 +1558,7 @@ log_destination "Tengry" {
 }
 
 template {
-  destination = "/opt/vault/conf/data_sec.json"
+  destination = "$VAULT_CONF_DIR/data_sec.json"
   contents    = <<EOT
 {
 EOF
@@ -1616,7 +1649,7 @@ EOF
             cat << EOF
 
 template {
-  destination = "/opt/vault/certs/server_bundle.pem"
+  destination = "$VAULT_CERTS_DIR/server_bundle.pem"
   contents    = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
 {{ .Data.private_key }}
@@ -1628,7 +1661,7 @@ template {
 }
 
 template {
-  destination = "/opt/vault/certs/ca_chain.crt"
+  destination = "$VAULT_CERTS_DIR/ca_chain.crt"
   contents = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" -}}
 {{ .Data.issuing_ca }}
@@ -1638,7 +1671,7 @@ template {
 }
 
 template {
-  destination = "/opt/vault/certs/grafana-client.pem"
+  destination = "$MONITORING_CERTS_DIR/grafana/grafana-client.pem"
   contents = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
 {{ .Data.private_key }}
@@ -1656,27 +1689,66 @@ EOF
 EOF
         fi
 
-    } | "$WRAPPERS_DIR/config-writer_launcher.sh" "$VAULT_AGENT_HCL"
+    } > "$VAULT_AGENT_HCL"
+    
+    echo "[VAULT-CONFIG] ✅ vault-agent.conf создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
+    log_debug "✅ vault-agent.conf created at $VAULT_AGENT_HCL"
 
+    echo "[VAULT-CONFIG] Проверка перезапуска vault-agent..." | tee /dev/stderr
+    log_debug "Checking vault-agent restart"
+    
     # Перезапуск vault-agent с проверкой
     print_step "Перезапуск vault-agent"
-
-    if systemctl restart vault-agent; then
+    
+    # В Secure Edition vault-agent уже установлен как system service
+    # Restart требует sudo - пропускаем если SKIP_VAULT_INSTALL=true
+    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
+        echo "[VAULT-CONFIG] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем restart vault-agent (требует sudo)" | tee /dev/stderr
+        log_debug "⚠️  Skipping vault-agent restart (SKIP_VAULT_INSTALL=true)"
+        print_warning "vault-agent restart пропущен (требует sudo). Используется существующий конфиг."
+        # Проверяем статус без рестарта
+        if systemctl is-active --quiet vault-agent; then
+            echo "[VAULT-CONFIG] ✅ vault-agent уже запущен" | tee /dev/stderr
+            log_debug "✅ vault-agent is already running"
+            print_success "vault-agent запущен"
+        else
+            echo "[VAULT-CONFIG] ⚠️  vault-agent не запущен!" | tee /dev/stderr
+            log_debug "⚠️  vault-agent is not running!"
+            print_warning "vault-agent не запущен! Требуется ручной запуск: sudo systemctl start vault-agent"
+        fi
+    elif systemctl restart vault-agent 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG"; then
+        echo "[VAULT-CONFIG] ✅ vault-agent restart успешен" | tee /dev/stderr
+        log_debug "✅ vault-agent restart successful"
         sleep 5
         if systemctl is-active --quiet vault-agent; then
             print_success "Vault конфигурация создана и сервис перезапущен"
+            echo "[VAULT-CONFIG] ✅ vault-agent активен после перезапуска" | tee /dev/stderr
+            log_debug "✅ vault-agent is active after restart"
             # Удаляем временный файл с чувствительными данными (возможные локации)
             rm -rf "$LOCAL_CRED_JSON" "/home/${SUDO_USER:-}/temp_data_cred.json" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/tmp/temp_data_cred.json" || true
+            echo "[VAULT-CONFIG] Временные файлы credentials удалены" | tee /dev/stderr
+            log_debug "Temporary credential files removed"
         else
+            echo "[VAULT-CONFIG] ❌ vault-agent не активен после перезапуска" | tee /dev/stderr
+            log_debug "❌ vault-agent is not active after restart"
             print_error "vault-agent не активен после перезапуска"
             systemctl status vault-agent --no-pager
             exit 1
         fi
     else
+        echo "[VAULT-CONFIG] ❌ Ошибка при перезапуске vault-agent" | tee /dev/stderr
+        log_debug "❌ Error restarting vault-agent"
         print_error "Ошибка при перезапуске vault-agent"
         systemctl status vault-agent --no-pager
         exit 1
     fi
+    
+    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+    echo "[VAULT-CONFIG] ✅ setup_vault_config ЗАВЕРШЕНА УСПЕШНО" | tee /dev/stderr
+    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+    log_debug "========================================"
+    log_debug "✅ setup_vault_config COMPLETED SUCCESSFULLY"
+    log_debug "========================================"
 }
 
 load_config_from_json() {

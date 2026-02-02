@@ -5,6 +5,44 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0-fix-vault-paths] - 2026-02-02
+
+### 🔧 Fixed - КРИТИЧЕСКАЯ ПРОБЛЕМА: vault-agent.conf использовал хардкод /opt/
+
+**ПРОБЛЕМА**: 
+- После успешного извлечения секретов скрипт падал без сообщений
+- `setup_vault_config()` пыталась работать с `/opt/vault/` (ХАРДКОД!)
+- В Secure Edition мы используем `$HOME/monitoring/` - `/opt/` НЕ СУЩЕСТВУЕТ
+- `chown --reference=/opt/vault/conf` требует root и падает
+- vault-agent.conf создавался с путями `/opt/vault/log/`, `/opt/vault/conf/`, `/opt/vault/certs/`
+
+**ИСПРАВЛЕНО**:
+- ✅ ВСЕ хардкод `/opt/vault/` заменены на переменные:
+  - `pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"` (был `/opt/vault/log/`)
+  - `ca_path = "$VAULT_CONF_DIR/ca-trust"` (был `/opt/vault/conf/ca-trust`)
+  - `role_id_file_path = "$VAULT_ROLE_ID_FILE"` (был `/opt/vault/conf/role_id.txt`)
+  - `secret_id_file_path = "$VAULT_SECRET_ID_FILE"` (был `/opt/vault/conf/secret_id.txt`)
+  - `log_path = "$VAULT_LOG_DIR"` (был `/opt/vault/log`)
+  - `destination = "$VAULT_CONF_DIR/data_sec.json"` (был `/opt/vault/conf/data_sec.json`)
+  - Сертификаты: `$VAULT_CERTS_DIR/` и `$MONITORING_CERTS_DIR/grafana/` (были `/opt/vault/certs/`)
+- ✅ Убраны команды `chown --reference=/opt/vault/conf` (требуют root, не нужны в user-space)
+- ✅ Убран вызов `config-writer_launcher.sh` - запись напрямую в `$VAULT_AGENT_HCL`
+- ✅ Пропускаем `systemctl restart vault-agent` если `SKIP_VAULT_INSTALL=true` (требует sudo)
+- ✅ Расширенная диагностика на каждом шаге `setup_vault_config()`:
+  - `[VAULT-CONFIG] После извлечения секретов`
+  - `[VAULT-CONFIG] Установка прав на файлы секретов...`
+  - `[VAULT-CONFIG] Создание vault-agent.conf...`
+  - `[VAULT-CONFIG] Проверка перезапуска vault-agent...`
+  - `[VAULT-CONFIG] ✅ setup_vault_config ЗАВЕРШЕНА УСПЕШНО`
+
+**Результат**: 
+- `setup_vault_config()` теперь полностью IB-compliant
+- Работает БЕЗ root прав
+- Все файлы в `$HOME/monitoring/config/vault/`
+- Подробная диагностика на каждом шаге
+
+---
+
 ## [4.1.0-debug-all-visible] - 2026-02-02
 
 ### 🔍 Fixed - ВСЕ диагностические выводы теперь видны в Jenkins
