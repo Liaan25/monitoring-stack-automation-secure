@@ -22,18 +22,49 @@ validate_json_file() {
     local file="$1"
     [[ -f "$file" && -r "$file" ]] || fail "JSON файл недоступен: $file"
     
-    local allowed_paths=(
-        "/opt/vault/conf/data_sec.json"
-        "/tmp/temp_data_cred.json"
-        "/tmp/data_sec.json"
+    # Разрешенные директории (для Secure Edition - user-space)
+    local allowed_dirs=(
+        "/opt/vault/conf"
+        "/tmp"
+        "/dev/shm"
+        "$HOME"  # Для Secure Edition: файлы в домашней директории пользователя
     )
     
-    local allowed=false
-    for path in "${allowed_paths[@]}"; do
-        [[ "$file" == "$path" ]] && allowed=true && break
+    # Разрешенные имена файлов
+    local allowed_names=(
+        "data_sec.json"
+        "temp_data_cred.json"
+    )
+    
+    local file_dir=$(dirname "$file")
+    local file_name=$(basename "$file")
+    
+    # Проверяем, что файл находится в разрешенной директории (или её поддиректориях)
+    local dir_allowed=false
+    for allowed_dir in "${allowed_dirs[@]}"; do
+        # Проверка: файл в разрешенной директории или её поддиректориях
+        if [[ "$file_dir" == "$allowed_dir"* ]]; then
+            dir_allowed=true
+            break
+        fi
     done
     
-    [[ "$allowed" == true ]] || fail "JSON файл не в whitelist: $file"
+    # Проверяем, что имя файла разрешено
+    local name_allowed=false
+    for allowed_name in "${allowed_names[@]}"; do
+        if [[ "$file_name" == "$allowed_name" ]]; then
+            name_allowed=true
+            break
+        fi
+    done
+    
+    if [[ "$dir_allowed" == false ]]; then
+        fail "JSON файл не в разрешенной директории: $file_dir (разрешены: ${allowed_dirs[*]})"
+    fi
+    
+    if [[ "$name_allowed" == false ]]; then
+        fail "Имя JSON файла не в whitelist: $file_name (разрешены: ${allowed_names[*]})"
+    fi
 }
 
 # Белый список разрешенных полей
