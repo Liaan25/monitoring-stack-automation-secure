@@ -702,6 +702,131 @@ ensure_user_in_as_admin() {
     fi
 }
 
+# Добавляет пользователя в группу ${KAE}-lnx-va-read через RLM API
+# Используется для получения доступа к сертификатам Vault Agent в /opt/vault/certs/
+ensure_user_in_va_read_group() {
+    local user="$1"
+    
+    print_step "Добавление пользователя $user в группу ${KAE}-lnx-va-read через RLM"
+    ensure_working_directory
+    
+    if [[ -z "${KAE:-}" ]]; then
+        print_warning "KAE не определён, пропускаем добавление в va-read"
+        print_info "Добавьте пользователя $user в группу va-read вручную через IDM"
+        return 1
+    fi
+    
+    if [[ -z "${RLM_API_URL:-}" || -z "${RLM_TOKEN:-}" ]]; then
+        print_warning "RLM_API_URL или RLM_TOKEN не заданы, пропускаем добавление в va-read"
+        print_info "Добавьте пользователя $user в группу ${KAE}-lnx-va-read вручную через IDM"
+        return 1
+    fi
+
+    if [[ ! -x "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" ]]; then
+        print_error "Лаунчер rlm-api-wrapper_launcher.sh не найден или не исполняемый в $WRAPPERS_DIR"
+        return 1
+    fi
+
+    local va_read_group="${KAE}-lnx-va-read"
+    print_info "Создание задачи RLM UVS_LINUX_ADD_USERS_GROUP для добавления $user в $va_read_group"
+
+    local payload create_resp group_task_id
+    payload=$(jq -n \
+        --arg usr "$user" \
+        --arg grp "$va_read_group" \
+        --arg ip "$SERVER_IP" \
+        '{
+          params: {
+            VAR_GRPS: [
+              {
+                group: $grp,
+                gid: "",
+                users: [ $usr ]
+              }
+            ]
+          },
+          start_at: "now",
+          service: "UVS_LINUX_ADD_USERS_GROUP",
+          skip_check_collisions: true,
+          items: [
+            {
+              table_id: "uvslinuxtemplatewithtestandprom",
+              invsvm_ip: $ip
+            }
+          ]
+        }')
+
+    create_resp=$(printf '%s' "$payload" | \
+        "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" create_group_task "$RLM_API_URL" "$RLM_TOKEN") || true
+
+    group_task_id=$(echo "$create_resp" | jq -r '.id // empty')
+    if [[ -z "$group_task_id" || "$group_task_id" == "null" ]]; then
+        print_error "Не удалось создать задачу UVS_LINUX_ADD_USERS_GROUP: $create_resp"
+        return 1
+    fi
+    print_success "Задача UVS_LINUX_ADD_USERS_GROUP создана. ID: $group_task_id"
+
+    local max_attempts=60  # 10 минут (60 * 10 сек)
+    local attempt=1
+    local current_status=""
+    local start_ts
+    local interval_sec=10
+    start_ts=$(date +%s)
+
+    echo ""
+    echo "┌────────────────────────────────────────────────────────────┐"
+    printf "│  🔐 ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ В VA-READ ГРУППУ             │\n"
+    printf "│  User: %-50s │\n" "$user"
+    printf "│  Group: %-48s │\n" "$va_read_group"
+    printf "│  Task ID: %-47s │\n" "$group_task_id"
+    printf "│  Max attempts: %-3d (интервал: %2dс)                      │\n" "$max_attempts" "$interval_sec"
+    echo "└────────────────────────────────────────────────────────────┘"
+    echo ""
+
+    while [[ $attempt -le $max_attempts ]]; do
+        local status_resp
+        status_resp=$("$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" get_group_status "$RLM_API_URL" "$RLM_TOKEN" "$group_task_id") || true
+
+        current_status=$(echo "$status_resp" | jq -r '.status // empty' 2>/dev/null || echo "in_progress")
+        [[ -z "$current_status" ]] && current_status="in_progress"
+
+        # Расчет времени
+        local now_ts elapsed_sec elapsed_min
+        now_ts=$(date +%s)
+        elapsed_sec=$(( now_ts - start_ts ))
+        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+
+        # Цветной статус-индикатор
+        local status_icon="⏳"
+        case "$current_status" in
+            success) status_icon="✅" ;;
+            failed|error) status_icon="❌" ;;
+            in_progress) status_icon="🔄" ;;
+        esac
+
+        # Вывод прогресса
+        echo "🔐 User: $user │ Попытка $attempt/$max_attempts │ Статус: $current_status $status_icon │ Время: ${elapsed_min}м (${elapsed_sec}с)"
+
+        if echo "$status_resp" | grep -q '"status":"success"'; then
+            echo "✅ Пользователь $user добавлен в группу $va_read_group за ${elapsed_min}м (${elapsed_sec}с)"
+            echo ""
+            return 0
+        elif echo "$status_resp" | grep -qE '"status":"(failed|error)"'; then
+            echo ""
+            print_error "❌ Ошибка добавления пользователя $user в $va_read_group"
+            print_error "📋 Ответ RLM: $status_resp"
+            return 1
+        fi
+
+        attempt=$((attempt + 1))
+        sleep "$interval_sec"
+    done
+
+    echo ""
+    print_error "⏰ Таймаут добавления пользователя $user в $va_read_group после ${max_attempts} попыток (~$((max_attempts * interval_sec / 60)) минут)"
+    return 1
+}
+
 # Последовательно добавляет ${KAE}-lnx-mon_sys и ${KAE}-lnx-mon_ci в группу as-admin через RLM
 ensure_monitoring_users_in_as_admin() {
     print_step "Проверка членства monitoring-УЗ в группе as-admin"
@@ -2512,6 +2637,7 @@ setup_certificates_after_install() {
     # Мы копируем их оттуда в user-space для использования нашими мониторинговыми сервисами
     local system_vault_bundle="/opt/vault/certs/server_bundle.pem"
     local userspace_vault_bundle="$VAULT_CERTS_DIR/server_bundle.pem"
+    local sys_user="${KAE}-lnx-mon_sys"
     
     echo "[CERTS] ========================================" | tee /dev/stderr
     echo "[CERTS] Проверка источников сертификатов..." | tee /dev/stderr
@@ -2534,33 +2660,162 @@ setup_certificates_after_install() {
         log_debug "✅ Found system vault bundle: $system_vault_bundle"
         print_success "Найдены сертификаты от Vault Agent: $system_vault_bundle"
         
-        # Копируем в user-space для доступа без root
-        echo "[CERTS] Копирование сертификатов в user-space..." | tee /dev/stderr
-        log_debug "Copying certificates to user-space"
-        mkdir -p "$VAULT_CERTS_DIR" || {
-            echo "[CERTS] ❌ Не удалось создать $VAULT_CERTS_DIR" | tee /dev/stderr
-            log_debug "❌ Failed to create $VAULT_CERTS_DIR"
-            exit 1
-        }
-        cp "$system_vault_bundle" "$userspace_vault_bundle" || {
-            echo "[CERTS] ❌ Не удалось скопировать bundle" | tee /dev/stderr
-            log_debug "❌ Failed to copy bundle"
-            exit 1
-        }
+        # Проверяем права доступа
+        echo "[CERTS] Проверка прав доступа к сертификатам..." | tee /dev/stderr
+        log_debug "Checking access permissions"
+        
+        if [[ -r "$system_vault_bundle" ]]; then
+            echo "[CERTS] ✅ CI-user имеет доступ на чтение" | tee /dev/stderr
+            log_debug "✅ CI-user has read access"
+            
+            # Копируем в user-space для доступа без root
+            echo "[CERTS] Копирование сертификатов в user-space..." | tee /dev/stderr
+            log_debug "Copying certificates to user-space"
+            mkdir -p "$VAULT_CERTS_DIR" || {
+                echo "[CERTS] ❌ Не удалось создать $VAULT_CERTS_DIR" | tee /dev/stderr
+                log_debug "❌ Failed to create $VAULT_CERTS_DIR"
+                exit 1
+            }
+            cp "$system_vault_bundle" "$userspace_vault_bundle" || {
+                echo "[CERTS] ❌ Не удалось скопировать bundle" | tee /dev/stderr
+                log_debug "❌ Failed to copy bundle"
+                exit 1
+            }
+            echo "[CERTS] ✅ Bundle скопирован напрямую" | tee /dev/stderr
+            log_debug "✅ Bundle copied directly"
+        else
+            echo "[CERTS] ⚠️  CI-user НЕ имеет доступа на чтение" | tee /dev/stderr
+            log_debug "⚠️  CI-user does not have read access"
+            
+            # Попытка 1: Автоматически добавить CI-user в группу va-read через RLM
+            echo "[CERTS] ========================================" | tee /dev/stderr
+            echo "[CERTS] ПОПЫТКА 1: Автоматическое добавление в группу va-read" | tee /dev/stderr
+            echo "[CERTS] ========================================" | tee /dev/stderr
+            log_debug "Attempting to add CI-user to va-read group via RLM"
+            
+            if ensure_user_in_va_read_group "$USER"; then
+                echo "[CERTS] ✅ Пользователь успешно добавлен в группу!" | tee /dev/stderr
+                log_debug "✅ User successfully added to va-read group"
+                print_success "CI-user добавлен в группу ${KAE}-lnx-va-read"
+                
+                # ВАЖНО: После добавления в группу требуется новая сессия для применения изменений
+                # Используем newgrp или копируем от имени sys_user
+                print_warning "Изменения группы применятся в новой сессии. Используем workaround через sys_user."
+                
+                # Создаем директорию перед копированием
+                mkdir -p "$VAULT_CERTS_DIR" || {
+                    echo "[CERTS] ❌ Не удалось создать $VAULT_CERTS_DIR" | tee /dev/stderr
+                    log_debug "❌ Failed to create $VAULT_CERTS_DIR"
+                    exit 1
+                }
+                
+                # Копируем через sys_user (у него точно есть доступ)
+                if sudo -n -u "$sys_user" cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
+                    chown "$USER:$USER" "$userspace_vault_bundle" 2>/dev/null || true
+                    echo "[CERTS] ✅ Bundle скопирован через sys_user workaround" | tee /dev/stderr
+                    log_debug "✅ Bundle copied via sys_user workaround"
+                else
+                    echo "[CERTS] ⚠️  Не удалось скопировать через sys_user" | tee /dev/stderr
+                    log_debug "⚠️  Failed to copy via sys_user"
+                    print_error "Не удалось скопировать сертификаты. Требуется перелогин или sudo права."
+                    exit 1
+                fi
+            else
+                echo "[CERTS] ⚠️  Не удалось автоматически добавить в группу через RLM" | tee /dev/stderr
+                log_debug "⚠️  Failed to add to group via RLM"
+                
+                # Попытка 2: Копирование через mon_sys (если он уже в группе)
+                echo "[CERTS] ========================================" | tee /dev/stderr
+                echo "[CERTS] ПОПЫТКА 2: Копирование через sys_user" | tee /dev/stderr
+                echo "[CERTS] ========================================" | tee /dev/stderr
+                log_debug "Attempting to copy via sys_user"
+                
+                # Проверяем, есть ли доступ у mon_sys через группу va-read
+                echo "[CERTS] Проверка: есть ли у $sys_user доступ через группу va-read..." | tee /dev/stderr
+                log_debug "Checking if $sys_user has access via va-read group"
+                
+                if id "$sys_user" | grep -q "${KAE}-lnx-va-read"; then
+                    echo "[CERTS] ✅ $sys_user состоит в группе va-read" | tee /dev/stderr
+                    log_debug "✅ $sys_user is in va-read group"
+                    print_info "$sys_user имеет доступ к сертификатам через группу va-read"
+                    
+                    # Копируем от имени mon_sys через sudo
+                    echo "[CERTS] Копирование от имени $sys_user..." | tee /dev/stderr
+                    log_debug "Copying as $sys_user"
+                    
+                    mkdir -p "$VAULT_CERTS_DIR" || {
+                        echo "[CERTS] ❌ Не удалось создать $VAULT_CERTS_DIR" | tee /dev/stderr
+                        log_debug "❌ Failed to create $VAULT_CERTS_DIR"
+                        exit 1
+                    }
+                    
+                    # Копируем через sudo -u mon_sys (предполагается что у ci-user есть права на sudo -u mon_sys)
+                    if sudo -n -u "$sys_user" cp "$system_vault_bundle" "$userspace_vault_bundle" 2>/dev/null; then
+                        echo "[CERTS] ✅ Bundle скопирован через sudo -u $sys_user" | tee /dev/stderr
+                        log_debug "✅ Bundle copied via sudo -u $sys_user"
+                        # Меняем владельца обратно на ci-user для последующей работы
+                        chown "$USER:$USER" "$userspace_vault_bundle" 2>/dev/null || true
+                    else
+                        echo "[CERTS] ⚠️  Не удалось скопировать через sudo -u $sys_user" | tee /dev/stderr
+                        log_debug "⚠️  Failed to copy via sudo -u $sys_user"
+                        print_warning "Не удалось скопировать сертификаты через sudo -u $sys_user"
+                        print_info "Попытка прямого копирования (может не сработать)..."
+                        cp "$system_vault_bundle" "$userspace_vault_bundle" || {
+                            echo "[CERTS] ❌ Не удалось скопировать bundle" | tee /dev/stderr
+                            log_debug "❌ Failed to copy bundle"
+                            print_error "Недостаточно прав для копирования сертификатов"
+                            print_error "Права на файл: $(ls -l "$system_vault_bundle")"
+                            print_error "Требуется: добавить ${KAE}-lnx-mon_ci в группу ${KAE}-lnx-va-read через RLM/IDM"
+                            exit 1
+                        }
+                    fi
+                else
+                    echo "[CERTS] ❌ $sys_user НЕ состоит в группе va-read" | tee /dev/stderr
+                    log_debug "❌ $sys_user is not in va-read group"
+                    print_error "Недостаточно прав для доступа к сертификатам Vault"
+                    print_error "Права на файл: $(ls -l "$system_vault_bundle")"
+                    print_error "Владелец: $(stat -c '%U:%G' "$system_vault_bundle")"
+                    print_error ""
+                    print_error "ТРЕБУЕТСЯ: Добавить ${KAE}-lnx-mon_ci в группу ${KAE}-lnx-va-read"
+                    print_error "Используйте RLM или IDM для добавления пользователя в группу"
+                    exit 1
+                fi
+            fi
+        fi
         
         # Копируем также CA chain если есть
         if [[ -f "/opt/vault/certs/ca_chain.crt" ]]; then
-            cp "/opt/vault/certs/ca_chain.crt" "$VAULT_CERTS_DIR/ca_chain.crt" || true
-            echo "[CERTS] ✅ CA chain скопирован" | tee /dev/stderr
-            log_debug "✅ CA chain copied"
+            if [[ -r "/opt/vault/certs/ca_chain.crt" ]]; then
+                cp "/opt/vault/certs/ca_chain.crt" "$VAULT_CERTS_DIR/ca_chain.crt" || true
+            elif id "$sys_user" | grep -q "${KAE}-lnx-va-read" 2>/dev/null; then
+                sudo -n -u "$sys_user" cp "/opt/vault/certs/ca_chain.crt" "$VAULT_CERTS_DIR/ca_chain.crt" 2>/dev/null || true
+                chown "$USER:$USER" "$VAULT_CERTS_DIR/ca_chain.crt" 2>/dev/null || true
+            fi
+            if [[ -f "$VAULT_CERTS_DIR/ca_chain.crt" ]]; then
+                echo "[CERTS] ✅ CA chain скопирован" | tee /dev/stderr
+                log_debug "✅ CA chain copied"
+            else
+                echo "[CERTS] ⚠️  CA chain не скопирован (нет прав)" | tee /dev/stderr
+                log_debug "⚠️  CA chain not copied (no permissions)"
+            fi
         fi
         
         # Копируем grafana client cert если есть
         if [[ -f "/opt/vault/certs/grafana-client.pem" ]]; then
             mkdir -p "$MONITORING_CERTS_DIR/grafana" || true
-            cp "/opt/vault/certs/grafana-client.pem" "$MONITORING_CERTS_DIR/grafana/grafana-client.pem" || true
-            echo "[CERTS] ✅ Grafana client cert скопирован" | tee /dev/stderr
-            log_debug "✅ Grafana client cert copied"
+            if [[ -r "/opt/vault/certs/grafana-client.pem" ]]; then
+                cp "/opt/vault/certs/grafana-client.pem" "$MONITORING_CERTS_DIR/grafana/grafana-client.pem" || true
+            elif id "$sys_user" | grep -q "${KAE}-lnx-va-read" 2>/dev/null; then
+                sudo -n -u "$sys_user" cp "/opt/vault/certs/grafana-client.pem" "$MONITORING_CERTS_DIR/grafana/grafana-client.pem" 2>/dev/null || true
+                chown "$USER:$USER" "$MONITORING_CERTS_DIR/grafana/grafana-client.pem" 2>/dev/null || true
+            fi
+            if [[ -f "$MONITORING_CERTS_DIR/grafana/grafana-client.pem" ]]; then
+                echo "[CERTS] ✅ Grafana client cert скопирован" | tee /dev/stderr
+                log_debug "✅ Grafana client cert copied"
+            else
+                echo "[CERTS] ⚠️  Grafana client cert не скопирован (нет прав)" | tee /dev/stderr
+                log_debug "⚠️  Grafana client cert not copied (no permissions)"
+            fi
         fi
         
         echo "[CERTS] ✅ Сертификаты скопированы в user-space" | tee /dev/stderr
