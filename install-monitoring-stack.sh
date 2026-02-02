@@ -725,14 +725,142 @@ ensure_monitoring_users_in_as_admin() {
     if ! id "$mon_sys_user" >/dev/null 2>&1; then
         print_warning "Пользователь $mon_sys_user не найден, пропускаем linger"
     elif command -v linuxadm-enable-linger >/dev/null 2>&1; then
-        linuxadm-enable-linger "$mon_sys_user" || {
-            print_error "Ошибка включения linger для ${mon_sys_user}"
+        # ===== РАСШИРЕННАЯ ДИАГНОСТИКА =====
+        log_debug "========================================"
+        log_debug "ДИАГНОСТИКА: linuxadm-enable-linger"
+        log_debug "========================================"
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        echo "[DEBUG-LINGER] Диагностика linuxadm-enable-linger" >&2
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        # Информация о текущем пользователе
+        local current_user=$(whoami)
+        local current_uid=$(id -u)
+        local current_gid=$(id -g)
+        echo "[DEBUG-LINGER] Текущий пользователь: $current_user (UID=$current_uid, GID=$current_gid)" >&2
+        log_debug "Текущий пользователь: $current_user (UID=$current_uid, GID=$current_gid)"
+        
+        # Информация о целевом пользователе
+        echo "[DEBUG-LINGER] Целевой пользователь: $mon_sys_user" >&2
+        log_debug "Целевой пользователь: $mon_sys_user"
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        # Группы ТЕКУЩЕГО пользователя
+        echo "[DEBUG-LINGER] Группы ТЕКУЩЕГО пользователя ($current_user):" >&2
+        id "$current_user" >&2
+        log_debug "Группы текущего пользователя: $(id $current_user)"
+        
+        echo "[DEBUG-LINGER] ----------------------------------------" >&2
+        
+        # Группы ЦЕЛЕВОГО пользователя
+        echo "[DEBUG-LINGER] Группы ЦЕЛЕВОГО пользователя ($mon_sys_user):" >&2
+        id "$mon_sys_user" >&2
+        log_debug "Группы целевого пользователя: $(id $mon_sys_user)"
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        # Проверка as-admin для текущего пользователя
+        if id "$current_user" | grep -q '\bas-admin\b'; then
+            echo "[DEBUG-LINGER] ✅ Текущий ($current_user) в as-admin" >&2
+            log_debug "✅ Текущий пользователь в as-admin"
+        else
+            echo "[DEBUG-LINGER] ❌ Текущий ($current_user) НЕ в as-admin" >&2
+            log_debug "❌ Текущий пользователь НЕ в as-admin"
+        fi
+        
+        # Проверка as-admin для целевого пользователя
+        if id "$mon_sys_user" | grep -q '\bas-admin\b'; then
+            echo "[DEBUG-LINGER] ✅ Целевой ($mon_sys_user) в as-admin" >&2
+            log_debug "✅ Целевой пользователь в as-admin"
+        else
+            echo "[DEBUG-LINGER] ❌ Целевой ($mon_sys_user) НЕ в as-admin" >&2
+            log_debug "❌ Целевой пользователь НЕ в as-admin"
+        fi
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        # Проверка пути к команде
+        local linger_cmd_path=$(command -v linuxadm-enable-linger)
+        echo "[DEBUG-LINGER] Путь к команде: $linger_cmd_path" >&2
+        log_debug "linuxadm-enable-linger path: $linger_cmd_path"
+        
+        # Проверка прав на файл
+        if [[ -f "$linger_cmd_path" ]]; then
+            echo "[DEBUG-LINGER] Права на файл:" >&2
+            ls -la "$linger_cmd_path" >&2
+            log_debug "Права на linuxadm-enable-linger: $(ls -la $linger_cmd_path)"
+        fi
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        # Проверка текущего статуса linger
+        echo "[DEBUG-LINGER] Текущий статус linger для $mon_sys_user:" >&2
+        loginctl show-user "$mon_sys_user" 2>&1 | grep -i linger >&2 || echo "[DEBUG-LINGER] (loginctl show-user не доступен или пользователь не имеет сессии)" >&2
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        echo "[DEBUG-LINGER] Выполнение команды: linuxadm-enable-linger '$mon_sys_user'" >&2
+        log_debug "Выполнение: linuxadm-enable-linger '$mon_sys_user'"
+        
+        # Запуск с захватом ВСЕГО вывода
+        local linger_stdout linger_stderr linger_exit_code
+        linger_stdout=$(mktemp)
+        linger_stderr=$(mktemp)
+        
+        linuxadm-enable-linger "$mon_sys_user" > "$linger_stdout" 2> "$linger_stderr"
+        linger_exit_code=$?
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        echo "[DEBUG-LINGER] Exit code: $linger_exit_code" >&2
+        log_debug "linuxadm-enable-linger exit code: $linger_exit_code"
+        
+        echo "[DEBUG-LINGER] ----------------------------------------" >&2
+        echo "[DEBUG-LINGER] STDOUT:" >&2
+        cat "$linger_stdout" >&2
+        log_debug "STDOUT: $(cat $linger_stdout)"
+        
+        echo "[DEBUG-LINGER] ----------------------------------------" >&2
+        echo "[DEBUG-LINGER] STDERR:" >&2
+        cat "$linger_stderr" >&2
+        log_debug "STDERR: $(cat $linger_stderr)"
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        # Очистка временных файлов
+        rm -f "$linger_stdout" "$linger_stderr"
+        
+        # Проверка статуса после выполнения
+        echo "[DEBUG-LINGER] Проверка статуса ПОСЛЕ выполнения команды:" >&2
+        loginctl show-user "$mon_sys_user" 2>&1 | grep -i linger >&2 || echo "[DEBUG-LINGER] (loginctl show-user недоступен)" >&2
+        
+        # Альтернативная проверка через файл
+        if [[ -f "/var/lib/systemd/linger/$mon_sys_user" ]]; then
+            echo "[DEBUG-LINGER] ✅ Файл linger существует: /var/lib/systemd/linger/$mon_sys_user" >&2
+            log_debug "✅ Linger file exists"
+        else
+            echo "[DEBUG-LINGER] ❌ Файл linger НЕ существует: /var/lib/systemd/linger/$mon_sys_user" >&2
+            log_debug "❌ Linger file NOT exists"
+        fi
+        
+        echo "[DEBUG-LINGER] ========================================" >&2
+        
+        if [[ $linger_exit_code -eq 0 ]]; then
+            print_success "✅ Linger включен для ${mon_sys_user}"
+            log_debug "✅ Linger enabled successfully"
+        else
+            print_error "❌ Ошибка включения linger для ${mon_sys_user} (exit code: $linger_exit_code)"
             print_warning "User units могут не запуститься без linger!"
-            exit 1
-        }
-        print_success "✅ Linger включен для ${mon_sys_user}"
+            print_info "🔍 См. детальную диагностику [DEBUG-LINGER] выше"
+            log_debug "❌ Linger enable FAILED with exit code: $linger_exit_code"
+            
+            # НЕ останавливаем выполнение для получения полной диагностики
+            # Можно раскомментировать если критично:
+            # exit 1
+        fi
     else
         print_error "❌ linuxadm-enable-linger не найден на сервере"
+        log_debug "❌ linuxadm-enable-linger command not found"
         print_warning "Требуется установка пакета linuxadm или аналогичного"
         print_info "Без linger user units остановятся при logout пользователя"
         exit 1
