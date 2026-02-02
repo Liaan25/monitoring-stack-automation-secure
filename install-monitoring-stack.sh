@@ -1683,18 +1683,18 @@ load_config_from_json() {
     print_step "Загрузка конфигурации из параметров Jenkins"
     ensure_working_directory
     
-    echo "[DEBUG-CONFIG] ========================================" >&2
-    echo "[DEBUG-CONFIG] Диагностика load_config_from_json" >&2
-    echo "[DEBUG-CONFIG] ========================================" >&2
+    echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] Диагностика load_config_from_json" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
     log_debug "========================================"
     log_debug "ДИАГНОСТИКА: load_config_from_json"
     log_debug "========================================"
     
-    echo "[DEBUG-CONFIG] Проверка обязательных параметров:" >&2
-    echo "[DEBUG-CONFIG] NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}" >&2
-    echo "[DEBUG-CONFIG] GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}" >&2
-    echo "[DEBUG-CONFIG] PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}" >&2
-    echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] Проверка обязательных параметров:" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" | tee /dev/stderr
     log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
     log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
@@ -1707,28 +1707,28 @@ load_config_from_json() {
     [[ -z "$HARVEST_URL" ]] && missing+=("HARVEST_URL")
 
     if (( ${#missing[@]} > 0 )); then
-        echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" >&2
+        echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" | tee /dev/stderr
         log_debug "❌ Missing parameters: ${missing[*]}"
         print_error "Не заданы обязательные параметры Jenkins: ${missing[*]}"
         print_error "Эти переменные должны быть переданы через 'sudo -n env' из Jenkinsfile"
         write_diagnostic "ERROR: Не заданы параметры: ${missing[*]}"
         
-        echo "[DEBUG-CONFIG] ========================================" >&2
-        echo "[DEBUG-CONFIG] DUMP всех ENV переменных:" >&2
-        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NAMESPACE|KAE)" | sort >&2
-        echo "[DEBUG-CONFIG] ========================================" >&2
+        echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
+        echo "[DEBUG-CONFIG] DUMP всех ENV переменных:" | tee /dev/stderr
+        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NAMESPACE|KAE)" | sort | tee /dev/stderr
+        echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
         
         exit 1
     fi
     
-    echo "[DEBUG-CONFIG] ✅ Все обязательные параметры заданы" >&2
+    echo "[DEBUG-CONFIG] ✅ Все обязательные параметры заданы" | tee /dev/stderr
     log_debug "✅ All required parameters are set"
 
     NETAPP_POLLER_NAME=$(echo "$NETAPP_API_ADDR" | awk -F'.' '{print toupper(substr($1,1,1)) tolower(substr($1,2))}')
     
-    echo "[DEBUG-CONFIG] Вычислен NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME" >&2
+    echo "[DEBUG-CONFIG] Вычислен NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME" | tee /dev/stderr
     log_debug "NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME"
-    echo "[DEBUG-CONFIG] ========================================" >&2
+    echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
     
     print_success "Конфигурация загружена из параметров Jenkins"
     print_info "NETAPP_API_ADDR=$NETAPP_API_ADDR, NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME"
@@ -4743,32 +4743,44 @@ main() {
     echo "[MAIN] ✅ detect_network_info completed" | tee /dev/stderr
     log_debug "Completed: detect_network_info"
     
+    echo "[MAIN] Вызов ensure_monitoring_users_in_as_admin..." | tee /dev/stderr
     log_debug "Calling: ensure_monitoring_users_in_as_admin"
     ensure_monitoring_users_in_as_admin || {
+        echo "[MAIN] ⚠️  ensure_monitoring_users_in_as_admin FAILED, continuing..." | tee /dev/stderr
         log_debug "ERROR in ensure_monitoring_users_in_as_admin, continuing..."
         print_warning "ensure_monitoring_users_in_as_admin failed (may require root/RLM), continuing..."
     }
+    echo "[MAIN] ✅ ensure_monitoring_users_in_as_admin completed" | tee /dev/stderr
     log_debug "Completed: ensure_monitoring_users_in_as_admin"
     
+    echo "[MAIN] Вызов ensure_mon_sys_in_grafana_group..." | tee /dev/stderr
     log_debug "Calling: ensure_mon_sys_in_grafana_group"
     ensure_mon_sys_in_grafana_group || {
+        echo "[MAIN] ⚠️  ensure_mon_sys_in_grafana_group FAILED, continuing..." | tee /dev/stderr
         log_debug "ERROR in ensure_mon_sys_in_grafana_group, continuing..."
         print_warning "ensure_mon_sys_in_grafana_group failed (may require root), continuing..."
     }
+    echo "[MAIN] ✅ ensure_mon_sys_in_grafana_group completed" | tee /dev/stderr
     log_debug "Completed: ensure_mon_sys_in_grafana_group"
     
+    echo "[MAIN] Вызов cleanup_all_previous..." | tee /dev/stderr
     log_debug "Calling: cleanup_all_previous"
     cleanup_all_previous || {
+        echo "[MAIN] ⚠️  cleanup_all_previous FAILED, continuing..." | tee /dev/stderr
         log_debug "ERROR in cleanup_all_previous, continuing..."
         print_warning "cleanup_all_previous failed (may require root for /etc/, /var/), continuing..."
     }
+    echo "[MAIN] ✅ cleanup_all_previous completed" | tee /dev/stderr
     log_debug "Completed: cleanup_all_previous"
     
+    echo "[MAIN] Вызов create_directories..." | tee /dev/stderr
     log_debug "Calling: create_directories"
     create_directories || {
+        echo "[MAIN] ⚠️  create_directories FAILED, continuing..." | tee /dev/stderr
         log_debug "ERROR in create_directories, continuing..."
         print_warning "create_directories failed (may require root for /opt/), continuing..."
     }
+    echo "[MAIN] ✅ create_directories completed" | tee /dev/stderr
     log_debug "Completed: create_directories"
 
     # При необходимости можно пропустить установку Vault через RLM,
@@ -4788,22 +4800,22 @@ main() {
     fi
     write_diagnostic ""
     
-    echo "[MAIN] ========================================" >&2
-    echo "[MAIN] Вызов setup_vault_config..." >&2
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
     log_debug "Calling: setup_vault_config"
     
     setup_vault_config
     
-    echo "[MAIN] ✅ setup_vault_config завершена успешно" >&2
+    echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
     log_debug "Completed: setup_vault_config"
     write_diagnostic "setup_vault_config выполнена"
 
-    echo "[MAIN] Вызов load_config_from_json..." >&2
+    echo "[MAIN] Вызов load_config_from_json..." | tee /dev/stderr
     log_debug "Calling: load_config_from_json"
     
     load_config_from_json
     
-    echo "[MAIN] ✅ load_config_from_json завершена успешно" >&2
+    echo "[MAIN] ✅ load_config_from_json завершена успешно" | tee /dev/stderr
     log_debug "Completed: load_config_from_json"
 
     # При необходимости можно пропустить установку RPM-пакетов через RLM,
