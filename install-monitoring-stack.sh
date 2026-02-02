@@ -2,16 +2,22 @@
 # Мониторинг Stack Deployment Script
 # Компоненты: Harvest + Prometheus + Grafana
 
+echo "[SCRIPT_START] Script started at $(date)" >&2
+echo "[SCRIPT_START] Running as user: $(whoami)" >&2
+echo "[SCRIPT_START] PWD: $PWD" >&2
+
 # КРИТИЧНО: Временно отключаем set -e для диагностики
 # set -euo pipefail
 set -uo pipefail
 
-# Trap для логирования ВСЕХ команд
-trap 'echo "[TRACE] Line $LINENO: $BASH_COMMAND" >> "$DEBUG_LOG" 2>/dev/null || true' DEBUG
+echo "[SCRIPT_START] Shell options set" >&2
+
+# НЕ устанавливаем trap DEBUG здесь - слишком рано!
 
 # ============================================
 # КОНФИГУРАЦИОННЫЕ ПЕРЕМЕННЫЕ
 # ============================================
+echo "[SCRIPT_START] Initializing variables..." >&2
 : "${RLM_API_URL:=}"
 : "${RLM_TOKEN:=}"
 : "${NETAPP_API_ADDR:=}"
@@ -49,6 +55,10 @@ LOG_FILE="$HOME/monitoring_deployment_${DATE_INSTALL}.log"
 DEBUG_LOG="$HOME/monitoring_deployment_debug_${DATE_INSTALL}.log"
 DEBUG_SUMMARY="$HOME/monitoring_deployment_summary.log"
 STATE_FILE="/var/lib/monitoring_deployment_state"
+
+echo "[SCRIPT_START] Variables initialized" >&2
+echo "[SCRIPT_START] DEBUG_LOG=$DEBUG_LOG" >&2
+echo "[SCRIPT_START] LOG_FILE=$LOG_FILE" >&2
 ENV_FILE="/etc/environment.d/99-monitoring-vars.conf"
 HARVEST_CONFIG="/opt/harvest/harvest.yml"
 VAULT_CONF_DIR="/opt/vault/conf"
@@ -4309,15 +4319,25 @@ STATE_EOF
 
 # Основная функция
 main() {
+    # ВЫВОД В STDERR для диагностики
+    echo "[MAIN] Started at $(date)" >&2
+    
     log_message "=== Начало развертывания мониторинговой системы ${DEPLOY_VERSION} ==="
     ensure_working_directory
     print_header
     
+    echo "[MAIN] Calling init_diagnostic_log" >&2
     # Инициализация diagnostic log
     init_diagnostic_log
     
+    echo "[MAIN] Calling init_debug_log" >&2
     # Инициализация расширенного DEBUG лога
     init_debug_log
+    
+    echo "[MAIN] DEBUG log created, setting up trap" >&2
+    # ТЕПЕРЬ устанавливаем trap DEBUG (после создания DEBUG_LOG)
+    trap 'echo "[TRACE] Line $LINENO: $BASH_COMMAND" >> "$DEBUG_LOG" 2>/dev/null || true' DEBUG
+    
     log_debug "=== DEPLOYMENT STARTED ==="
     log_debug_extended
     
@@ -4512,6 +4532,13 @@ main() {
     rm -rf "$LOG_FILE" || true
 }
 
+echo "[SCRIPT] Reached end of script definitions, calling main()" >&2
+echo "[SCRIPT] DEBUG_LOG will be: ${DEBUG_LOG:-NOT_SET}" >&2
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "[SCRIPT] Calling main with args: $@" >&2
     main "$@"
+    echo "[SCRIPT] main() completed with exit code: $?" >&2
 fi
+
+echo "[SCRIPT] Script finished" >&2
