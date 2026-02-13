@@ -1943,6 +1943,189 @@ setup_vault_config() {
     echo "[VAULT-CONFIG] Начинается блок генерации vault-agent.conf..." | tee /dev/stderr
     log_debug "Generating vault-agent.conf content"
     
+    # Создаем две версии agent.hcl:
+    # 1. Системная версия (для vault-agent) - с путями /opt/vault/
+    # 2. User-space версия (для справки) - с путями $HOME/monitoring/
+    
+    # ============================================
+    # 1. СИСТЕМНАЯ ВЕРСИЯ (для vault-agent)
+    # ============================================
+    local SYSTEM_VAULT_AGENT_HCL="/opt/vault/conf/agent.hcl"
+    
+    {
+        # Базовая конфигурация агента
+        # ВАЖНО: Для системного vault-agent используем системные пути /opt/vault/
+        cat << EOF
+pid_file = "/opt/vault/log/vault-agent.pidfile"
+vault {
+ address = "https://$SEC_MAN_ADDR"
+ tls_skip_verify = "false"
+ ca_path = "/opt/vault/conf/ca-trust"
+}
+auto_auth {
+ method "approle" {
+ namespace = "$NAMESPACE_CI"
+ mount_path = "auth/approle"
+
+ config = {
+ role_id_file_path = "/opt/vault/conf/role_id.txt"
+ secret_id_file_path = "/opt/vault/conf/secret_id.txt"
+ remove_secret_id_file_after_reading = false
+}
+}
+}
+log_destination "Tengry" {
+ log_format = "json"
+ log_path = "/opt/vault/log"
+ log_rotate = "5"
+ log_max_size = "5mb"
+ log_level = "trace"
+ log_file = "agent.log"
+}
+
+template {
+  destination = "/opt/vault/conf/data_sec.json"
+  contents    = <<EOT
+{
+EOF
+
+        # Блок rpm_url
+        if [[ -n "$RPM_URL_KV" ]]; then
+            cat << EOF
+  "rpm_url": {
+    {{ with secret "$RPM_URL_KV" }}
+    "harvest": {{ .Data.harvest | toJSON }},
+    "prometheus": {{ .Data.prometheus | toJSON }},
+    "grafana": {{ .Data.grafana | toJSON }}
+    {{ end }}
+  },
+EOF
+        else
+            cat << EOF
+  "rpm_url": {},
+EOF
+        fi
+
+        # Блок netapp_ssh
+        if [[ -n "$NETAPP_SSH_KV" ]]; then
+            cat << EOF
+  "netapp_ssh": {
+    {{ with secret "$NETAPP_SSH_KV" }}
+    "addr": {{ .Data.addr | toJSON }},
+    "user": {{ .Data.user | toJSON }},
+    "pass": {{ .Data.pass | toJSON }}
+    {{ end }}
+  },
+EOF
+        else
+            cat << EOF
+  "netapp_ssh": {},
+EOF
+        fi
+
+        # Блок grafana_web
+        if [[ -n "$GRAFANA_WEB_KV" ]]; then
+            cat << EOF
+  "grafana_web": {
+    {{ with secret "$GRAFANA_WEB_KV" }}
+    "user": {{ .Data.user | toJSON }},
+    "pass": {{ .Data.pass | toJSON }}
+    {{ end }}
+  },
+EOF
+        else
+            cat << EOF
+  "grafana_web": {},
+EOF
+        fi
+
+        # Блок vault-agent (role_id/secret_id обязательны для работы агента)
+        if [[ -n "$VAULT_AGENT_KV" ]]; then
+            cat << EOF
+  "vault-agent": {
+    {{ with secret "$VAULT_AGENT_KV" }}
+    "role_id": {{ .Data.role_id | toJSON }},
+    "secret_id": {{ .Data.secret_id | toJSON }}
+    {{ end }}
+  }
+}
+  EOT
+  perms = "0640"
+  # Если какой-то из необязательных KV/ключей отсутствует, не роняем vault-agent,
+  # а просто создаём пустой объект. Обязательные значения (role_id/secret_id)
+  # дополнительно проверяются в bash перед перезапуском агента.
+  error_on_missing_key = false
+}
+EOF
+        else
+            # Если VAULT_AGENT_KV не задан, не вставляем блок secret вообще,
+            # чтобы не получить secret "" и падение агента.
+            cat << EOF
+  "vault-agent": {}
+}
+  EOT
+  perms = "0640"
+  error_on_missing_key = false
+}
+EOF
+        fi
+
+        # Блоки для сертификатов SBERCA (опционально, зависят от SBERCA_CERT_KV)
+        # ВАЖНО: perms = "0600" - только владелец может читать (по умолчанию)
+        # ДЛЯ ДОСТУПА ГРУППЕ: можно изменить на perms = "0640" чтобы группа va-read могла читать
+        # НО в Secure Edition мы копируем сертификаты в user-space, поэтому оставляем 0600
+        if [[ -n "$SBERCA_CERT_KV" ]]; then
+            cat << EOF
+
+template {
+  destination = "/opt/vault/certs/server_bundle.pem"
+  contents    = <<EOT
+{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
+{{ .Data.private_key }}
+{{ .Data.certificate }}
+{{ .Data.issuing_ca }}
+{{- end -}}
+  EOT
+  perms = "0640"
+}
+
+template {
+  destination = "/opt/vault/certs/ca_chain.crt"
+  contents = <<EOT
+{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" -}}
+{{ .Data.issuing_ca }}
+{{- end -}}
+  EOT
+  perms = "0640"
+}
+
+template {
+  destination = "/opt/vault/certs/grafana-client.pem"
+  contents = <<EOT
+{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
+{{ .Data.private_key }}
+{{ .Data.certificate }}
+{{ .Data.issuing_ca }}
+{{- end -}}
+  EOT
+  perms = "0640"
+}
+EOF
+        else
+            cat << EOF
+
+# SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
+EOF
+        fi
+
+    } > "$SYSTEM_VAULT_AGENT_HCL"
+    
+    echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
+    log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
+    
+    # ============================================
+    # 2. USER-SPACE ВЕРСИЯ (для справки)
+    # ============================================
     {
         # Базовая конфигурация агента
         # ВАЖНО: В Secure Edition используются переменные VAULT_* вместо хардкод /opt/
@@ -2111,110 +2294,64 @@ EOF
 
     } > "$VAULT_AGENT_HCL"
     
-    echo "[VAULT-CONFIG] ✅ vault-agent.conf создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
-    log_debug "✅ vault-agent.conf created at $VAULT_AGENT_HCL"
+    echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
+    log_debug "✅ User-space agent.hcl created at $VAULT_AGENT_HCL"
 
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-    echo "[VAULT-CONFIG] agent.hcl создан (только для справки)" | tee /dev/stderr
+    echo "[VAULT-CONFIG] Созданы обе версии agent.hcl" | tee /dev/stderr
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-    log_debug "agent.hcl created for reference only"
+    log_debug "Both versions of agent.hcl created"
     
     # ============================================================
-    # ВАЖНО: vault-agent - СИСТЕМНЫЙ СЕРВИС (управляется RLM!)
+    # КОПИРОВАНИЕ role_id и secret_id в системные пути
     # ============================================================
-    # vault-agent НЕ управляется через наш скрипт!
-    # 
-    # ПРАВИЛЬНЫЙ WORKFLOW для тысяч серверов:
-    # 1. Создайте/измените RLM ШАБЛОН задачи vault_agent_config
-    # 2. В шаблоне укажите perms = "0640" для всех сертификатов
-    # 3. Примените шаблон через RLM на все серверы
-    # 4. RLM автоматически создаст конфиги и перезапустит vault-agent
-    # 
-    # НАШ СКРИПТ:
-    # - Создает agent.hcl в user-space (для справки/шаблона)
-    # - Использует СУЩЕСТВУЮЩИЕ сертификаты из /opt/vault/certs/
-    # - НЕ трогает системный vault-agent (нет прав, не нужно!)
-    # ============================================================
+    echo "[VAULT-CONFIG] Копирование role_id и secret_id в системные пути..." | tee /dev/stderr
+    log_debug "Copying role_id and secret_id to system paths"
     
-    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
-        echo "[VAULT-CONFIG] SKIP_VAULT_INSTALL=true: используем существующий vault-agent" | tee /dev/stderr
-        log_debug "SKIP_VAULT_INSTALL=true: using existing vault-agent"
-        
-        # Проверяем статус системного vault-agent (read-only)
-        echo "[VAULT-CONFIG] Проверка статуса системного vault-agent..." | tee /dev/stderr
-        log_debug "Checking system vault-agent status"
-        
-        if systemctl is-active --quiet vault-agent; then
-            echo "[VAULT-CONFIG] ✅ Системный vault-agent активен" | tee /dev/stderr
-            log_debug "✅ System vault-agent is active"
-            print_success "Системный vault-agent активен и работает"
-            
-            # Проверяем наличие сертификатов
-            local system_vault_certs="/opt/vault/certs/server_bundle.pem"
-            if [[ -f "$system_vault_certs" ]]; then
-                echo "[VAULT-CONFIG] ✅ Сертификаты найдены: $system_vault_certs" | tee /dev/stderr
-                log_debug "✅ Certificates found: $system_vault_certs"
-                print_success "Сертификаты от vault-agent найдены"
-            else
-                echo "[VAULT-CONFIG] ⚠️  Сертификаты не найдены: $system_vault_certs" | tee /dev/stderr
-                log_debug "⚠️  Certificates not found: $system_vault_certs"
-                print_warning "Сертификаты от vault-agent пока не созданы (требуется время на генерацию)"
-            fi
+    local SYSTEM_ROLE_ID_FILE="/opt/vault/conf/role_id.txt"
+    local SYSTEM_SECRET_ID_FILE="/opt/vault/conf/secret_id.txt"
+    
+    # Копируем файлы, если есть права
+    if [[ -f "$VAULT_ROLE_ID_FILE" ]]; then
+        if cp "$VAULT_ROLE_ID_FILE" "$SYSTEM_ROLE_ID_FILE" 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ role_id.txt скопирован в $SYSTEM_ROLE_ID_FILE" | tee /dev/stderr
+            log_debug "✅ role_id.txt copied to $SYSTEM_ROLE_ID_FILE"
+            chmod 640 "$SYSTEM_ROLE_ID_FILE" 2>/dev/null || true
         else
-            echo "[VAULT-CONFIG] ⚠️  Системный vault-agent не активен" | tee /dev/stderr
-            log_debug "⚠️  System vault-agent is not active"
-            print_warning "Системный vault-agent не активен"
-            systemctl status vault-agent --no-pager 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG" || true
+            echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать role_id.txt (нет прав)" | tee /dev/stderr
+            log_debug "⚠️  Failed to copy role_id.txt (no permissions)"
         fi
-        
-        # ============================================================
-        # ПРИМЕНЕНИЕ agent.hcl к существующему vault-agent
-        # ============================================================
-        # /opt/vault/conf/ принадлежит va-start:va-read
-        # Чтобы записать agent.hcl - нужно быть в группе va-start
-        # ============================================================
-        
-        echo "[VAULT-CONFIG] Попытка применить agent.hcl к системному vault-agent..." | tee /dev/stderr
-        log_debug "Attempting to apply agent.hcl to system vault-agent"
-        
-        local current_user
-        current_user=$(whoami)
-        
-        # Проверяем, можем ли записать в /opt/vault/conf/
-        local system_agent_hcl="/opt/vault/conf/agent.hcl"
-        if [[ -w "/opt/vault/conf/" ]]; then
-            echo "[VAULT-CONFIG] ✅ Пользователь $current_user может писать в /opt/vault/conf/" | tee /dev/stderr
-            log_debug "✅ User $current_user can write to /opt/vault/conf/"
+    fi
+    
+    if [[ -f "$VAULT_SECRET_ID_FILE" ]]; then
+        if cp "$VAULT_SECRET_ID_FILE" "$SYSTEM_SECRET_ID_FILE" 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован в $SYSTEM_SECRET_ID_FILE" | tee /dev/stderr
+            log_debug "✅ secret_id.txt copied to $SYSTEM_SECRET_ID_FILE"
+            chmod 640 "$SYSTEM_SECRET_ID_FILE" 2>/dev/null || true
         else
-            echo "[VAULT-CONFIG] ⚠️  Пользователь $current_user НЕ может писать в /opt/vault/conf/" | tee /dev/stderr
-            log_debug "⚠️  User $current_user cannot write to /opt/vault/conf/"
-            
-            # Добавляем в группу va-start для доступа на запись
-            echo "[VAULT-CONFIG] Добавляем $current_user в группу ${KAE}-lnx-va-start..." | tee /dev/stderr
-            log_debug "Adding $current_user to ${KAE}-lnx-va-start group"
-            
-            if ensure_user_in_va_start_group "$current_user"; then
-                echo "[VAULT-CONFIG] ✅ Пользователь добавлен в группу va-start" | tee /dev/stderr
-                log_debug "✅ User added to va-start group"
-                print_info "ВАЖНО: Изменения группы применятся в новой сессии"
-                print_info "Пробуем записать agent.hcl (может потребоваться перелогин)"
-            else
-                echo "[VAULT-CONFIG] ❌ Не удалось добавить в группу va-start" | tee /dev/stderr
-                log_debug "❌ Failed to add to va-start group"
-                print_warning "Не удалось добавить в группу va-start"
-                print_info "Добавьте пользователя $current_user в группу ${KAE}-lnx-va-start вручную через IDM"
-                print_info "После этого agent.hcl можно скопировать: cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
-            fi
+            echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать secret_id.txt (нет прав)" | tee /dev/stderr
+            log_debug "⚠️  Failed to copy secret_id.txt (no permissions)"
         fi
+    fi
+    
+    # ============================================================
+    # ПРИМЕНЕНИЕ КОНФИГУРАЦИИ К VAULT-AGENT
+    # ============================================================
+    echo "[VAULT-CONFIG] Применение конфигурации к vault-agent..." | tee /dev/stderr
+    log_debug "Applying configuration to vault-agent"
+    
+    local current_user
+    current_user=$(whoami)
+    
+    # Проверяем, можем ли записать в /opt/vault/conf/
+    if [[ -w "/opt/vault/conf/" ]]; then
+        echo "[VAULT-CONFIG] ✅ Пользователь $current_user может писать в /opt/vault/conf/" | tee /dev/stderr
+        log_debug "✅ User $current_user can write to /opt/vault/conf/"
         
-        # Пробуем записать agent.hcl
-        echo "[VAULT-CONFIG] Попытка записи agent.hcl в $system_agent_hcl..." | tee /dev/stderr
-        log_debug "Attempting to write agent.hcl to $system_agent_hcl"
-        
-        if cp "$VAULT_AGENT_HCL" "$system_agent_hcl" 2>/dev/null; then
-            echo "[VAULT-CONFIG] ✅ agent.hcl успешно записан в $system_agent_hcl" | tee /dev/stderr
-            log_debug "✅ agent.hcl successfully written to $system_agent_hcl"
-            print_success "agent.hcl применен к системному vault-agent"
+        # Проверяем, отличается ли новый конфиг от существующего
+        if [[ -f "$SYSTEM_VAULT_AGENT_HCL" ]]; then
+            echo "[VAULT-CONFIG] ✅ Системный agent.hcl уже создан" | tee /dev/stderr
+            log_debug "✅ System agent.hcl already created"
             
             # Пробуем перезапустить vault-agent
             echo "[VAULT-CONFIG] Попытка перезапуска vault-agent..." | tee /dev/stderr
@@ -2251,19 +2388,29 @@ EOF
                 print_error "vault-agent не активен после применения конфига!"
                 systemctl status vault-agent --no-pager 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG" || true
             fi
+        fi
+    else
+        echo "[VAULT-CONFIG] ⚠️  Пользователь $current_user НЕ может писать в /opt/vault/conf/" | tee /dev/stderr
+        log_debug "⚠️  User $current_user cannot write to /opt/vault/conf/"
+        
+        # Добавляем в группу va-start для доступа на запись
+        echo "[VAULT-CONFIG] Добавляем $current_user в группу ${KAE}-lnx-va-start..." | tee /dev/stderr
+        log_debug "Adding $current_user to ${KAE}-lnx-va-start group"
+        
+        if ensure_user_in_va_start_group "$current_user"; then
+            echo "[VAULT-CONFIG] ✅ Пользователь добавлен в группу va-start" | tee /dev/stderr
+            log_debug "✅ User added to va-start group"
+            print_info "ВАЖНО: Изменения группы применятся в новой сессии"
+            print_info "Пробуем записать agent.hcl (может потребоваться перелогин)"
         else
-            echo "[VAULT-CONFIG] ❌ Не удалось записать agent.hcl (нет прав на запись)" | tee /dev/stderr
-            log_debug "❌ Failed to write agent.hcl (no write permissions)"
-            print_warning "Не удалось записать agent.hcl в /opt/vault/conf/"
-            print_info "Возможные причины:"
-            print_info "1. Пользователь не в группе ${KAE}-lnx-va-start"
-            print_info "2. Изменения группы не применились (требуется перелогин)"
-            print_info "3. Права на /opt/vault/conf/ настроены иначе"
-            print_info ""
-            print_info "Справочный конфиг создан в: $VAULT_AGENT_HCL"
-            print_info "Продолжаем с существующими сертификатами..."
+            echo "[VAULT-CONFIG] ❌ Не удалось добавить в группу va-start" | tee /dev/stderr
+            log_debug "❌ Failed to add to va-start group"
+            print_warning "Не удалось добавить в группу va-start"
+            print_info "Добавьте пользователя $current_user в группу ${KAE}-lnx-va-start вручную через IDM"
+            print_info "После этого agent.hcl можно скопировать: cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
         fi
     fi
+    
     
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
     echo "[VAULT-CONFIG] ✅ setup_vault_config ЗАВЕРШЕНА УСПЕШНО" | tee /dev/stderr
