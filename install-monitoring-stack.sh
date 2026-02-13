@@ -1945,9 +1945,42 @@ setup_vault_config() {
 
     {
         # Базовая конфигурация агента
-        # ВАЖНО: В Secure Edition используются переменные VAULT_* вместо хардкод /opt/
-        # Эта конфигурация - ШАБЛОН для RLM. RLM заменит пути на системные при применении.
-        cat << EOF
+        # ВАЖНО: Разные пути для SKIP_VAULT_INSTALL=false и true
+        if [[ "${SKIP_VAULT_INSTALL:-false}" == "false" ]]; then
+            # SKIP_VAULT_INSTALL=false: Новая установка - системные пути
+            echo "[VAULT-CONFIG] Создание конфигурации с системными путями (новая установка)" | tee /dev/stderr
+            cat << EOF
+pid_file = "/opt/vault/log/vault-agent.pidfile"
+vault {
+ address = "https://$SEC_MAN_ADDR"
+ tls_skip_verify = "false"
+ ca_path = "/opt/vault/conf/ca-trust"
+}
+auto_auth {
+ method "approle" {
+ namespace = "$NAMESPACE_CI"
+ mount_path = "auth/approle"
+
+ config = {
+ role_id_file_path = "/opt/vault/conf/role_id.txt"
+ secret_id_file_path = "/opt/vault/conf/secret_id.txt"
+ remove_secret_id_file_after_reading = false
+}
+}
+}
+log_destination "Tengry" {
+ log_format = "json"
+ log_path = "/opt/vault/log"
+ log_rotate = "5"
+ log_max_size = "5mb"
+ log_level = "trace"
+ log_file = "agent.log"
+}
+EOF
+        else
+            # SKIP_VAULT_INSTALL=true: Уже установлен - user-space пути (шаблон для справки)
+            echo "[VAULT-CONFIG] Создание конфигурации с user-space путями (шаблон для справки)" | tee /dev/stderr
+            cat << EOF
 pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
 vault {
  address = "https://$SEC_MAN_ADDR"
@@ -1974,11 +2007,24 @@ log_destination "Tengry" {
  log_level = "trace"
  log_file = "agent.log"
 }
+EOF
+        fi
 
+        if [[ "${SKIP_VAULT_INSTALL:-false}" == "false" ]]; then
+            cat << EOF
+template {
+  destination = "/opt/vault/conf/data_sec.json"
+  contents    = <<EOT
+{
+EOF
+        else
+            cat << EOF
 template {
   destination = "$VAULT_CONF_DIR/data_sec.json"
   contents    = <<EOT
 {
+EOF
+        fi
 EOF
 
         # Блок rpm_url
@@ -2139,7 +2185,9 @@ EOF
     
     if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
         echo "[VAULT-CONFIG] SKIP_VAULT_INSTALL=true: используем существующий vault-agent" | tee /dev/stderr
+        echo "[VAULT-CONFIG] Конфигурация создана с user-space путями (шаблон для справки)" | tee /dev/stderr
         log_debug "SKIP_VAULT_INSTALL=true: using existing vault-agent"
+        log_debug "Configuration created with user-space paths (reference template)"
         
         # Проверяем статус системного vault-agent (read-only)
         echo "[VAULT-CONFIG] Проверка статуса системного vault-agent..." | tee /dev/stderr
@@ -2265,25 +2313,100 @@ EOF
             print_info "Продолжаем с существующими сертификатами..."
         fi
     else
-        # SKIP_VAULT_INSTALL=false - новая установка vault-agent через RLM
+        # SKIP_VAULT_INSTALL=false - новая установка vault-agent
         echo "[VAULT-CONFIG] SKIP_VAULT_INSTALL=false: новая установка vault-agent" | tee /dev/stderr
-        echo "[VAULT-CONFIG] Конфигурация создана в: $VAULT_AGENT_HCL" | tee /dev/stderr
-        echo "[VAULT-CONFIG] Vault-agent будет установлен через RLM с этой конфигурацией" | tee /dev/stderr
-        log_debug "SKIP_VAULT_INSTALL=false: new vault-agent installation via RLM"
+        echo "[VAULT-CONFIG] Конфигурация создана с системными путями" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=false: new vault-agent installation"
         
-        # ВАЖНО: В Secure Edition при SKIP_VAULT_INSTALL=false
-        # RLM установит vault-agent и применит конфигурацию из шаблона
-        # Наш скрипт только создает шаблон с user-space путями
-        # RLM заменит пути на системные при применении
+        # Применяем конфигурацию к системному vault-agent
+        echo "[VAULT-CONFIG] Применение конфигурации к системному vault-agent..." | tee /dev/stderr
+        log_debug "Applying configuration to system vault-agent"
         
-        print_info "При новой установке vault-agent через RLM в Secure Edition:"
-        print_info "1. RLM установит vault-agent пакет (системный сервис)"
-        print_info "2. RLM возьмет шаблон agent.hcl с user-space путями"
-        print_info "3. RLM адаптирует пути для системного vault-agent"
-        print_info "4. RLM скопирует адаптированный agent.hcl в /opt/vault/conf/"
-        print_info "5. RLM скопирует role_id.txt и secret_id.txt в /opt/vault/conf/"
-        print_info "6. RLM перезапустит vault-agent сервис"
-        print_info "7. Vault-agent сгенерирует сертификаты в /opt/vault/certs/"
+        local system_role_id="/opt/vault/conf/role_id.txt"
+        local system_secret_id="/opt/vault/conf/secret_id.txt"
+        local system_agent_hcl="/opt/vault/conf/agent.hcl"
+        
+        # Копируем файлы аутентификации в системные пути через config-writer
+        echo "[VAULT-CONFIG] Копирование файлов аутентификации..." | tee /dev/stderr
+        
+        if [[ -f "$VAULT_ROLE_ID_FILE" ]]; then
+            echo "[VAULT-CONFIG] Копирование role_id.txt в $system_role_id..." | tee /dev/stderr
+            if cat "$VAULT_ROLE_ID_FILE" | "$WRAPPERS_DIR/config-writer_launcher.sh" "$system_role_id" 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ role_id.txt скопирован" | tee /dev/stderr
+                # Устанавливаем права (через config-writer уже должны быть)
+                chmod 640 "$system_role_id" 2>/dev/null || true
+            else
+                echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать role_id.txt" | tee /dev/stderr
+                print_warning "Не удалось скопировать role_id.txt в системный путь"
+                print_info "Проверьте права доступа к /opt/vault/conf/"
+            fi
+        fi
+        
+        if [[ -f "$VAULT_SECRET_ID_FILE" ]]; then
+            echo "[VAULT-CONFIG] Копирование secret_id.txt в $system_secret_id..." | tee /dev/stderr
+            if cat "$VAULT_SECRET_ID_FILE" | "$WRAPPERS_DIR/config-writer_launcher.sh" "$system_secret_id" 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован" | tee /dev/stderr
+                chmod 640 "$system_secret_id" 2>/dev/null || true
+            else
+                echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать secret_id.txt" | tee /dev/stderr
+                print_warning "Не удалось скопировать secret_id.txt в системный путь"
+            fi
+        fi
+        
+        # Копируем agent.hcl в системный путь
+        echo "[VAULT-CONFIG] Копирование agent.hcl в $system_agent_hcl..." | tee /dev/stderr
+        if cat "$VAULT_AGENT_HCL" | "$WRAPPERS_DIR/config-writer_launcher.sh" "$system_agent_hcl" 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ agent.hcl скопирован в /opt/vault/conf/" | tee /dev/stderr
+            print_success "Конфигурация vault-agent применена"
+        else
+            echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать agent.hcl" | tee /dev/stderr
+            print_warning "Не удалось применить конфигурацию vault-agent"
+            print_info "Проверьте права доступа к /opt/vault/conf/"
+            print_info "Или примените конфигурацию вручную:"
+            print_info "  sudo cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
+        fi
+        
+        # Пробуем перезапустить vault-agent
+        echo "[VAULT-CONFIG] Попытка перезапуска vault-agent..." | tee /dev/stderr
+        log_debug "Attempting to restart vault-agent"
+        
+        # Пробуем БЕЗ sudo сначала (вдруг группа дает права)
+        if systemctl restart vault-agent 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ vault-agent перезапущен БЕЗ sudo" | tee /dev/stderr
+            log_debug "✅ vault-agent restarted without sudo"
+            print_success "vault-agent успешно перезапущен"
+        # Если не получилось - пробуем с sudo
+        elif sudo -n systemctl restart vault-agent 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ vault-agent перезапущен с sudo" | tee /dev/stderr
+            log_debug "✅ vault-agent restarted with sudo"
+            print_success "vault-agent успешно перезапущен"
+        else
+            echo "[VAULT-CONFIG] ⚠️  Не удалось перезапустить vault-agent" | tee /dev/stderr
+            log_debug "⚠️  Failed to restart vault-agent"
+            print_warning "Не удалось перезапустить vault-agent автоматически"
+            print_info "Перезапустите вручную: sudo systemctl restart vault-agent"
+        fi
+        
+        # Проверяем статус после перезапуска
+        sleep 3
+        if systemctl is-active --quiet vault-agent; then
+            echo "[VAULT-CONFIG] ✅ vault-agent активен после изменений" | tee /dev/stderr
+            log_debug "✅ vault-agent is active after changes"
+            print_success "vault-agent работает с новым конфигом"
+            print_info "Сертификаты будут создаваться в /opt/vault/certs/"
+        else
+            echo "[VAULT-CONFIG] ❌ vault-agent НЕ активен!" | tee /dev/stderr
+            log_debug "❌ vault-agent is NOT active"
+            print_error "vault-agent не запустился после применения конфигурации"
+            print_info "Проверьте логи: journalctl -u vault-agent"
+        fi
+        
+        print_info "При новой установке vault-agent:"
+        print_info "1. Конфигурация создана с системными путями"
+        print_info "2. Файлы аутентификации скопированы в /opt/vault/conf/"
+        print_info "3. Vault-agent перезапущен для применения конфигурации"
+        print_info "4. Vault-agent сгенерирует сертификаты в /opt/vault/certs/"
+        print_info "5. Скрипт скопирует сертификаты в user-space для мониторинговых сервисов"
     fi
     
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
