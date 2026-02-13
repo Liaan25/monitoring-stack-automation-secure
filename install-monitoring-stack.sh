@@ -2471,14 +2471,62 @@ copy_certs_to_user_dirs() {
     echo "[CERTS-COPY] ✅ Создана директория: $harvest_cert_dir" | tee /dev/stderr
     log_debug "✅ Created directory: $harvest_cert_dir"
     
-    echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
-    log_debug "Extracting key and cert from bundle"
-    openssl pkey -in "$vault_bundle" -out "$harvest_cert_dir/harvest.key" 2>/dev/null || {
-        echo "[CERTS-COPY] ❌ Не удалось извлечь ключ" | tee /dev/stderr
-        log_debug "❌ Failed to extract key"
-        print_error "Не удалось извлечь приватный ключ из $vault_bundle"
-        exit 1
-    }
+    echo "[CERTS-COPY] Поиск приватного ключа..." | tee /dev/stderr
+    log_debug "Looking for private key"
+    
+    # Ищем приватный ключ в нескольких возможных местах
+    local private_key_found=false
+    local private_key_source=""
+    
+    # Вариант 1: Отдельный файл с ключом рядом с bundle
+    local possible_key_files=(
+        "$VAULT_CERTS_DIR/server.key"
+        "$VAULT_CERTS_DIR/private.key"
+        "$VAULT_CERTS_DIR/key.pem"
+        "$VAULT_CERTS_DIR/private.pem"
+        "$(dirname "$vault_bundle")/server.key"
+        "$(dirname "$vault_bundle")/private.key"
+    )
+    
+    for key_file in "${possible_key_files[@]}"; do
+        if [[ -f "$key_file" && -r "$key_file" ]]; then
+            echo "[CERTS-COPY] ✅ Найден приватный ключ: $key_file" | tee /dev/stderr
+            log_debug "✅ Found private key: $key_file"
+            cp "$key_file" "$harvest_cert_dir/harvest.key" || {
+                echo "[CERTS-COPY] ❌ Не удалось скопировать ключ" | tee /dev/stderr
+                log_debug "❌ Failed to copy key"
+                exit 1
+            }
+            private_key_found=true
+            private_key_source="$key_file"
+            break
+        fi
+    done
+    
+    # Вариант 2: Ключ внутри bundle (попробуем извлечь)
+    if [[ "$private_key_found" == "false" ]]; then
+        echo "[CERTS-COPY] ⚠️  Отдельный файл с ключом не найден, пробуем извлечь из bundle..." | tee /dev/stderr
+        log_debug "⚠️  No separate key file found, trying to extract from bundle"
+        
+        # Пробуем извлечь ключ из bundle (если он там есть)
+        if openssl pkey -in "$vault_bundle" -out "$harvest_cert_dir/harvest.key" 2>/dev/null; then
+            echo "[CERTS-COPY] ✅ Ключ извлечен из bundle" | tee /dev/stderr
+            log_debug "✅ Key extracted from bundle"
+            private_key_found=true
+            private_key_source="bundle"
+        else
+            echo "[CERTS-COPY] ❌ Не удалось найти или извлечь приватный ключ" | tee /dev/stderr
+            log_debug "❌ Failed to find or extract private key"
+            print_error "Не удалось найти приватный ключ для сертификатов"
+            print_error "Проверьте что vault-agent создал файлы в /opt/vault/certs/"
+            print_error "Нужны: server_bundle.pem (сертификаты) и server.key (приватный ключ)"
+            exit 1
+        fi
+    fi
+    
+    # Извлекаем сертификат из bundle
+    echo "[CERTS-COPY] Извлечение сертификата из bundle..." | tee /dev/stderr
+    log_debug "Extracting certificate from bundle"
     openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$harvest_cert_dir/harvest.crt" 2>/dev/null || {
         echo "[CERTS-COPY] ❌ Не удалось извлечь сертификат" | tee /dev/stderr
         log_debug "❌ Failed to extract certificate"
@@ -2486,7 +2534,9 @@ copy_certs_to_user_dirs() {
         exit 1
     }
     echo "[CERTS-COPY] ✅ Извлечены harvest.key и harvest.crt" | tee /dev/stderr
+    echo "[CERTS-COPY]   Источник ключа: $private_key_source" | tee /dev/stderr
     log_debug "✅ Extracted harvest.key and harvest.crt"
+    log_debug "  Key source: $private_key_source"
     
     chmod 640 "$harvest_cert_dir/harvest.crt"
     chmod 600 "$harvest_cert_dir/harvest.key"
@@ -2508,10 +2558,28 @@ copy_certs_to_user_dirs() {
     echo "[CERTS-COPY] ✅ Создана директория: $GRAFANA_USER_CERTS_DIR" | tee /dev/stderr
     log_debug "✅ Created directory: $GRAFANA_USER_CERTS_DIR"
     
-    echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
-    log_debug "Extracting key and cert from bundle for Grafana"
-    openssl pkey -in "$vault_bundle" -out "$GRAFANA_USER_CERTS_DIR/key.key" 2>/dev/null || exit 1
-    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$GRAFANA_USER_CERTS_DIR/crt.crt" 2>/dev/null || exit 1
+    echo "[CERTS-COPY] Копирование ключа и сертификата для Grafana..." | tee /dev/stderr
+    log_debug "Copying key and cert for Grafana"
+    
+    # Копируем тот же ключ что использовали для Harvest
+    if [[ -f "$harvest_cert_dir/harvest.key" ]]; then
+        cp "$harvest_cert_dir/harvest.key" "$GRAFANA_USER_CERTS_DIR/key.key" || {
+            echo "[CERTS-COPY] ❌ Не удалось скопировать ключ для Grafana" | tee /dev/stderr
+            log_debug "❌ Failed to copy key for Grafana"
+            exit 1
+        }
+    else
+        echo "[CERTS-COPY] ❌ Ключ Harvest не найден: $harvest_cert_dir/harvest.key" | tee /dev/stderr
+        log_debug "❌ Harvest key not found: $harvest_cert_dir/harvest.key"
+        exit 1
+    fi
+    
+    # Извлекаем сертификат из bundle
+    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$GRAFANA_USER_CERTS_DIR/crt.crt" 2>/dev/null || {
+        echo "[CERTS-COPY] ❌ Не удалось извлечь сертификат для Grafana" | tee /dev/stderr
+        log_debug "❌ Failed to extract certificate for Grafana"
+        exit 1
+    }
     echo "[CERTS-COPY] ✅ Извлечены key.key и crt.crt для Grafana" | tee /dev/stderr
     log_debug "✅ Extracted key.key and crt.crt for Grafana"
     
@@ -2549,10 +2617,28 @@ copy_certs_to_user_dirs() {
     echo "[CERTS-COPY] ✅ Создана директория: $PROMETHEUS_USER_CERTS_DIR" | tee /dev/stderr
     log_debug "✅ Created directory: $PROMETHEUS_USER_CERTS_DIR"
     
-    echo "[CERTS-COPY] Извлечение ключа и сертификата из bundle..." | tee /dev/stderr
-    log_debug "Extracting key and cert from bundle for Prometheus"
-    openssl pkey -in "$vault_bundle" -out "$PROMETHEUS_USER_CERTS_DIR/server.key" 2>/dev/null || exit 1
-    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$PROMETHEUS_USER_CERTS_DIR/server.crt" 2>/dev/null || exit 1
+    echo "[CERTS-COPY] Копирование ключа и сертификата для Prometheus..." | tee /dev/stderr
+    log_debug "Copying key and cert for Prometheus"
+    
+    # Копируем тот же ключ что использовали для Harvest
+    if [[ -f "$harvest_cert_dir/harvest.key" ]]; then
+        cp "$harvest_cert_dir/harvest.key" "$PROMETHEUS_USER_CERTS_DIR/server.key" || {
+            echo "[CERTS-COPY] ❌ Не удалось скопировать ключ для Prometheus" | tee /dev/stderr
+            log_debug "❌ Failed to copy key for Prometheus"
+            exit 1
+        }
+    else
+        echo "[CERTS-COPY] ❌ Ключ Harvest не найден: $harvest_cert_dir/harvest.key" | tee /dev/stderr
+        log_debug "❌ Harvest key not found: $harvest_cert_dir/harvest.key"
+        exit 1
+    fi
+    
+    # Извлекаем сертификат из bundle
+    openssl crl2pkcs7 -nocrl -certfile "$vault_bundle" | openssl pkcs7 -print_certs -out "$PROMETHEUS_USER_CERTS_DIR/server.crt" 2>/dev/null || {
+        echo "[CERTS-COPY] ❌ Не удалось извлечь сертификат для Prometheus" | tee /dev/stderr
+        log_debug "❌ Failed to extract certificate for Prometheus"
+        exit 1
+    }
     echo "[CERTS-COPY] ✅ Извлечены server.key и server.crt для Prometheus" | tee /dev/stderr
     log_debug "✅ Extracted server.key and server.crt for Prometheus"
     
@@ -5920,23 +6006,6 @@ main() {
     }
     echo "[MAIN] ✅ create_directories completed" | tee /dev/stderr
     log_debug "Completed: create_directories"
-
-    # При необходимости можно пропустить установку Vault через RLM,
-    # если vault-agent уже установлен и настроен на целевом сервере.
-    write_diagnostic "========================================="
-    write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
-    write_diagnostic "========================================="
-    write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
-    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
-        write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
-        write_diagnostic "Действие: используем уже установленный vault-agent"
-        print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
-    else
-        write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
-        install_vault_via_rlm
-        write_diagnostic "install_vault_via_rlm выполнена"
-    fi
-    write_diagnostic ""
     
     # ============================================================
     # УСТАНОВКА VAULT-AGENT через RLM (если не пропущена)
