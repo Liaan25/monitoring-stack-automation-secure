@@ -842,6 +842,283 @@ ensure_user_in_va_read_group() {
     return 1
 }
 
+install_vault_via_rlm() {
+    print_step "Установка и настройка Vault через RLM"
+    ensure_working_directory
+
+    if [[ -z "$RLM_TOKEN" || -z "$RLM_API_URL" || -z "$SEC_MAN_ADDR" || -z "$NAMESPACE_CI" || -z "$SERVER_IP" ]]; then
+        print_error "Отсутствуют обязательные параметры для установки Vault (RLM_API_URL/RLM_TOKEN/SEC_MAN_ADDR/NAMESPACE_CI/SERVER_IP)"
+        exit 1
+    fi
+
+    # Нормализуем SEC_MAN_ADDR в верхний регистр для единообразия
+    local SEC_MAN_ADDR_UPPER
+    SEC_MAN_ADDR_UPPER="${SEC_MAN_ADDR^^}"
+
+    # Формируем KAE_SERVER из NAMESPACE_CI
+    local KAE_SERVER
+    KAE_SERVER=$(echo "$NAMESPACE_CI" | cut -d'_' -f2)
+    print_info "Создание задачи RLM для Vault (tenant=$NAMESPACE_CI, v_url=$SEC_MAN_ADDR_UPPER, host=$SERVER_IP)"
+
+    # Формируем JSON-пейлоад через jq (надежное экранирование)
+    local payload vault_create_resp vault_task_id
+    payload=$(jq -n \
+      --arg v_url "$SEC_MAN_ADDR_UPPER" \
+      --arg tenant "$NAMESPACE_CI" \
+      --arg kae "$KAE_SERVER" \
+      --arg ip "$SERVER_IP" \
+      '{
+        params: {
+          v_url: $v_url,
+          tenant: $tenant,
+          start_after_configuration: false,
+          approle: "approle/vault-agent",
+          templates: [
+            {
+              source: { file_name: null, content: null },
+              destination: { path: null }
+            }
+          ],
+          serv_user: ($kae + "-lnx-va-start"),
+          serv_group: ($kae + "-lnx-va-read"),
+          read_user: ($kae + "-lnx-va-start"),
+          log_num: 5,
+          log_size: 5,
+          log_level: "info",
+          config_unwrapped: true,
+          skip_sm_conflicts: false
+        },
+        start_at: "now",
+        service: "vault_agent_config",
+        items: [
+          {
+            table_id: "secmanserver",
+            invsvm_ip: $ip
+          }
+        ]
+      }')
+
+    if [[ ! -x "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" ]]; then
+        print_error "Лаунчер rlm-api-wrapper_launcher.sh не найден или не исполняемый в $WRAPPERS_DIR"
+        exit 1
+    fi
+
+    vault_create_resp=$(printf '%s' "$payload" | "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" create_vault_task "$RLM_API_URL" "$RLM_TOKEN") || true
+
+    vault_task_id=$(echo "$vault_create_resp" | jq -r '.id // empty')
+    if [[ -z "$vault_task_id" || "$vault_task_id" == "null" ]]; then
+        print_error "❌ Ошибка при создании задачи Vault: $vault_create_resp"
+        exit 1
+    fi
+    print_success "✅ Задача Vault создана. ID: $vault_task_id"
+
+    # Мониторинг статуса задачи Vault
+    local max_attempts=120
+    local attempt=1
+    local current_v_status=""
+    local start_ts
+    local interval_sec=10
+    start_ts=$(date +%s)
+
+    echo ""
+    echo "┌────────────────────────────────────────────────────────────┐"
+    printf "│  🔐 УСТАНОВКА: %-41s │\n" "Vault-agent"
+    printf "│  Task ID: %-47s │\n" "$vault_task_id"
+    printf "│  Max attempts: %-3d (интервал: %2dс)                      │\n" "$max_attempts" "$interval_sec"
+    echo "└────────────────────────────────────────────────────────────┘"
+    echo ""
+
+    while [[ $attempt -le $max_attempts ]]; do
+        local vault_status_resp
+        vault_status_resp=$("$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" get_vault_status "$RLM_API_URL" "$RLM_TOKEN" "$vault_task_id") || true
+
+        # Текущий статус
+        current_v_status=$(echo "$vault_status_resp" | jq -r '.status // empty' 2>/dev/null || echo "$vault_status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+        [[ -z "$current_v_status" ]] && current_v_status="in_progress"
+
+        # Расчет времени
+        local now_ts elapsed_sec elapsed_min
+        now_ts=$(date +%s)
+        elapsed_sec=$(( now_ts - start_ts ))
+        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+
+        # Цветной статус-индикатор
+        local status_icon="⏳"
+        case "$current_v_status" in
+            success) status_icon="✅" ;;
+            failed|error) status_icon="❌" ;;
+            in_progress) status_icon="🔄" ;;
+        esac
+
+        # Вывод прогресса (каждая попытка - новая строка для Jenkins)
+        echo "🔐 Vault-agent │ Попытка $attempt/$max_attempts │ Статус: $current_v_status $status_icon │ Время: ${elapsed_min}м (${elapsed_sec}с)"
+
+        write_diagnostic "Vault RLM: attempt=$attempt/$max_attempts, status=$current_v_status, elapsed=${elapsed_min}m"
+
+        if echo "$vault_status_resp" | grep -q '"status":"success"'; then
+            echo "✅ Vault-agent УСТАНОВЛЕН за ${elapsed_min}м (${elapsed_sec}с)"
+            echo ""
+            write_diagnostic "Vault RLM: SUCCESS after ${elapsed_min}m"
+            sleep 10
+            break
+        elif echo "$vault_status_resp" | grep -qE '"status":"(failed|error)"'; then
+            echo ""
+            print_error "❌ VAULT-AGENT: ОШИБКА УСТАНОВКИ"
+            print_error "📋 Ответ RLM: $vault_status_resp"
+            write_diagnostic "Vault RLM: FAILED - $vault_status_resp"
+            exit 1
+        fi
+
+        attempt=$((attempt + 1))
+        sleep "$interval_sec"
+    done
+
+    if [[ $attempt -gt $max_attempts ]]; then
+        echo ""
+        print_error "⏰ VAULT-AGENT: ТАЙМАУТ после ${max_attempts} попыток (~$((max_attempts * interval_sec / 60)) минут)"
+        exit 1
+    fi
+}
+
+ensure_user_in_va_start_group() {
+    local user="$1"
+    
+    print_step "Добавление пользователя $user в группу ${KAE}-lnx-va-start через RLM"
+    ensure_working_directory
+    
+    if [[ -z "${KAE:-}" ]]; then
+        print_warning "KAE не определён, пропускаем добавление в va-start"
+        print_info "Добавьте пользователя $user в группу va-start вручную через IDM"
+        return 1
+    fi
+    
+    local va_start_group="${KAE}-lnx-va-start"
+    
+    # ПРОВЕРКА: Может пользователь уже в группе?
+    echo "[VA-START] Проверка: состоит ли $user в группе $va_start_group..." | tee /dev/stderr
+    log_debug "Checking if $user is already in $va_start_group"
+    
+    if id "$user" 2>/dev/null | grep -q "$va_start_group"; then
+        echo "[VA-START] ✅ Пользователь $user УЖЕ СОСТОИТ в группе $va_start_group" | tee /dev/stderr
+        log_debug "✅ User $user is already in $va_start_group"
+        print_success "Пользователь $user уже в группе $va_start_group (пропускаем создание RLM задачи)"
+        return 0
+    fi
+    
+    echo "[VA-START] ⚠️  Пользователь $user НЕ в группе $va_start_group, создаем RLM задачу..." | tee /dev/stderr
+    log_debug "⚠️  User $user is not in $va_start_group, creating RLM task"
+    
+    if [[ -z "${RLM_API_URL:-}" || -z "${RLM_TOKEN:-}" ]]; then
+        print_warning "RLM_API_URL или RLM_TOKEN не заданы, пропускаем добавление в va-start"
+        print_info "Добавьте пользователя $user в группу ${KAE}-lnx-va-start вручную через IDM"
+        return 1
+    fi
+
+    if [[ ! -x "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" ]]; then
+        print_error "Лаунчер rlm-api-wrapper_launcher.sh не найден или не исполняемый в $WRAPPERS_DIR"
+        return 1
+    fi
+
+    print_info "Создание задачи RLM UVS_LINUX_ADD_USERS_GROUP для добавления $user в $va_start_group"
+
+    local payload create_resp group_task_id
+    payload=$(jq -n \
+        --arg usr "$user" \
+        --arg grp "$va_start_group" \
+        --arg ip "$SERVER_IP" \
+        '{
+          params: {
+            VAR_GRPS: [
+              {
+                group: $grp,
+                gid: "",
+                users: [ $usr ]
+              }
+            ]
+          },
+          start_at: "now",
+          service: "UVS_LINUX_ADD_USERS_GROUP",
+          skip_check_collisions: true,
+          items: [
+            {
+              table_id: "uvslinuxtemplatewithtestandprom",
+              invsvm_ip: $ip
+            }
+          ]
+        }')
+
+    create_resp=$(printf '%s' "$payload" | \
+        "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" create_group_task "$RLM_API_URL" "$RLM_TOKEN") || true
+
+    group_task_id=$(echo "$create_resp" | jq -r '.id // empty')
+    if [[ -z "$group_task_id" || "$group_task_id" == "null" ]]; then
+        print_error "Не удалось создать задачу UVS_LINUX_ADD_USERS_GROUP: $create_resp"
+        return 1
+    fi
+    print_success "Задача UVS_LINUX_ADD_USERS_GROUP создана. ID: $group_task_id"
+
+    local max_attempts=60  # 10 минут (60 * 10 сек)
+    local attempt=1
+    local current_status=""
+    local start_ts
+    local interval_sec=10
+    start_ts=$(date +%s)
+
+    echo ""
+    echo "┌────────────────────────────────────────────────────────────┐"
+    printf "│  🔐 ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ В VA-START ГРУППУ            │\n"
+    printf "│  User: %-50s │\n" "$user"
+    printf "│  Group: %-48s │\n" "$va_start_group"
+    printf "│  Task ID: %-47s │\n" "$group_task_id"
+    printf "│  Max attempts: %-3d (интервал: %2dс)                      │\n" "$max_attempts" "$interval_sec"
+    echo "└────────────────────────────────────────────────────────────┘"
+    echo ""
+
+    while [[ $attempt -le $max_attempts ]]; do
+        local status_resp
+        status_resp=$("$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" get_group_status "$RLM_API_URL" "$RLM_TOKEN" "$group_task_id") || true
+
+        current_status=$(echo "$status_resp" | jq -r '.status // empty' 2>/dev/null || echo "in_progress")
+        [[ -z "$current_status" ]] && current_status="in_progress"
+
+        # Расчет времени
+        local now_ts elapsed_sec elapsed_min
+        now_ts=$(date +%s)
+        elapsed_sec=$(( now_ts - start_ts ))
+        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+
+        # Цветной статус-индикатор
+        local status_icon="⏳"
+        case "$current_status" in
+            success) status_icon="✅" ;;
+            failed|error) status_icon="❌" ;;
+            in_progress) status_icon="🔄" ;;
+        esac
+
+        echo "🔐 $user → $va_start_group │ Попытка $attempt/$max_attempts │ Статус: $current_status $status_icon │ Время: ${elapsed_min}м (${elapsed_sec}с)"
+
+        if echo "$status_resp" | grep -q '"status":"success"'; then
+            echo "✅ Пользователь $user добавлен в $va_start_group за ${elapsed_min}м (${elapsed_sec}с)"
+            echo ""
+            print_success "Пользователь $user добавлен в группу $va_start_group"
+            print_info "ВАЖНО: Изменения группы применятся в новой сессии (или требуется newgrp/$USER login)"
+            return 0
+        elif echo "$status_resp" | grep -qE '"status":"(failed|error)"'; then
+            echo ""
+            print_error "❌ Ошибка добавления пользователя $user в $va_start_group"
+            print_error "📋 Ответ RLM: $status_resp"
+            return 1
+        fi
+
+        attempt=$((attempt + 1))
+        sleep "$interval_sec"
+    done
+
+    echo ""
+    print_error "⏰ Таймаут добавления пользователя $user в $va_start_group после ${max_attempts} попыток (~$((max_attempts * interval_sec / 60)) минут)"
+    return 1
+}
+
 # Последовательно добавляет ${KAE}-lnx-mon_sys и ${KAE}-lnx-mon_ci в группу as-admin через RLM
 ensure_monitoring_users_in_as_admin() {
     print_step "Проверка членства monitoring-УЗ в группе as-admin"
@@ -1800,7 +2077,7 @@ template {
 {{ .Data.issuing_ca }}
 {{- end -}}
   EOT
-  perms = "0600"
+  perms = "0640"
 }
 
 template {
@@ -1822,7 +2099,7 @@ template {
 {{ .Data.issuing_ca }}
 {{- end -}}
   EOT
-  perms = "0600"
+  perms = "0640"
 }
 EOF
         else
@@ -1837,53 +2114,155 @@ EOF
     echo "[VAULT-CONFIG] ✅ vault-agent.conf создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
     log_debug "✅ vault-agent.conf created at $VAULT_AGENT_HCL"
 
-    echo "[VAULT-CONFIG] Проверка перезапуска vault-agent..." | tee /dev/stderr
-    log_debug "Checking vault-agent restart"
+    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+    echo "[VAULT-CONFIG] agent.hcl создан (только для справки)" | tee /dev/stderr
+    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+    log_debug "agent.hcl created for reference only"
     
-    # Перезапуск vault-agent с проверкой
-    print_step "Перезапуск vault-agent"
+    # ============================================================
+    # ВАЖНО: vault-agent - СИСТЕМНЫЙ СЕРВИС (управляется RLM!)
+    # ============================================================
+    # vault-agent НЕ управляется через наш скрипт!
+    # 
+    # ПРАВИЛЬНЫЙ WORKFLOW для тысяч серверов:
+    # 1. Создайте/измените RLM ШАБЛОН задачи vault_agent_config
+    # 2. В шаблоне укажите perms = "0640" для всех сертификатов
+    # 3. Примените шаблон через RLM на все серверы
+    # 4. RLM автоматически создаст конфиги и перезапустит vault-agent
+    # 
+    # НАШ СКРИПТ:
+    # - Создает agent.hcl в user-space (для справки/шаблона)
+    # - Использует СУЩЕСТВУЮЩИЕ сертификаты из /opt/vault/certs/
+    # - НЕ трогает системный vault-agent (нет прав, не нужно!)
+    # ============================================================
     
-    # В Secure Edition vault-agent уже установлен как system service
-    # Restart требует sudo - пропускаем если SKIP_VAULT_INSTALL=true
     if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
-        echo "[VAULT-CONFIG] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем restart vault-agent (требует sudo)" | tee /dev/stderr
-        log_debug "⚠️  Skipping vault-agent restart (SKIP_VAULT_INSTALL=true)"
-        print_warning "vault-agent restart пропущен (требует sudo). Используется существующий конфиг."
-        # Проверяем статус без рестарта
+        echo "[VAULT-CONFIG] SKIP_VAULT_INSTALL=true: используем существующий vault-agent" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=true: using existing vault-agent"
+        
+        # Проверяем статус системного vault-agent (read-only)
+        echo "[VAULT-CONFIG] Проверка статуса системного vault-agent..." | tee /dev/stderr
+        log_debug "Checking system vault-agent status"
+        
         if systemctl is-active --quiet vault-agent; then
-            echo "[VAULT-CONFIG] ✅ vault-agent уже запущен" | tee /dev/stderr
-            log_debug "✅ vault-agent is already running"
-            print_success "vault-agent запущен"
+            echo "[VAULT-CONFIG] ✅ Системный vault-agent активен" | tee /dev/stderr
+            log_debug "✅ System vault-agent is active"
+            print_success "Системный vault-agent активен и работает"
+            
+            # Проверяем наличие сертификатов
+            local system_vault_certs="/opt/vault/certs/server_bundle.pem"
+            if [[ -f "$system_vault_certs" ]]; then
+                echo "[VAULT-CONFIG] ✅ Сертификаты найдены: $system_vault_certs" | tee /dev/stderr
+                log_debug "✅ Certificates found: $system_vault_certs"
+                print_success "Сертификаты от vault-agent найдены"
+            else
+                echo "[VAULT-CONFIG] ⚠️  Сертификаты не найдены: $system_vault_certs" | tee /dev/stderr
+                log_debug "⚠️  Certificates not found: $system_vault_certs"
+                print_warning "Сертификаты от vault-agent пока не созданы (требуется время на генерацию)"
+            fi
         else
-            echo "[VAULT-CONFIG] ⚠️  vault-agent не запущен!" | tee /dev/stderr
-            log_debug "⚠️  vault-agent is not running!"
-            print_warning "vault-agent не запущен! Требуется ручной запуск: sudo systemctl start vault-agent"
+            echo "[VAULT-CONFIG] ⚠️  Системный vault-agent не активен" | tee /dev/stderr
+            log_debug "⚠️  System vault-agent is not active"
+            print_warning "Системный vault-agent не активен"
+            systemctl status vault-agent --no-pager 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG" || true
         fi
-    elif systemctl restart vault-agent 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG"; then
-        echo "[VAULT-CONFIG] ✅ vault-agent restart успешен" | tee /dev/stderr
-        log_debug "✅ vault-agent restart successful"
-        sleep 5
-        if systemctl is-active --quiet vault-agent; then
-            print_success "Vault конфигурация создана и сервис перезапущен"
-            echo "[VAULT-CONFIG] ✅ vault-agent активен после перезапуска" | tee /dev/stderr
-            log_debug "✅ vault-agent is active after restart"
-            # Удаляем временный файл с чувствительными данными (возможные локации)
-            rm -rf "$LOCAL_CRED_JSON" "/home/${SUDO_USER:-}/temp_data_cred.json" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/tmp/temp_data_cred.json" || true
-            echo "[VAULT-CONFIG] Временные файлы credentials удалены" | tee /dev/stderr
-            log_debug "Temporary credential files removed"
+        
+        # ============================================================
+        # ПРИМЕНЕНИЕ agent.hcl к существующему vault-agent
+        # ============================================================
+        # /opt/vault/conf/ принадлежит va-start:va-read
+        # Чтобы записать agent.hcl - нужно быть в группе va-start
+        # ============================================================
+        
+        echo "[VAULT-CONFIG] Попытка применить agent.hcl к системному vault-agent..." | tee /dev/stderr
+        log_debug "Attempting to apply agent.hcl to system vault-agent"
+        
+        local current_user
+        current_user=$(whoami)
+        
+        # Проверяем, можем ли записать в /opt/vault/conf/
+        local system_agent_hcl="/opt/vault/conf/agent.hcl"
+        if [[ -w "/opt/vault/conf/" ]]; then
+            echo "[VAULT-CONFIG] ✅ Пользователь $current_user может писать в /opt/vault/conf/" | tee /dev/stderr
+            log_debug "✅ User $current_user can write to /opt/vault/conf/"
         else
-            echo "[VAULT-CONFIG] ❌ vault-agent не активен после перезапуска" | tee /dev/stderr
-            log_debug "❌ vault-agent is not active after restart"
-            print_error "vault-agent не активен после перезапуска"
-            systemctl status vault-agent --no-pager
-            exit 1
+            echo "[VAULT-CONFIG] ⚠️  Пользователь $current_user НЕ может писать в /opt/vault/conf/" | tee /dev/stderr
+            log_debug "⚠️  User $current_user cannot write to /opt/vault/conf/"
+            
+            # Добавляем в группу va-start для доступа на запись
+            echo "[VAULT-CONFIG] Добавляем $current_user в группу ${KAE}-lnx-va-start..." | tee /dev/stderr
+            log_debug "Adding $current_user to ${KAE}-lnx-va-start group"
+            
+            if ensure_user_in_va_start_group "$current_user"; then
+                echo "[VAULT-CONFIG] ✅ Пользователь добавлен в группу va-start" | tee /dev/stderr
+                log_debug "✅ User added to va-start group"
+                print_info "ВАЖНО: Изменения группы применятся в новой сессии"
+                print_info "Пробуем записать agent.hcl (может потребоваться перелогин)"
+            else
+                echo "[VAULT-CONFIG] ❌ Не удалось добавить в группу va-start" | tee /dev/stderr
+                log_debug "❌ Failed to add to va-start group"
+                print_warning "Не удалось добавить в группу va-start"
+                print_info "Добавьте пользователя $current_user в группу ${KAE}-lnx-va-start вручную через IDM"
+                print_info "После этого agent.hcl можно скопировать: cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
+            fi
         fi
-    else
-        echo "[VAULT-CONFIG] ❌ Ошибка при перезапуске vault-agent" | tee /dev/stderr
-        log_debug "❌ Error restarting vault-agent"
-        print_error "Ошибка при перезапуске vault-agent"
-        systemctl status vault-agent --no-pager
-        exit 1
+        
+        # Пробуем записать agent.hcl
+        echo "[VAULT-CONFIG] Попытка записи agent.hcl в $system_agent_hcl..." | tee /dev/stderr
+        log_debug "Attempting to write agent.hcl to $system_agent_hcl"
+        
+        if cp "$VAULT_AGENT_HCL" "$system_agent_hcl" 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ agent.hcl успешно записан в $system_agent_hcl" | tee /dev/stderr
+            log_debug "✅ agent.hcl successfully written to $system_agent_hcl"
+            print_success "agent.hcl применен к системному vault-agent"
+            
+            # Пробуем перезапустить vault-agent
+            echo "[VAULT-CONFIG] Попытка перезапуска vault-agent..." | tee /dev/stderr
+            log_debug "Attempting to restart vault-agent"
+            
+            # Пробуем БЕЗ sudo сначала (вдруг группа дает права)
+            if systemctl restart vault-agent 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ vault-agent перезапущен БЕЗ sudo" | tee /dev/stderr
+                log_debug "✅ vault-agent restarted without sudo"
+                print_success "vault-agent успешно перезапущен"
+            # Если не получилось - пробуем с sudo
+            elif sudo -n systemctl restart vault-agent 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ vault-agent перезапущен с sudo" | tee /dev/stderr
+                log_debug "✅ vault-agent restarted with sudo"
+                print_success "vault-agent успешно перезапущен"
+            else
+                echo "[VAULT-CONFIG] ⚠️  Не удалось перезапустить vault-agent" | tee /dev/stderr
+                log_debug "⚠️  Failed to restart vault-agent"
+                print_warning "Не удалось перезапустить vault-agent автоматически"
+                print_info "Перезапустите вручную: systemctl restart vault-agent"
+                print_info "Или обратитесь к администратору"
+            fi
+            
+            # Проверяем статус после перезапуска
+            sleep 3
+            if systemctl is-active --quiet vault-agent; then
+                echo "[VAULT-CONFIG] ✅ vault-agent активен после изменений" | tee /dev/stderr
+                log_debug "✅ vault-agent is active after changes"
+                print_success "vault-agent работает с новым конфигом"
+                print_info "ВАЖНО: Новые сертификаты будут создаваться с правами 0640"
+            else
+                echo "[VAULT-CONFIG] ❌ vault-agent НЕ активен!" | tee /dev/stderr
+                log_debug "❌ vault-agent is NOT active"
+                print_error "vault-agent не активен после применения конфига!"
+                systemctl status vault-agent --no-pager 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG" || true
+            fi
+        else
+            echo "[VAULT-CONFIG] ❌ Не удалось записать agent.hcl (нет прав на запись)" | tee /dev/stderr
+            log_debug "❌ Failed to write agent.hcl (no write permissions)"
+            print_warning "Не удалось записать agent.hcl в /opt/vault/conf/"
+            print_info "Возможные причины:"
+            print_info "1. Пользователь не в группе ${KAE}-lnx-va-start"
+            print_info "2. Изменения группы не применились (требуется перелогин)"
+            print_info "3. Права на /opt/vault/conf/ настроены иначе"
+            print_info ""
+            print_info "Справочный конфиг создан в: $VAULT_AGENT_HCL"
+            print_info "Продолжаем с существующими сертификатами..."
+        fi
     fi
     
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
@@ -2325,49 +2704,72 @@ Description=Monitoring stack (Prometheus + Grafana + Harvest)
 WantedBy=default.target
 EOF
 
-    # Права и владельцы на юниты
-    chown -R "${mon_sys_user}:${mon_sys_user}" "${mon_sys_home}/.config"
-    chmod 700 "${mon_sys_home}/.config"
-    chmod 640 "$prom_unit" "$graf_unit" "$harvest_unit" "$target_unit"
-
+    # ✅ SECURE EDITION: НЕТ chown/chmod - файлы создаются от имени mon_sys пользователя
+    # Права устанавливаются автоматически при создании файлов
+    
     print_success "User-юниты systemd для мониторинга созданы под пользователем ${mon_sys_user}"
+    
+    # Логируем для отладки
+    echo "[DEBUG-SYSTEMD] Юниты созданы в: $user_systemd_dir" | tee /dev/stderr
+    echo "[DEBUG-SYSTEMD] Prometheus unit: $prom_unit" | tee /dev/stderr
+    echo "[DEBUG-SYSTEMD] Grafana unit: $graf_unit" | tee /dev/stderr
+    echo "[DEBUG-SYSTEMD] Harvest unit: $harvest_unit" | tee /dev/stderr
 }
 
 configure_grafana_ini() {
-    print_step "Конфигурация grafana.ini"
+    print_step "Конфигурация grafana.ini (Secure Edition)"
     ensure_working_directory
     
-    # Проверяем, установлена ли Grafana
-    if [[ ! -d "/etc/grafana" ]]; then
-        print_warning "Директория /etc/grafana не существует (Grafana не установлена)"
-        print_info "Если используется SKIP_RPM_INSTALL=true, это ожидаемо"
-        return 0
+    # Определяем user-space пути
+    local GRAFANA_USER_CONFIG_DIR="$HOME/monitoring/config/grafana"
+    local GRAFANA_USER_DATA_DIR="$HOME/monitoring/data/grafana"
+    local GRAFANA_USER_LOGS_DIR="$HOME/monitoring/logs/grafana"
+    local GRAFANA_USER_CERTS_DIR="$HOME/monitoring/certs/grafana"
+    
+    # Создаем директории (без chown/chmod - работаем в user-space)
+    mkdir -p "$GRAFANA_USER_CONFIG_DIR" "$GRAFANA_USER_DATA_DIR" \
+             "$GRAFANA_USER_LOGS_DIR" "$GRAFANA_USER_CERTS_DIR" \
+             "$GRAFANA_USER_DATA_DIR/plugins"
+    
+    # Проверяем, есть ли сертификаты (скопированы ли они из /opt/vault/certs/)
+    if [[ ! -f "$GRAFANA_USER_CERTS_DIR/crt.crt" || ! -f "$GRAFANA_USER_CERTS_DIR/key.key" ]]; then
+        print_warning "Сертификаты Grafana не найдены в $GRAFANA_USER_CERTS_DIR/"
+        print_info "Ожидаем что copy_certs_to_user_dirs() скопирует их из /opt/vault/certs/"
+        print_info "Если SKIP_VAULT_INSTALL=true, сертификаты должны быть уже скопированы"
     fi
     
-    "$WRAPPERS_DIR/config-writer_launcher.sh" /etc/grafana/grafana.ini << EOF
+    # Создаем grafana.ini в user-space
+    cat > "$GRAFANA_USER_CONFIG_DIR/grafana.ini" << EOF
 [server]
 protocol = https
 http_port = ${GRAFANA_PORT}
 domain = ${SERVER_DOMAIN}
- cert_file = /etc/grafana/cert/crt.crt
- cert_key = /etc/grafana/cert/key.key
+cert_file = $GRAFANA_USER_CERTS_DIR/crt.crt
+cert_key = $GRAFANA_USER_CERTS_DIR/key.key
 
 [security]
 allow_embedding = true
 
 [paths]
-data = /var/lib/grafana
-logs = /var/log/grafana
-plugins = /var/lib/grafana/plugins
-provisioning = /etc/grafana/provisioning
+data = $GRAFANA_USER_DATA_DIR
+logs = $GRAFANA_USER_LOGS_DIR
+plugins = $GRAFANA_USER_DATA_DIR/plugins
+provisioning = $GRAFANA_USER_CONFIG_DIR/provisioning
 EOF
-    /usr/bin/chown root:grafana /etc/grafana/grafana.ini
-    chmod 640 /etc/grafana/grafana.ini
-    # Гарантируем корректные права на каталоги данных/логов для группы grafana
-    mkdir -p /var/lib/grafana /var/lib/grafana/plugins /var/log/grafana
-    chown root:grafana /var/lib/grafana /var/lib/grafana/plugins /var/log/grafana 2>/dev/null || true
-    chmod 770 /var/lib/grafana /var/lib/grafana/plugins /var/log/grafana 2>/dev/null || true
-    print_success "grafana.ini настроен"
+    
+    # ✅ НЕТ chown/chmod - файлы в user-space принадлежат текущему пользователю
+    # ✅ НЕТ root операций
+    
+    print_success "grafana.ini настроен в $GRAFANA_USER_CONFIG_DIR/grafana.ini"
+    
+    # Создаем provisioning директорию если нужно
+    mkdir -p "$GRAFANA_USER_CONFIG_DIR/provisioning"
+    
+    # Логируем для отладки
+    echo "[DEBUG-GRAFANA] Конфиг создан: $GRAFANA_USER_CONFIG_DIR/grafana.ini" | tee /dev/stderr
+    echo "[DEBUG-GRAFANA] Данные: $GRAFANA_USER_DATA_DIR" | tee /dev/stderr
+    echo "[DEBUG-GRAFANA] Логи: $GRAFANA_USER_LOGS_DIR" | tee /dev/stderr
+    echo "[DEBUG-GRAFANA] Сертификаты: $GRAFANA_USER_CERTS_DIR/" | tee /dev/stderr
 }
 
 configure_grafana_ini_no_ssl() {
@@ -2388,43 +2790,57 @@ EOF
 }
 
 configure_prometheus_files() {
-    print_step "Создание файлов для Prometheus"
+    print_step "Создание файлов для Prometheus (Secure Edition)"
     ensure_working_directory
     
-    # Проверяем, установлен ли Prometheus
-    if [[ ! -d "/etc/prometheus" ]]; then
-        print_warning "Директория /etc/prometheus не существует (Prometheus не установлен)"
-        print_info "Если используется SKIP_RPM_INSTALL=true, это ожидаемо"
-        return 0
+    # Определяем user-space пути
+    local PROMETHEUS_USER_CONFIG_DIR="$HOME/monitoring/config/prometheus"
+    local PROMETHEUS_USER_DATA_DIR="$HOME/monitoring/data/prometheus"
+    local PROMETHEUS_USER_CERTS_DIR="$HOME/monitoring/certs/prometheus"
+    
+    # Создаем директории
+    mkdir -p "$PROMETHEUS_USER_CONFIG_DIR" "$PROMETHEUS_USER_DATA_DIR" \
+             "$PROMETHEUS_USER_CERTS_DIR"
+    
+    # Проверяем, есть ли сертификаты
+    if [[ ! -f "$PROMETHEUS_USER_CERTS_DIR/server.crt" || ! -f "$PROMETHEUS_USER_CERTS_DIR/server.key" ]]; then
+        print_warning "Сертификаты Prometheus не найдены в $PROMETHEUS_USER_CERTS_DIR/"
+        print_info "Ожидаем что copy_certs_to_user_dirs() скопирует их из /opt/vault/certs/"
     fi
     
-    "$WRAPPERS_DIR/config-writer_launcher.sh" /etc/prometheus/web-config.yml << EOF
+    # Создаем web-config.yml
+    cat > "$PROMETHEUS_USER_CONFIG_DIR/web-config.yml" << EOF
 tls_server_config:
-  cert_file: /etc/prometheus/cert/server.crt
-  key_file: /etc/prometheus/cert/server.key
+  cert_file: $PROMETHEUS_USER_CERTS_DIR/server.crt
+  key_file: $PROMETHEUS_USER_CERTS_DIR/server.key
   min_version: "TLS12"
   # Внимание: список cipher_suites применяется только к TLS 1.2 (TLS 1.3 не настраивается в Go)
   cipher_suites:
     - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
     - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
   # mTLS: требуем и проверяем клиентские сертификаты (высокая безопасность)
-  # Клиенты должны использовать сертификаты из /etc/prometheus/cert/ или /opt/vault/certs/
   client_auth_type: "RequireAndVerifyClientCert"
-  client_ca_file: "/etc/prometheus/cert/ca_chain.crt"
+  client_ca_file: "$PROMETHEUS_USER_CERTS_DIR/ca_chain.crt"
   client_allowed_sans:
     - "${SERVER_DOMAIN}"
 EOF
-    # ИСПРАВЛЕНО: Создаем prometheus.env только для справки
-    # User-systemd unit файл НЕ использует этот файл - параметры берутся напрямую из скрипта
-    "$WRAPPERS_DIR/config-writer_launcher.sh" /etc/prometheus/prometheus.env << EOF
+    
+    # Создаем prometheus.env (только для справки)
+    cat > "$PROMETHEUS_USER_CONFIG_DIR/prometheus.env" << EOF
 # ВНИМАНИЕ: Этот файл создается только для справки
 # Systemd unit файл monitoring-prometheus.service НЕ читает его
 # Все параметры запуска задаются напрямую в ExecStart
-PROMETHEUS_OPTS="--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus/data --web.console.templates=/etc/prometheus/consoles --web.console.libraries=/etc/prometheus/console_libraries --web.config.file=/etc/prometheus/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}"
+PROMETHEUS_OPTS="--config.file=$PROMETHEUS_USER_CONFIG_DIR/prometheus.yml --storage.tsdb.path=$PROMETHEUS_USER_DATA_DIR/data --web.console.templates=$PROMETHEUS_USER_CONFIG_DIR/consoles --web.console.libraries=$PROMETHEUS_USER_CONFIG_DIR/console_libraries --web.config.file=$PROMETHEUS_USER_CONFIG_DIR/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}"
 EOF
-    chown prometheus:prometheus /etc/prometheus/web-config.yml /etc/prometheus/prometheus.env
-    chmod 640 /etc/prometheus/web-config.yml /etc/prometheus/prometheus.env
-    print_success "Файлы Prometheus созданы"
+    
+    # ✅ НЕТ chown/chmod - файлы в user-space
+    
+    print_success "Файлы Prometheus созданы в $PROMETHEUS_USER_CONFIG_DIR/"
+    
+    # Логируем для отладки
+    echo "[DEBUG-PROMETHEUS] Конфиг: $PROMETHEUS_USER_CONFIG_DIR/" | tee /dev/stderr
+    echo "[DEBUG-PROMETHEUS] Данные: $PROMETHEUS_USER_DATA_DIR" | tee /dev/stderr
+    echo "[DEBUG-PROMETHEUS] Сертификаты: $PROMETHEUS_USER_CERTS_DIR/" | tee /dev/stderr
 }
 
 configure_prometheus_files_no_ssl() {
@@ -2944,21 +3360,24 @@ setup_certificates_after_install() {
 }
 
 configure_harvest() {
-    print_step "Настройка Harvest"
+    print_step "Настройка Harvest (Secure Edition)"
     ensure_working_directory
-    local harvest_config="$HARVEST_CONFIG"
-
-    if [[ ! -d "/opt/harvest" ]]; then
-        print_warning "Директория /opt/harvest еще не существует, пропускаем настройку"
-        return 0
+    
+    # Определяем user-space пути
+    local HARVEST_USER_CONFIG_DIR="$HOME/monitoring/config/harvest"
+    local HARVEST_USER_CERTS_DIR="$HOME/monitoring/certs/harvest"
+    
+    # Создаем директории
+    mkdir -p "$HARVEST_USER_CONFIG_DIR" "$HARVEST_USER_CERTS_DIR"
+    
+    # Проверяем, есть ли сертификаты
+    if [[ ! -f "$HARVEST_USER_CERTS_DIR/harvest.crt" || ! -f "$HARVEST_USER_CERTS_DIR/harvest.key" ]]; then
+        print_warning "Сертификаты Harvest не найдены в $HARVEST_USER_CERTS_DIR/"
+        print_info "Ожидаем что copy_certs_to_user_dirs() скопирует их из /opt/vault/certs/"
     fi
-
-    if [[ -f "$harvest_config" ]]; then
-        cp "$harvest_config" "${harvest_config}.bak.${DATE_INSTALL}"
-        print_info "Создана резервная копия: ${harvest_config}.bak.${DATE_INSTALL}"
-    fi
-
-    cat > "$harvest_config" << HARVEST_CONFIG_EOF
+    
+    # Создаем harvest.yml
+    cat > "$HARVEST_USER_CONFIG_DIR/harvest.yml" << EOF
 Exporters:
     prometheus_unix:
         exporter: Prometheus
@@ -2969,8 +3388,8 @@ Exporters:
         local_http_addr: 0.0.0.0
         port: ${HARVEST_NETAPP_PORT}
         tls:
-            cert_file: /opt/harvest/cert/harvest.crt
-            key_file: /opt/harvest/cert/harvest.key
+            cert_file: $HARVEST_USER_CERTS_DIR/harvest.crt
+            key_file: $HARVEST_USER_CERTS_DIR/harvest.key
         http_listen_ssl: true
 Defaults:
     collectors:
@@ -2990,37 +3409,24 @@ Pollers:
         datacenter: DC1
         addr: ${NETAPP_API_ADDR}
         auth_style: certificate_auth
-        ssl_cert: /opt/harvest/cert/harvest.crt
-        ssl_key: /opt/harvest/cert/harvest.key
+        ssl_cert: $HARVEST_USER_CERTS_DIR/harvest.crt
+        ssl_key: $HARVEST_USER_CERTS_DIR/harvest.key
         use_insecure_tls: false
         collectors:
             - Rest
             - RestPerf
         exporters:
             - prometheus_netapp_https
-HARVEST_CONFIG_EOF
-
-    print_success "Конфигурация Harvest обновлена в $HARVEST_CONFIG"
-
-    print_info "Создание systemd сервиса для Harvest"
-    "$WRAPPERS_DIR/config-writer_launcher.sh" /etc/systemd/system/harvest.service << 'HARVEST_SERVICE_EOF'
-[Unit]
-Description=NetApp Harvest Poller
-After=network.target
-[Service]
-Type=oneshot
-User=root
-WorkingDirectory=/opt/harvest
-ExecStart=/opt/harvest/bin/harvest start
-ExecStop=/opt/harvest/bin/harvest stop
-RemainAfterExit=yes
-Environment="PATH=/usr/local/bin:/usr/bin:/bin:/opt/harvest/bin"
-[Install]
-WantedBy=multi-user.target
-HARVEST_SERVICE_EOF
-
-    systemctl daemon-reload >/dev/null 2>&1
-    print_success "Systemd сервис для Harvest создан"
+EOF
+    
+    print_success "Конфигурация Harvest обновлена в $HARVEST_USER_CONFIG_DIR/harvest.yml"
+    
+    # ✅ В Secure Edition НЕТ создания systemd сервиса в /etc/systemd/system/
+    # Вместо этого используется user unit созданный в create_systemd_user_units()
+    
+    # Логируем для отладки
+    echo "[DEBUG-HARVEST] Конфиг: $HARVEST_USER_CONFIG_DIR/harvest.yml" | tee /dev/stderr
+    echo "[DEBUG-HARVEST] Сертификаты: $HARVEST_USER_CERTS_DIR/" | tee /dev/stderr
 }
 
 configure_prometheus() {
@@ -3193,19 +3599,62 @@ adjust_grafana_permissions_for_mon_sys() {
 }
 
 configure_grafana_datasource() {
-    print_step "Настройка Prometheus Data Source в Grafana"
+    print_step "Настройка Prometheus Data Source в Grafana (Secure Edition)"
     ensure_working_directory
 
+    # Два подхода:
+    # 1. Через API (если есть токен)
+    # 2. Через provisioning файлы (user-space)
+    
+    # Определяем user-space пути
+    local GRAFANA_USER_CONFIG_DIR="$HOME/monitoring/config/grafana"
+    local GRAFANA_PROVISIONING_DIR="$GRAFANA_USER_CONFIG_DIR/provisioning"
+    local DATASOURCES_DIR="$GRAFANA_PROVISIONING_DIR/datasources"
+    
+    # Создаем директории
+    mkdir -p "$DATASOURCES_DIR"
+    
+    # ============================================
+    # 1. Создаем provisioning файл (user-space)
+    # ============================================
+    cat > "$DATASOURCES_DIR/prometheus.yml" << EOF
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}
+    isDefault: true
+    jsonData:
+      tlsSkipVerify: false
+      tlsAuth: true
+      tlsAuthWithCACert: true
+    secureJsonData:
+      tlsCACert: |
+        $(cat "$HOME/monitoring/certs/prometheus/ca_chain.crt" 2>/dev/null | sed 's/^/        /')
+      tlsClientCert: |
+        $(cat "$HOME/monitoring/certs/prometheus/client.crt" 2>/dev/null | sed 's/^/        /')
+      tlsClientKey: |
+        $(cat "$HOME/monitoring/certs/prometheus/client.key" 2>/dev/null | sed 's/^/        /')
+EOF
+    
+    print_success "Provisioning файл создан в $DATASOURCES_DIR/prometheus.yml"
+    
+    # ============================================
+    # 2. Пытаемся настроить через API (если есть токен)
+    # ============================================
     local grafana_url="https://${SERVER_DOMAIN}:${GRAFANA_PORT}"
 
     if [[ -z "$GRAFANA_BEARER_TOKEN" ]]; then
-        print_error "GRAFANA_BEARER_TOKEN пуст. Сначала вызовите ensure_grafana_token"
-        return 1
+        print_warning "GRAFANA_BEARER_TOKEN пуст. Используем только provisioning файлы"
+        print_info "Grafana автоматически загрузит datasource при запуске"
+        return 0
     fi
 
     if [[ ! -x "$WRAPPERS_DIR/grafana-api-wrapper_launcher.sh" ]]; then
-        print_error "Лаунчер grafana-api-wrapper_launcher.sh не найден или не исполняемый в $WRAPPERS_DIR"
-        exit 1
+        print_warning "Лаунчер grafana-api-wrapper_launcher.sh не найден. Используем только provisioning файлы"
+        return 0
     fi
 
     # Проверяем наличие источника данных через API (по токену)
@@ -3231,6 +3680,7 @@ configure_grafana_datasource() {
             print_success "Prometheus Data Source обновлён через API"
         else
             print_warning "Не удалось обновить Data Source через API (код $http_code)"
+            print_info "Используем provisioning файлы"
         fi
     else
         http_code=$(printf '%s' "$create_payload" | \
@@ -3238,8 +3688,8 @@ configure_grafana_datasource() {
         if [[ "$http_code" == "200" || "$http_code" == "202" ]]; then
             print_success "Prometheus Data Source создан через API"
         else
-            print_error "Не удалось создать Data Source через API (код $http_code)"
-            return 1
+            print_warning "Не удалось создать Data Source через API (код $http_code)"
+            print_info "Используем provisioning файлы"
         fi
     fi
 }
@@ -5484,6 +5934,34 @@ main() {
     else
         write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
         install_vault_via_rlm
+        write_diagnostic "install_vault_via_rlm выполнена"
+    fi
+    write_diagnostic ""
+    
+    # ============================================================
+    # УСТАНОВКА VAULT-AGENT через RLM (если не пропущена)
+    # ============================================================
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    write_diagnostic "========================================="
+    write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
+    write_diagnostic "========================================="
+    write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
+    
+    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
+        write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
+        write_diagnostic "Действие: используем уже установленный vault-agent"
+        echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
+        print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
+    else
+        write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
+        echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
+        log_debug "Calling: install_vault_via_rlm"
+        
+        install_vault_via_rlm
+        
+        echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
+        log_debug "Completed: install_vault_via_rlm"
         write_diagnostic "install_vault_via_rlm выполнена"
     fi
     write_diagnostic ""

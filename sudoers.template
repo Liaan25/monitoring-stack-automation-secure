@@ -46,49 +46,80 @@ Defaults    secure_path="/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin"
 # ============================================================
 
 # Шаблон для подстановки в IDM (заменить <KAE> на реальное значение):
-#
-# <KAE>-lnx-mon_ci ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: \
-#   /usr/bin/systemctl --user daemon-reload, \
-#   /usr/bin/systemctl --user reset-failed monitoring-prometheus.service, \
-#   /usr/bin/systemctl --user reset-failed monitoring-grafana.service, \
-#   /usr/bin/systemctl --user reset-failed monitoring-harvest.service, \
-#   /usr/bin/systemctl --user enable monitoring-prometheus.service, \
-#   /usr/bin/systemctl --user enable monitoring-grafana.service, \
-#   /usr/bin/systemctl --user enable monitoring-harvest.service, \
-#   /usr/bin/systemctl --user restart monitoring-prometheus.service, \
-#   /usr/bin/systemctl --user restart monitoring-grafana.service, \
-#   /usr/bin/systemctl --user restart monitoring-harvest.service, \
-#   /usr/bin/systemctl --user stop monitoring-prometheus.service, \
-#   /usr/bin/systemctl --user stop monitoring-grafana.service, \
-#   /usr/bin/systemctl --user stop monitoring-harvest.service, \
-#   /usr/bin/systemctl --user status monitoring-prometheus.service, \
-#   /usr/bin/systemctl --user status monitoring-grafana.service, \
-#   /usr/bin/systemctl --user status monitoring-harvest.service, \
-#   /usr/bin/systemctl --user is-active monitoring-prometheus.service, \
-#   /usr/bin/systemctl --user is-active monitoring-grafana.service, \
-#   /usr/bin/systemctl --user is-active monitoring-harvest.service
+# Формат по правилам ИБ: одна команда на строку, без указания учетки в начале
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-reload
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-prometheus.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-grafana.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-prometheus.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-grafana.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-grafana.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-prometheus.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-grafana.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-prometheus.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-grafana.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
+ALL=(<KAE>-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
 
 # Пример для KAE = CI84324523:
-CI84324523-lnx-mon_ci ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: \
-  /usr/bin/systemctl --user daemon-reload, \
-  /usr/bin/systemctl --user reset-failed monitoring-prometheus.service, \
-  /usr/bin/systemctl --user reset-failed monitoring-grafana.service, \
-  /usr/bin/systemctl --user reset-failed monitoring-harvest.service, \
-  /usr/bin/systemctl --user enable monitoring-prometheus.service, \
-  /usr/bin/systemctl --user enable monitoring-grafana.service, \
-  /usr/bin/systemctl --user enable monitoring-harvest.service, \
-  /usr/bin/systemctl --user restart monitoring-prometheus.service, \
-  /usr/bin/systemctl --user restart monitoring-grafana.service, \
-  /usr/bin/systemctl --user restart monitoring-harvest.service, \
-  /usr/bin/systemctl --user stop monitoring-prometheus.service, \
-  /usr/bin/systemctl --user stop monitoring-grafana.service, \
-  /usr/bin/systemctl --user stop monitoring-harvest.service, \
-  /usr/bin/systemctl --user status monitoring-prometheus.service, \
-  /usr/bin/systemctl --user status monitoring-grafana.service, \
-  /usr/bin/systemctl --user status monitoring-harvest.service, \
-  /usr/bin/systemctl --user is-active monitoring-prometheus.service, \
-  /usr/bin/systemctl --user is-active monitoring-grafana.service, \
-  /usr/bin/systemctl --user is-active monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-reload
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
+
+# ============================================================
+# ВАЖНО: vault-agent конфиг через группу va-start!
+# ============================================================
+#
+# vault-agent устанавливается через RLM ЗАДАЧУ.
+# RLM создает /opt/vault/conf/ с владельцем va-start:va-read
+#
+# ПРАВА на /opt/vault/conf/:
+# - Владелец: ${KAE}-lnx-va-start (может ПИСАТЬ)
+# - Группа: ${KAE}-lnx-va-read (может ЧИТАТЬ)
+#
+# НАША ЛОГИКА:
+# 1. Скрипт создает agent.hcl с perms = "0640"
+# 2. Скрипт добавляет CI-user в группу va-start (через RLM API)
+# 3. CI-user записывает agent.hcl в /opt/vault/conf/ (БЕЗ sudo!)
+# 4. Скрипт перезапускает vault-agent (может потребоваться sudo)
+#
+# ЕСЛИ нужен sudo для перезапуска vault-agent:
+# - Добавьте права в sudoers (см. ниже закомментированный пример)
+# - ИЛИ используйте self-service команду (если есть)
+#
+# ============================================================
+#
+# ПРИМЕР прав для перезапуска vault-agent (если нужно):
+#
+# ${KAE}-lnx-mon_ci ALL=(root) NOPASSWD: \
+#   /usr/bin/systemctl restart vault-agent, \
+#   /usr/bin/systemctl status vault-agent
+#
+# ВНИМАНИЕ: Согласуйте с ИБ перед добавлением!
+#
+# ============================================================
 
 # ============================================================
 # Примечания по безопасности

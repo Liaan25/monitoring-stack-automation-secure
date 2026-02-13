@@ -11,23 +11,24 @@ Defaults    secure_path="/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin"
 # ============================================================
 
 # Пример для KAE = CI84324523:
-CI84324523-lnx-mon_ci ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: \
-  /usr/bin/systemctl --user daemon-reload, \
-  /usr/bin/systemctl --user reset-failed monitoring-prometheus.service, \
-  /usr/bin/systemctl --user reset-failed monitoring-grafana.service, \
-  /usr/bin/systemctl --user reset-failed monitoring-harvest.service, \
-  /usr/bin/systemctl --user enable monitoring-prometheus.service, \
-  /usr/bin/systemctl --user enable monitoring-grafana.service, \
-  /usr/bin/systemctl --user enable monitoring-harvest.service, \
-  /usr/bin/systemctl --user restart monitoring-prometheus.service, \
-  /usr/bin/systemctl --user restart monitoring-grafana.service, \
-  /usr/bin/systemctl --user restart monitoring-harvest.service, \
-  /usr/bin/systemctl --user stop monitoring-prometheus.service, \
-  /usr/bin/systemctl --user stop monitoring-grafana.service, \
-  /usr/bin/systemctl --user stop monitoring-harvest.service, \
-  /usr/bin/systemctl --user status monitoring-prometheus.service, \
-  /usr/bin/systemctl --user status monitoring-grafana.service, \
-  /usr/bin/systemctl --user status monitoring-harvest.service, \
-  /usr/bin/systemctl --user is-active monitoring-prometheus.service, \
-  /usr/bin/systemctl --user is-active monitoring-grafana.service, \
-  /usr/bin/systemctl --user is-active monitoring-harvest.service
+# 1. Управление user-юнитами мониторинга (от имени sys-пользователя)
+# Формат по правилам ИБ: одна команда на строку, без указания учетки в начале
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-reload
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
+ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
