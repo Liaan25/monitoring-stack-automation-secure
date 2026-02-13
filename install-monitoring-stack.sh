@@ -1830,11 +1830,13 @@ setup_vault_config() {
     
     # SECURITY: Используем secrets-manager-wrapper для безопасного извлечения секретов
     # Пишем role_id/secret_id напрямую из JSON в файлы через wrapper (автоматическая очистка)
-    echo "[VAULT-CONFIG] Извлечение секретов через secrets-manager-wrapper..." | tee /dev/stderr
+    echo "[VAULT-CONFIG] Извлечение секретов..." | tee /dev/stderr
     
     local secrets_extracted=false
     
+    # Сначала пробуем через wrapper (безопасный способ)
     if [[ -x "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" ]]; then
+        echo "[VAULT-CONFIG] Используем secrets-manager-wrapper..." | tee /dev/stderr
         echo "[DEBUG-SECRETS] Выполнение: extract_secret role_id..." >&2
         log_debug "Executing: extract_secret for role_id"
         
@@ -1899,23 +1901,63 @@ setup_vault_config() {
         echo "[DEBUG-SECRETS] ========================================" | tee /dev/stderr
         
         if [[ "$secrets_extracted" == "true" ]]; then
-            echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены" | tee /dev/stderr
+            echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены через wrapper" | tee /dev/stderr
         else
-            echo "[VAULT-CONFIG] ⚠️  Секреты НЕ извлечены (файлы будут пустыми)" | tee /dev/stderr
-            echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
-            print_warning "Секреты vault-agent не извлечены. Vault-agent не сможет работать."
-            print_info "Проверьте:"
-            print_info "1. Наличие поля 'vault-agent.role_id' и 'vault-agent.secret_id' в temp_data_cred.json"
-            print_info "2. Работоспособность secrets-manager-wrapper"
-            print_info "3. Права на чтение temp_data_cred.json"
+            echo "[VAULT-CONFIG] ⚠️  Секреты НЕ извлечены через wrapper" | tee /dev/stderr
         fi
     else
         echo "[VAULT-CONFIG] ⚠️  secrets-manager-wrapper_launcher.sh не найден или не исполняемый" | tee /dev/stderr
         log_debug "⚠️  Wrapper not found or not executable"
-        print_warning "secrets-manager-wrapper не найден. Создаем пустые файлы секретов."
-        # Создаем пустые файлы, чтобы не прерывать выполнение
-        touch "$VAULT_ROLE_ID_FILE"
-        touch "$VAULT_SECRET_ID_FILE"
+    fi
+    
+    # ВТОРОЙ ЭТАП: Всегда пробуем извлечь через jq (даже если wrapper сработал)
+    echo "[VAULT-CONFIG] Проверка извлечения через jq..." | tee /dev/stderr
+    if command -v jq >/dev/null 2>&1 && [[ -f "$cred_json_path" ]]; then
+        echo "[VAULT-CONFIG] jq доступен, проверяем секреты..." | tee /dev/stderr
+        
+        # Проверяем, есть ли секреты в файле
+        if jq -e '.vault-agent.role_id' "$cred_json_path" >/dev/null 2>&1 && \
+           jq -e '.vault-agent.secret_id' "$cred_json_path" >/dev/null 2>&1; then
+            echo "[VAULT-CONFIG] ✅ Секреты найдены в JSON файле" | tee /dev/stderr
+            
+            # Извлекаем role_id через jq
+            local role_id_from_jq
+            role_id_from_jq=$(jq -r '.vault-agent.role_id' "$cred_json_path" 2>/dev/null)
+            if [[ -n "$role_id_from_jq" ]]; then
+                echo "$role_id_from_jq" > "$VAULT_ROLE_ID_FILE"
+                echo "[VAULT-CONFIG] ✅ role_id извлечен через jq" | tee /dev/stderr
+                secrets_extracted=true
+            else
+                echo "[VAULT-CONFIG] ⚠️  role_id пустой через jq" | tee /dev/stderr
+            fi
+            
+            # Извлекаем secret_id через jq
+            local secret_id_from_jq
+            secret_id_from_jq=$(jq -r '.vault-agent.secret_id' "$cred_json_path" 2>/dev/null)
+            if [[ -n "$secret_id_from_jq" ]]; then
+                echo "$secret_id_from_jq" > "$VAULT_SECRET_ID_FILE"
+                echo "[VAULT-CONFIG] ✅ secret_id извлечен через jq" | tee /dev/stderr
+                secrets_extracted=true
+            else
+                echo "[VAULT-CONFIG] ⚠️  secret_id пустой через jq" | tee /dev/stderr
+            fi
+            
+            if [[ "$secrets_extracted" == "true" ]]; then
+                echo "[VAULT-CONFIG] ✅ Секреты извлечены через jq" | tee /dev/stderr
+            else
+                echo "[VAULT-CONFIG] ❌ Секреты НЕ извлечены даже через jq" | tee /dev/stderr
+                echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
+                print_warning "Секреты vault-agent не извлечены. Vault-agent не сможет работать."
+            fi
+        else
+            echo "[VAULT-CONFIG] ❌ Секреты НЕ найдены в JSON файле" | tee /dev/stderr
+            echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
+            print_warning "Поля vault-agent.role_id или vault-agent.secret_id отсутствуют в temp_data_cred.json"
+        fi
+    else
+        echo "[VAULT-CONFIG] ❌ jq не найден или файл недоступен" | tee /dev/stderr
+        echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
+        print_warning "Не удалось извлечь секреты. Vault-agent не сможет работать."
     fi
     
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
