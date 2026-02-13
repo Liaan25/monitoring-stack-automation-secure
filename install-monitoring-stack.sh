@@ -53,7 +53,8 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_START_TS=$(date +%s)
 
 # Конфигурация
-SEC_MAN_ADDR="${SEC_MAN_ADDR^^}"
+# Используем tr вместо ${VAR^^} для совместимости с bash 3.x
+SEC_MAN_ADDR=$(echo "${SEC_MAN_ADDR}" | tr '[:lower:]' '[:upper:]')
 DATE_INSTALL=$(date '+%Y%m%d_%H%M%S')
 # SECURE EDITION: Используем пользовательскую директорию вместо /opt/ (без root)
 INSTALL_DIR="$HOME/monitoring/distrib/mon_rpm_${DATE_INSTALL}"
@@ -418,7 +419,7 @@ install_vault_via_rlm() {
 
     # Нормализуем SEC_MAN_ADDR в верхний регистр для единообразия
     local SEC_MAN_ADDR_UPPER
-    SEC_MAN_ADDR_UPPER="${SEC_MAN_ADDR^^}"
+    SEC_MAN_ADDR_UPPER=$(echo "${SEC_MAN_ADDR}" | tr '[:lower:]' '[:upper:]')
 
     # Формируем KAE_SERVER из NAMESPACE_CI
     local KAE_SERVER
@@ -858,7 +859,7 @@ install_vault_via_rlm() {
 
     # Нормализуем SEC_MAN_ADDR в верхний регистр для единообразия
     local SEC_MAN_ADDR_UPPER
-    SEC_MAN_ADDR_UPPER="${SEC_MAN_ADDR^^}"
+    SEC_MAN_ADDR_UPPER=$(echo "${SEC_MAN_ADDR}" | tr '[:lower:]' '[:upper:]')
 
     # Формируем KAE_SERVER из NAMESPACE_CI
     local KAE_SERVER
