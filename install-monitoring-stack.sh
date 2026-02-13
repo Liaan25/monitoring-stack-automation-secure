@@ -2069,7 +2069,7 @@ EOF
             cat << EOF
 
 template {
-  destination = "$VAULT_CERTS_DIR/server_bundle.pem"
+  destination = "/opt/vault/certs/server_bundle.pem"
   contents    = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
 {{ .Data.private_key }}
@@ -2081,7 +2081,7 @@ template {
 }
 
 template {
-  destination = "$VAULT_CERTS_DIR/ca_chain.crt"
+  destination = "/opt/vault/certs/ca_chain.crt"
   contents = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" -}}
 {{ .Data.issuing_ca }}
@@ -2091,7 +2091,7 @@ template {
 }
 
 template {
-  destination = "$MONITORING_CERTS_DIR/grafana/grafana-client.pem"
+  destination = "/opt/vault/certs/grafana-client.pem"
   contents = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
 {{ .Data.private_key }}
@@ -2444,7 +2444,7 @@ copy_certs_to_user_dirs() {
     log_debug "  vault_bundle=$vault_bundle"
     log_debug "  grafana_client_pem=$grafana_client_pem"
     
-    # Проверяем что bundle существует
+    # Проверяем что bundle существует и не пустой
     if [[ ! -f "$vault_bundle" ]]; then
         echo "[CERTS-COPY] ❌ vault_bundle не найден: $vault_bundle" | tee /dev/stderr
         log_debug "❌ vault_bundle not found: $vault_bundle"
@@ -2452,8 +2452,26 @@ copy_certs_to_user_dirs() {
         print_error "Эта функция должна вызываться ПОСЛЕ копирования сертификатов из /opt/vault/"
         exit 1
     fi
-    echo "[CERTS-COPY] ✅ vault_bundle найден: $vault_bundle" | tee /dev/stderr
-    log_debug "✅ vault_bundle found: $vault_bundle"
+    
+    # Проверяем что файл не пустой
+    if [[ ! -s "$vault_bundle" ]]; then
+        echo "[CERTS-COPY] ❌ vault_bundle пустой: $vault_bundle" | tee /dev/stderr
+        log_debug "❌ vault_bundle is empty: $vault_bundle"
+        print_error "vault_bundle пустой (0 байт). Возможно vault-agent не создал сертификаты."
+        print_error "Проверьте логи vault-agent: journalctl -u vault-agent"
+        exit 1
+    fi
+    
+    # Проверяем что файл содержит приватный ключ (ищем BEGIN PRIVATE KEY или BEGIN RSA PRIVATE KEY)
+    if ! grep -q "BEGIN.*PRIVATE KEY" "$vault_bundle"; then
+        echo "[CERTS-COPY] ⚠️  vault_bundle не содержит приватный ключ (нет BEGIN PRIVATE KEY)" | tee /dev/stderr
+        log_debug "⚠️  vault_bundle does not contain private key"
+        print_warning "vault_bundle может содержать только сертификаты без приватного ключа"
+        print_warning "Проверьте template в agent.hcl - должен содержать {{ .Data.private_key }}"
+    fi
+    
+    echo "[CERTS-COPY] ✅ vault_bundle найден: $vault_bundle (размер: $(stat -c%s "$vault_bundle") байт)" | tee /dev/stderr
+    log_debug "✅ vault_bundle found: $vault_bundle (size: $(stat -c%s "$vault_bundle") bytes)"
     
     # ========================================
     # 1. Harvest сертификаты
@@ -2478,13 +2496,15 @@ copy_certs_to_user_dirs() {
     local private_key_found=false
     local private_key_source=""
     
-    # Вариант 1: Отдельный файл с ключом рядом с bundle
+    # Вариант 1: Отдельный файл с ключом (системный путь где vault-agent создает)
     local possible_key_files=(
-        "$VAULT_CERTS_DIR/server.key"
-        "$VAULT_CERTS_DIR/private.key"
-        "$VAULT_CERTS_DIR/key.pem"
-        "$VAULT_CERTS_DIR/private.pem"
-        "$(dirname "$vault_bundle")/server.key"
+        "/opt/vault/certs/server.key"
+        "/opt/vault/certs/private.key"
+        "/opt/vault/certs/key.pem"
+        "/opt/vault/certs/private.pem"
+        "$VAULT_CERTS_DIR/server.key"           # user-space копия
+        "$VAULT_CERTS_DIR/private.key"          # user-space копия
+        "$(dirname "$vault_bundle")/server.key" # рядом с bundle в user-space
         "$(dirname "$vault_bundle")/private.key"
     )
     
