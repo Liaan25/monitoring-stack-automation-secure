@@ -1,4 +1,4 @@
-!/bin/bash
+#!/bin/bash
 # Мониторинг Stack Deployment Script
 # Компоненты: Harvest + Prometheus + Grafana
 
@@ -42,13 +42,19 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${DEPLOY_GIT_COMMIT:=unknown}"
 : "${DEPLOY_BUILD_DATE:=unknown}"
 
+# Флаги пропуска (для отладки)
+: "${SKIP_VAULT_INSTALL:=false}"
+: "${SKIP_RPM_INSTALL:=false}"
+: "${SKIP_CI_CHECKS:=false}"
+
 WRAPPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wrappers"
 
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_START_TS=$(date +%s)
 
 # Конфигурация
-SEC_MAN_ADDR="${SEC_MAN_ADDR^^}"
+# Используем tr вместо ${VAR^^} для совместимости с bash 3.x
+SEC_MAN_ADDR=$(echo "${SEC_MAN_ADDR}" | tr '[:lower:]' '[:upper:]')
 DATE_INSTALL=$(date '+%Y%m%d_%H%M%S')
 # SECURE EDITION: Используем пользовательскую директорию вместо /opt/ (без root)
 INSTALL_DIR="$HOME/monitoring/distrib/mon_rpm_${DATE_INSTALL}"
@@ -413,7 +419,7 @@ install_vault_via_rlm() {
 
     # Нормализуем SEC_MAN_ADDR в верхний регистр для единообразия
     local SEC_MAN_ADDR_UPPER
-    SEC_MAN_ADDR_UPPER="${SEC_MAN_ADDR^^}"
+    SEC_MAN_ADDR_UPPER=$(echo "${SEC_MAN_ADDR}" | tr '[:lower:]' '[:upper:]')
 
     # Формируем KAE_SERVER из NAMESPACE_CI
     local KAE_SERVER
@@ -853,7 +859,7 @@ install_vault_via_rlm() {
 
     # Нормализуем SEC_MAN_ADDR в верхний регистр для единообразия
     local SEC_MAN_ADDR_UPPER
-    SEC_MAN_ADDR_UPPER="${SEC_MAN_ADDR^^}"
+    SEC_MAN_ADDR_UPPER=$(echo "${SEC_MAN_ADDR}" | tr '[:lower:]' '[:upper:]')
 
     # Формируем KAE_SERVER из NAMESPACE_CI
     local KAE_SERVER
@@ -1855,7 +1861,7 @@ setup_vault_config() {
             log_debug "STDERR: $(cat "$role_id_stderr")"
             rm -f "$role_id_stdout" "$role_id_stderr"
             print_error "Не удалось извлечь role_id через secrets-wrapper"
-            exit 1
+        exit 1
         else
             echo "[DEBUG-SECRETS] ✅ role_id успешно извлечен" >&2
             log_debug "✅ role_id extracted successfully"
@@ -1888,7 +1894,7 @@ setup_vault_config() {
             log_debug "STDERR: $(cat "$secret_id_stderr")"
             rm -f "$secret_id_stdout" "$secret_id_stderr"
             print_error "Не удалось извлечь secret_id через secrets-wrapper"
-            exit 1
+        exit 1
         else
             echo "[DEBUG-SECRETS] ✅ secret_id успешно извлечен" >&2
             log_debug "✅ secret_id extracted successfully"
@@ -1942,11 +1948,45 @@ setup_vault_config() {
 
     echo "[VAULT-CONFIG] Начинается блок генерации vault-agent.conf..." | tee /dev/stderr
     log_debug "Generating vault-agent.conf content"
-    
+
     {
         # Базовая конфигурация агента
-        # ВАЖНО: В Secure Edition используются переменные VAULT_* вместо хардкод /opt/
-        cat << EOF
+        # ВАЖНО: Разные пути для SKIP_VAULT_INSTALL=false и true
+        if [[ "${SKIP_VAULT_INSTALL:-false}" == "false" ]]; then
+            # SKIP_VAULT_INSTALL=false: Новая установка - системные пути
+            echo "[VAULT-CONFIG] Создание конфигурации с системными путями (новая установка)" | tee /dev/stderr
+            cat << EOF
+pid_file = "/opt/vault/log/vault-agent.pidfile"
+vault {
+ address = "https://$SEC_MAN_ADDR"
+ tls_skip_verify = "false"
+ ca_path = "/opt/vault/conf/ca-trust"
+}
+auto_auth {
+ method "approle" {
+ namespace = "$NAMESPACE_CI"
+ mount_path = "auth/approle"
+
+ config = {
+ role_id_file_path = "/opt/vault/conf/role_id.txt"
+ secret_id_file_path = "/opt/vault/conf/secret_id.txt"
+ remove_secret_id_file_after_reading = false
+}
+}
+}
+log_destination "Tengry" {
+ log_format = "json"
+ log_path = "/opt/vault/log"
+ log_rotate = "5"
+ log_max_size = "5mb"
+ log_level = "trace"
+ log_file = "agent.log"
+}
+EOF
+        else
+            # SKIP_VAULT_INSTALL=true: Уже установлен - user-space пути (шаблон для справки)
+            echo "[VAULT-CONFIG] Создание конфигурации с user-space путями (шаблон для справки)" | tee /dev/stderr
+            cat << EOF
 pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
 vault {
  address = "https://$SEC_MAN_ADDR"
@@ -1973,12 +2013,24 @@ log_destination "Tengry" {
  log_level = "trace"
  log_file = "agent.log"
 }
+EOF
+        fi
 
+        if [[ "${SKIP_VAULT_INSTALL:-false}" == "false" ]]; then
+            cat << EOF
+template {
+  destination = "/opt/vault/conf/data_sec.json"
+  contents    = <<EOT
+{
+EOF
+        else
+            cat << EOF
 template {
   destination = "$VAULT_CONF_DIR/data_sec.json"
   contents    = <<EOT
 {
 EOF
+        fi
 
         # Блок rpm_url
         if [[ -n "$RPM_URL_KV" ]]; then
@@ -2109,10 +2161,10 @@ EOF
 EOF
         fi
 
-    } > "$VAULT_AGENT_HCL"
+    } | "$WRAPPERS_DIR/config-writer_launcher.sh" "$VAULT_AGENT_HCL"
     
-    echo "[VAULT-CONFIG] ✅ vault-agent.conf создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
-    log_debug "✅ vault-agent.conf created at $VAULT_AGENT_HCL"
+    echo "[VAULT-CONFIG] ✅ vault-agent.conf создан через config-writer: $VAULT_AGENT_HCL" | tee /dev/stderr
+    log_debug "✅ vault-agent.conf created via config-writer at $VAULT_AGENT_HCL"
 
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
     echo "[VAULT-CONFIG] agent.hcl создан (только для справки)" | tee /dev/stderr
@@ -2138,7 +2190,9 @@ EOF
     
     if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
         echo "[VAULT-CONFIG] SKIP_VAULT_INSTALL=true: используем существующий vault-agent" | tee /dev/stderr
+        echo "[VAULT-CONFIG] Конфигурация создана с user-space путями (шаблон для справки)" | tee /dev/stderr
         log_debug "SKIP_VAULT_INSTALL=true: using existing vault-agent"
+        log_debug "Configuration created with user-space paths (reference template)"
         
         # Проверяем статус системного vault-agent (read-only)
         echo "[VAULT-CONFIG] Проверка статуса системного vault-agent..." | tee /dev/stderr
@@ -2159,8 +2213,8 @@ EOF
                 echo "[VAULT-CONFIG] ⚠️  Сертификаты не найдены: $system_vault_certs" | tee /dev/stderr
                 log_debug "⚠️  Certificates not found: $system_vault_certs"
                 print_warning "Сертификаты от vault-agent пока не созданы (требуется время на генерацию)"
-            fi
-        else
+        fi
+    else
             echo "[VAULT-CONFIG] ⚠️  Системный vault-agent не активен" | tee /dev/stderr
             log_debug "⚠️  System vault-agent is not active"
             print_warning "Системный vault-agent не активен"
@@ -2263,6 +2317,101 @@ EOF
             print_info "Справочный конфиг создан в: $VAULT_AGENT_HCL"
             print_info "Продолжаем с существующими сертификатами..."
         fi
+    else
+        # SKIP_VAULT_INSTALL=false - новая установка vault-agent
+        echo "[VAULT-CONFIG] SKIP_VAULT_INSTALL=false: новая установка vault-agent" | tee /dev/stderr
+        echo "[VAULT-CONFIG] Конфигурация создана с системными путями" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=false: new vault-agent installation"
+        
+        # Применяем конфигурацию к системному vault-agent
+        echo "[VAULT-CONFIG] Применение конфигурации к системному vault-agent..." | tee /dev/stderr
+        log_debug "Applying configuration to system vault-agent"
+        
+        local system_role_id="/opt/vault/conf/role_id.txt"
+        local system_secret_id="/opt/vault/conf/secret_id.txt"
+        local system_agent_hcl="/opt/vault/conf/agent.hcl"
+        
+        # Копируем файлы аутентификации в системные пути через config-writer
+        echo "[VAULT-CONFIG] Копирование файлов аутентификации..." | tee /dev/stderr
+        
+        if [[ -f "$VAULT_ROLE_ID_FILE" ]]; then
+            echo "[VAULT-CONFIG] Копирование role_id.txt в $system_role_id..." | tee /dev/stderr
+            if cat "$VAULT_ROLE_ID_FILE" | "$WRAPPERS_DIR/config-writer_launcher.sh" "$system_role_id" 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ role_id.txt скопирован" | tee /dev/stderr
+                # Устанавливаем права (через config-writer уже должны быть)
+                chmod 640 "$system_role_id" 2>/dev/null || true
+            else
+                echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать role_id.txt" | tee /dev/stderr
+                print_warning "Не удалось скопировать role_id.txt в системный путь"
+                print_info "Проверьте права доступа к /opt/vault/conf/"
+            fi
+        fi
+        
+        if [[ -f "$VAULT_SECRET_ID_FILE" ]]; then
+            echo "[VAULT-CONFIG] Копирование secret_id.txt в $system_secret_id..." | tee /dev/stderr
+            if cat "$VAULT_SECRET_ID_FILE" | "$WRAPPERS_DIR/config-writer_launcher.sh" "$system_secret_id" 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован" | tee /dev/stderr
+                chmod 640 "$system_secret_id" 2>/dev/null || true
+            else
+                echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать secret_id.txt" | tee /dev/stderr
+                print_warning "Не удалось скопировать secret_id.txt в системный путь"
+            fi
+        fi
+        
+        # Копируем agent.hcl в системный путь
+        echo "[VAULT-CONFIG] Копирование agent.hcl в $system_agent_hcl..." | tee /dev/stderr
+        if cat "$VAULT_AGENT_HCL" | "$WRAPPERS_DIR/config-writer_launcher.sh" "$system_agent_hcl" 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ agent.hcl скопирован в /opt/vault/conf/" | tee /dev/stderr
+            print_success "Конфигурация vault-agent применена"
+        else
+            echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать agent.hcl" | tee /dev/stderr
+            print_warning "Не удалось применить конфигурацию vault-agent"
+            print_info "Проверьте права доступа к /opt/vault/conf/"
+            print_info "Или примените конфигурацию вручную:"
+            print_info "  sudo cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
+        fi
+        
+        # Пробуем перезапустить vault-agent
+        echo "[VAULT-CONFIG] Попытка перезапуска vault-agent..." | tee /dev/stderr
+        log_debug "Attempting to restart vault-agent"
+        
+        # Пробуем БЕЗ sudo сначала (вдруг группа дает права)
+        if systemctl restart vault-agent 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ vault-agent перезапущен БЕЗ sudo" | tee /dev/stderr
+            log_debug "✅ vault-agent restarted without sudo"
+            print_success "vault-agent успешно перезапущен"
+        # Если не получилось - пробуем с sudo
+        elif sudo -n systemctl restart vault-agent 2>/dev/null; then
+            echo "[VAULT-CONFIG] ✅ vault-agent перезапущен с sudo" | tee /dev/stderr
+            log_debug "✅ vault-agent restarted with sudo"
+            print_success "vault-agent успешно перезапущен"
+        else
+            echo "[VAULT-CONFIG] ⚠️  Не удалось перезапустить vault-agent" | tee /dev/stderr
+            log_debug "⚠️  Failed to restart vault-agent"
+            print_warning "Не удалось перезапустить vault-agent автоматически"
+            print_info "Перезапустите вручную: sudo systemctl restart vault-agent"
+        fi
+        
+        # Проверяем статус после перезапуска
+        sleep 3
+        if systemctl is-active --quiet vault-agent; then
+            echo "[VAULT-CONFIG] ✅ vault-agent активен после изменений" | tee /dev/stderr
+            log_debug "✅ vault-agent is active after changes"
+            print_success "vault-agent работает с новым конфигом"
+            print_info "Сертификаты будут создаваться в /opt/vault/certs/"
+        else
+            echo "[VAULT-CONFIG] ❌ vault-agent НЕ активен!" | tee /dev/stderr
+            log_debug "❌ vault-agent is NOT active"
+            print_error "vault-agent не запустился после применения конфигурации"
+            print_info "Проверьте логи: journalctl -u vault-agent"
+        fi
+        
+        print_info "При новой установке vault-agent:"
+        print_info "1. Конфигурация создана с системными путями"
+        print_info "2. Файлы аутентификации скопированы в /opt/vault/conf/"
+        print_info "3. Vault-agent перезапущен для применения конфигурации"
+        print_info "4. Vault-agent сгенерирует сертификаты в /opt/vault/certs/"
+        print_info "5. Скрипт скопирует сертификаты в user-space для мониторинговых сервисов"
     fi
     
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
@@ -2444,21 +2593,29 @@ copy_certs_to_user_dirs() {
     log_debug "  vault_bundle=$vault_bundle"
     log_debug "  grafana_client_pem=$grafana_client_pem"
     
-    # Проверяем что bundle существует и не пустой
+    # Проверяем что bundle существует
     if [[ ! -f "$vault_bundle" ]]; then
         echo "[CERTS-COPY] ❌ vault_bundle не найден: $vault_bundle" | tee /dev/stderr
         log_debug "❌ vault_bundle not found: $vault_bundle"
         print_error "vault_bundle не найден в user-space: $vault_bundle"
         print_error "Эта функция должна вызываться ПОСЛЕ копирования сертификатов из /opt/vault/"
+        print_error "Проверьте что setup_certificates_after_install() скопировала файлы"
         exit 1
     fi
     
     # Проверяем что файл не пустой
     if [[ ! -s "$vault_bundle" ]]; then
-        echo "[CERTS-COPY] ❌ vault_bundle пустой: $vault_bundle" | tee /dev/stderr
-        log_debug "❌ vault_bundle is empty: $vault_bundle"
-        print_error "vault_bundle пустой (0 байт). Возможно vault-agent не создал сертификаты."
-        print_error "Проверьте логи vault-agent: journalctl -u vault-agent"
+        echo "[CERTS-COPY] ❌ vault_bundle пустой (0 байт): $vault_bundle" | tee /dev/stderr
+        log_debug "❌ vault_bundle is empty (0 bytes): $vault_bundle"
+        print_error "vault_bundle пустой. Это означает что:"
+        print_error "1. Vault-agent создал пустой файл (проблема с конфигурацией)"
+        print_error "2. Или файл скопировался как пустой (проблема с правами доступа)"
+        print_error "3. Или vault-agent еще не сгенерировал сертификаты"
+        print_error ""
+        print_error "Проверьте:"
+        print_error "1. Оригинальный файл: ls -la /opt/vault/certs/server_bundle.pem"
+        print_error "2. Логи vault-agent: journalctl -u vault-agent"
+        print_error "3. Конфигурацию: cat /opt/vault/conf/agent.hcl"
         exit 1
     fi
     
@@ -2812,7 +2969,7 @@ EOF
 
     # ✅ SECURE EDITION: НЕТ chown/chmod - файлы создаются от имени mon_sys пользователя
     # Права устанавливаются автоматически при создании файлов
-    
+
     print_success "User-юниты systemd для мониторинга созданы под пользователем ${mon_sys_user}"
     
     # Логируем для отладки
@@ -3148,7 +3305,7 @@ create_rlm_install_tasks() {
     # chmod +x /etc/profile.d/harvest.sh
     
     # Экспортируем PATH только в текущую сессию (для последующих команд в скрипте)
-    export PATH=$PATH:/opt/harvest/bin:/opt/harvest
+export PATH=$PATH:/opt/harvest/bin:/opt/harvest
     echo "[RLM-INSTALL] PATH обновлен для текущей сессии: $PATH" | tee /dev/stderr
     log_debug "PATH updated for current session"
     print_success "PATH настроен для Harvest (в рамках текущей сессии)"
@@ -3195,10 +3352,45 @@ setup_certificates_after_install() {
     
     # Проверяем наличие сертификатов от vault-agent
     # Приоритет 1: системный путь /opt/vault/certs/ (где vault-agent создает файлы)
-    if [[ -f "$system_vault_bundle" ]]; then
-        echo "[CERTS] ✅ Найден системный vault bundle: $system_vault_bundle" | tee /dev/stderr
-        log_debug "✅ Found system vault bundle: $system_vault_bundle"
-        print_success "Найдены сертификаты от Vault Agent: $system_vault_bundle"
+    
+    # ВАЖНО: Vault-agent может создать файл, но он может быть пустым пока сертификаты не сгенерированы
+    # Ждем пока файл не станет непустым (минимум 1 байт)
+    echo "[CERTS] Ожидание создания сертификатов vault-agent..." | tee /dev/stderr
+    log_debug "Waiting for vault-agent certificates to be created"
+    
+    local max_wait_attempts=60  # 60 попыток * 5 секунд = 5 минут
+    local wait_attempt=1
+    local wait_interval=5
+    
+    while [[ $wait_attempt -le $max_wait_attempts ]]; do
+        if [[ -f "$system_vault_bundle" && -s "$system_vault_bundle" ]]; then
+            echo "[CERTS] ✅ Найден НЕПУСТОЙ системный vault bundle: $system_vault_bundle" | tee /dev/stderr
+            echo "[CERTS]   Размер: $(stat -c%s "$system_vault_bundle") байт, попытка: $wait_attempt/$max_wait_attempts" | tee /dev/stderr
+            log_debug "✅ Found NON-EMPTY system vault bundle: $system_vault_bundle"
+            log_debug "  Size: $(stat -c%s "$system_vault_bundle") bytes, attempt: $wait_attempt/$max_wait_attempts"
+            print_success "Найдены сертификаты от Vault Agent: $system_vault_bundle"
+            break
+        elif [[ -f "$system_vault_bundle" ]]; then
+            echo "[CERTS] ⏳ Файл существует но пустой (0 байт), ждем... ($wait_attempt/$max_wait_attempts)" | tee /dev/stderr
+            log_debug "⏳ File exists but empty (0 bytes), waiting... ($wait_attempt/$max_wait_attempts)"
+        else
+            echo "[CERTS] ⏳ Файл не существует, ждем создания... ($wait_attempt/$max_wait_attempts)" | tee /dev/stderr
+            log_debug "⏳ File does not exist, waiting for creation... ($wait_attempt/$max_wait_attempts)"
+        fi
+        
+        if [[ $wait_attempt -eq $max_wait_attempts ]]; then
+            echo "[CERTS] ❌ ТАЙМАУТ: vault-agent не создал сертификаты за $((max_wait_attempts * wait_interval)) секунд" | tee /dev/stderr
+            log_debug "❌ TIMEOUT: vault-agent did not create certificates in $((max_wait_attempts * wait_interval)) seconds"
+            print_error "Vault-agent не создал сертификаты. Проверьте:"
+            print_error "1. Логи vault-agent: journalctl -u vault-agent"
+            print_error "2. Состояние сервиса: systemctl status vault-agent"
+            print_error "3. Конфигурацию: /opt/vault/conf/agent.hcl"
+            exit 1
+        fi
+        
+        wait_attempt=$((wait_attempt + 1))
+        sleep "$wait_interval"
+    done
         
         # Проверяем права доступа
         echo "[CERTS] Проверка прав доступа к сертификатам..." | tee /dev/stderr
@@ -6067,7 +6259,7 @@ main() {
 
     echo "[MAIN] Вызов load_config_from_json..." | tee /dev/stderr
     log_debug "Calling: load_config_from_json"
-    
+
     load_config_from_json
     
     echo "[MAIN] ✅ load_config_from_json завершена успешно" | tee /dev/stderr
