@@ -22,6 +22,36 @@ fail() {
 
 validate_target() {
   local path="$1"
+  
+  # Для Secure Edition: разрешаем пути в домашней директории пользователя
+  # Это соответствует архитектуре Secure Edition (все файлы в user-space)
+  local home_pattern="^$HOME/"
+  
+  if [[ "$path" =~ $home_pattern ]]; then
+    # Разрешаем только определенные поддиректории в домашней директории
+    case "$path" in
+      "$HOME"/monitoring/config/vault/agent.hcl|\
+      "$HOME"/monitoring/config/vault/role_id.txt|\
+      "$HOME"/monitoring/config/vault/secret_id.txt|\
+      "$HOME"/monitoring/config/grafana/grafana.ini|\
+      "$HOME"/monitoring/config/prometheus/prometheus.yml|\
+      "$HOME"/monitoring/config/prometheus/web-config.yml|\
+      "$HOME"/monitoring/config/prometheus/prometheus.env|\
+      "$HOME"/monitoring/config/harvest/harvest.yml|\
+      "$HOME"/monitoring/state/deployment_state)
+        return 0
+        ;;
+      *)
+        # Также разрешаем любые файлы в monitoring/ для гибкости
+        # но с проверкой что это действительно monitoring директория
+        if [[ "$path" == "$HOME"/monitoring/* ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  
+  # Системные пути (для обратной совместимости)
   case "$path" in
     /etc/environment.d/99-monitoring-vars.conf|\
     /opt/vault/conf/agent.hcl|\
