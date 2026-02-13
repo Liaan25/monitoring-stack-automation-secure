@@ -1830,6 +1830,10 @@ setup_vault_config() {
     
     # SECURITY: Используем secrets-manager-wrapper для безопасного извлечения секретов
     # Пишем role_id/secret_id напрямую из JSON в файлы через wrapper (автоматическая очистка)
+    echo "[VAULT-CONFIG] Извлечение секретов через secrets-manager-wrapper..." | tee /dev/stderr
+    
+    local secrets_extracted=false
+    
     if [[ -x "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" ]]; then
         echo "[DEBUG-SECRETS] Выполнение: extract_secret role_id..." >&2
         log_debug "Executing: extract_secret for role_id"
@@ -1844,24 +1848,22 @@ setup_vault_config() {
         echo "[DEBUG-SECRETS] Exit code: $role_id_exit" >&2
         log_debug "role_id extraction exit code: $role_id_exit"
         
-        if [[ $role_id_exit -ne 0 ]]; then
-            echo "[DEBUG-SECRETS] ❌ ОШИБКА при извлечении role_id" >&2
+        if [[ $role_id_exit -eq 0 && -s "$role_id_stdout" ]]; then
+            echo "[DEBUG-SECRETS] ✅ role_id успешно извлечен" >&2
+            log_debug "✅ role_id extracted successfully"
+            cat "$role_id_stdout" > "$VAULT_ROLE_ID_FILE"
+            secrets_extracted=true
+        else
+            echo "[DEBUG-SECRETS] ⚠️  Не удалось извлечь role_id или результат пустой" >&2
             echo "[DEBUG-SECRETS] STDOUT:" >&2
             cat "$role_id_stdout" >&2
             echo "[DEBUG-SECRETS] STDERR:" >&2
             cat "$role_id_stderr" >&2
-            log_debug "❌ role_id extraction FAILED"
-            log_debug "STDOUT: $(cat "$role_id_stdout")"
-            log_debug "STDERR: $(cat "$role_id_stderr")"
-            rm -f "$role_id_stdout" "$role_id_stderr"
-            print_error "Не удалось извлечь role_id через secrets-wrapper"
-            exit 1
-        else
-            echo "[DEBUG-SECRETS] ✅ role_id успешно извлечен" >&2
-            log_debug "✅ role_id extracted successfully"
-            cat "$role_id_stdout" > "$VAULT_ROLE_ID_FILE"
-            rm -f "$role_id_stdout" "$role_id_stderr"
+            log_debug "⚠️  role_id extraction failed or empty"
+            # Не выходим с ошибкой, продолжаем с пустыми файлами
         fi
+        
+        rm -f "$role_id_stdout" "$role_id_stderr"
         
         echo "[DEBUG-SECRETS] ----------------------------------------" >&2
         echo "[DEBUG-SECRETS] Выполнение: extract_secret secret_id..." >&2
@@ -1877,30 +1879,43 @@ setup_vault_config() {
         echo "[DEBUG-SECRETS] Exit code: $secret_id_exit" >&2
         log_debug "secret_id extraction exit code: $secret_id_exit"
         
-        if [[ $secret_id_exit -ne 0 ]]; then
-            echo "[DEBUG-SECRETS] ❌ ОШИБКА при извлечении secret_id" >&2
+        if [[ $secret_id_exit -eq 0 && -s "$secret_id_stdout" ]]; then
+            echo "[DEBUG-SECRETS] ✅ secret_id успешно извлечен" >&2
+            log_debug "✅ secret_id extracted successfully"
+            cat "$secret_id_stdout" > "$VAULT_SECRET_ID_FILE"
+            secrets_extracted=true
+        else
+            echo "[DEBUG-SECRETS] ⚠️  Не удалось извлечь secret_id или результат пустой" >&2
             echo "[DEBUG-SECRETS] STDOUT:" >&2
             cat "$secret_id_stdout" >&2
             echo "[DEBUG-SECRETS] STDERR:" >&2
             cat "$secret_id_stderr" >&2
-            log_debug "❌ secret_id extraction FAILED"
-            log_debug "STDOUT: $(cat "$secret_id_stdout")"
-            log_debug "STDERR: $(cat "$secret_id_stderr")"
-            rm -f "$secret_id_stdout" "$secret_id_stderr"
-            print_error "Не удалось извлечь secret_id через secrets-wrapper"
-            exit 1
-        else
-            echo "[DEBUG-SECRETS] ✅ secret_id успешно извлечен" >&2
-            log_debug "✅ secret_id extracted successfully"
-            cat "$secret_id_stdout" > "$VAULT_SECRET_ID_FILE"
-            rm -f "$secret_id_stdout" "$secret_id_stderr"
+            log_debug "⚠️  secret_id extraction failed or empty"
+            # Не выходим с ошибкой, продолжаем с пустыми файлами
         fi
         
+        rm -f "$secret_id_stdout" "$secret_id_stderr"
+        
         echo "[DEBUG-SECRETS] ========================================" | tee /dev/stderr
+        
+        if [[ "$secrets_extracted" == "true" ]]; then
+            echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены" | tee /dev/stderr
+        else
+            echo "[VAULT-CONFIG] ⚠️  Секреты НЕ извлечены (файлы будут пустыми)" | tee /dev/stderr
+            echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
+            print_warning "Секреты vault-agent не извлечены. Vault-agent не сможет работать."
+            print_info "Проверьте:"
+            print_info "1. Наличие поля 'vault-agent.role_id' и 'vault-agent.secret_id' в temp_data_cred.json"
+            print_info "2. Работоспособность secrets-manager-wrapper"
+            print_info "3. Права на чтение temp_data_cred.json"
+        fi
     else
-        print_error "secrets-manager-wrapper_launcher.sh не найден или не исполняемый"
-        log_debug "❌ Wrapper not found or not executable"
-        exit 1
+        echo "[VAULT-CONFIG] ⚠️  secrets-manager-wrapper_launcher.sh не найден или не исполняемый" | tee /dev/stderr
+        log_debug "⚠️  Wrapper not found or not executable"
+        print_warning "secrets-manager-wrapper не найден. Создаем пустые файлы секретов."
+        # Создаем пустые файлы, чтобы не прерывать выполнение
+        touch "$VAULT_ROLE_ID_FILE"
+        touch "$VAULT_SECRET_ID_FILE"
     fi
     
     echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
@@ -1947,15 +1962,15 @@ setup_vault_config() {
     # 1. Системная версия (для vault-agent) - с путями /opt/vault/
     # 2. User-space версия (для справки) - с путями $HOME/monitoring/
     
+    echo "[VAULT-CONFIG] Создание системной версии agent.hcl..." | tee /dev/stderr
+    
     # ============================================
     # 1. СИСТЕМНАЯ ВЕРСИЯ (для vault-agent)
     # ============================================
     local SYSTEM_VAULT_AGENT_HCL="/opt/vault/conf/agent.hcl"
     
-    {
-        # Базовая конфигурация агента
-        # ВАЖНО: Для системного vault-agent используем системные пути /opt/vault/
-        cat << EOF
+    # Создаем системный agent.hcl с помощью cat и перенаправления
+    cat > "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
 pid_file = "/opt/vault/log/vault-agent.pidfile"
 vault {
  address = "https://$SEC_MAN_ADDR"
@@ -1987,11 +2002,11 @@ template {
   destination = "/opt/vault/conf/data_sec.json"
   contents    = <<EOT
 {
-EOF
+SYS_EOF
 
-        # Блок rpm_url
-        if [[ -n "$RPM_URL_KV" ]]; then
-            cat << EOF
+    # Добавляем блок rpm_url
+    if [[ -n "$RPM_URL_KV" ]]; then
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "rpm_url": {
     {{ with secret "$RPM_URL_KV" }}
     "harvest": {{ .Data.harvest | toJSON }},
@@ -1999,16 +2014,16 @@ EOF
     "grafana": {{ .Data.grafana | toJSON }}
     {{ end }}
   },
-EOF
-        else
-            cat << EOF
+SYS_EOF
+    else
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "rpm_url": {},
-EOF
-        fi
+SYS_EOF
+    fi
 
-        # Блок netapp_ssh
-        if [[ -n "$NETAPP_SSH_KV" ]]; then
-            cat << EOF
+    # Добавляем блок netapp_ssh
+    if [[ -n "$NETAPP_SSH_KV" ]]; then
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "netapp_ssh": {
     {{ with secret "$NETAPP_SSH_KV" }}
     "addr": {{ .Data.addr | toJSON }},
@@ -2016,32 +2031,32 @@ EOF
     "pass": {{ .Data.pass | toJSON }}
     {{ end }}
   },
-EOF
-        else
-            cat << EOF
+SYS_EOF
+    else
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "netapp_ssh": {},
-EOF
-        fi
+SYS_EOF
+    fi
 
-        # Блок grafana_web
-        if [[ -n "$GRAFANA_WEB_KV" ]]; then
-            cat << EOF
+    # Добавляем блок grafana_web
+    if [[ -n "$GRAFANA_WEB_KV" ]]; then
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "grafana_web": {
     {{ with secret "$GRAFANA_WEB_KV" }}
     "user": {{ .Data.user | toJSON }},
     "pass": {{ .Data.pass | toJSON }}
     {{ end }}
   },
-EOF
-        else
-            cat << EOF
+SYS_EOF
+    else
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "grafana_web": {},
-EOF
-        fi
+SYS_EOF
+    fi
 
-        # Блок vault-agent (role_id/secret_id обязательны для работы агента)
-        if [[ -n "$VAULT_AGENT_KV" ]]; then
-            cat << EOF
+    # Добавляем блок vault-agent
+    if [[ -n "$VAULT_AGENT_KV" ]]; then
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "vault-agent": {
     {{ with secret "$VAULT_AGENT_KV" }}
     "role_id": {{ .Data.role_id | toJSON }},
@@ -2051,31 +2066,23 @@ EOF
 }
   EOT
   perms = "0640"
-  # Если какой-то из необязательных KV/ключей отсутствует, не роняем vault-agent,
-  # а просто создаём пустой объект. Обязательные значения (role_id/secret_id)
-  # дополнительно проверяются в bash перед перезапуском агента.
   error_on_missing_key = false
 }
-EOF
-        else
-            # Если VAULT_AGENT_KV не задан, не вставляем блок secret вообще,
-            # чтобы не получить secret "" и падение агента.
-            cat << EOF
+SYS_EOF
+    else
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
   "vault-agent": {}
 }
   EOT
   perms = "0640"
   error_on_missing_key = false
 }
-EOF
-        fi
+SYS_EOF
+    fi
 
-        # Блоки для сертификатов SBERCA (опционально, зависят от SBERCA_CERT_KV)
-        # ВАЖНО: perms = "0600" - только владелец может читать (по умолчанию)
-        # ДЛЯ ДОСТУПА ГРУППЕ: можно изменить на perms = "0640" чтобы группа va-read могла читать
-        # НО в Secure Edition мы копируем сертификаты в user-space, поэтому оставляем 0600
-        if [[ -n "$SBERCA_CERT_KV" ]]; then
-            cat << EOF
+    # Добавляем блоки для сертификатов SBERCA
+    if [[ -n "$SBERCA_CERT_KV" ]]; then
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
 
 template {
   destination = "/opt/vault/certs/server_bundle.pem"
@@ -2101,7 +2108,7 @@ template {
 
 template {
   destination = "/opt/vault/certs/grafana-client.pem"
-  contents = <<EOT
+  contents    = <<EOT
 {{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
 {{ .Data.private_key }}
 {{ .Data.certificate }}
@@ -2110,26 +2117,27 @@ template {
   EOT
   perms = "0640"
 }
-EOF
-        else
-            cat << EOF
+SYS_EOF
+    else
+        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
 
 # SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
-EOF
-        fi
-
-    } > "$SYSTEM_VAULT_AGENT_HCL"
+SYS_EOF
+    fi
     
     echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
     log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
     
     # ============================================
-    # 2. USER-SPACE ВЕРСИЯ (для справки)
+    # 2. USER-SPACE ВЕРСИЯ (для справки) - упрощенная
     # ============================================
-    {
-        # Базовая конфигурация агента
-        # ВАЖНО: В Secure Edition используются переменные VAULT_* вместо хардкод /opt/
-        cat << EOF
+    echo "[VAULT-CONFIG] Создание user-space версии agent.hcl..." | tee /dev/stderr
+    
+    # Создаем простую user-space версию
+    cat > "$VAULT_AGENT_HCL" << USER_EOF
+# User-space версия agent.hcl (только для справки)
+# Полная системная версия в /opt/vault/conf/agent.hcl
+
 pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
 vault {
  address = "https://$SEC_MAN_ADDR"
@@ -2157,142 +2165,12 @@ log_destination "Tengry" {
  log_file = "agent.log"
 }
 
-template {
-  destination = "$VAULT_CONF_DIR/data_sec.json"
-  contents    = <<EOT
-{
-EOF
-
-        # Блок rpm_url
-        if [[ -n "$RPM_URL_KV" ]]; then
-            cat << EOF
-  "rpm_url": {
-    {{ with secret "$RPM_URL_KV" }}
-    "harvest": {{ .Data.harvest | toJSON }},
-    "prometheus": {{ .Data.prometheus | toJSON }},
-    "grafana": {{ .Data.grafana | toJSON }}
-    {{ end }}
-  },
-EOF
-        else
-            cat << EOF
-  "rpm_url": {},
-EOF
-        fi
-
-        # Блок netapp_ssh
-        if [[ -n "$NETAPP_SSH_KV" ]]; then
-            cat << EOF
-  "netapp_ssh": {
-    {{ with secret "$NETAPP_SSH_KV" }}
-    "addr": {{ .Data.addr | toJSON }},
-    "user": {{ .Data.user | toJSON }},
-    "pass": {{ .Data.pass | toJSON }}
-    {{ end }}
-  },
-EOF
-        else
-            cat << EOF
-  "netapp_ssh": {},
-EOF
-        fi
-
-        # Блок grafana_web
-        if [[ -n "$GRAFANA_WEB_KV" ]]; then
-            cat << EOF
-  "grafana_web": {
-    {{ with secret "$GRAFANA_WEB_KV" }}
-    "user": {{ .Data.user | toJSON }},
-    "pass": {{ .Data.pass | toJSON }}
-    {{ end }}
-  },
-EOF
-        else
-            cat << EOF
-  "grafana_web": {},
-EOF
-        fi
-
-        # Блок vault-agent (role_id/secret_id обязательны для работы агента)
-        if [[ -n "$VAULT_AGENT_KV" ]]; then
-            cat << EOF
-  "vault-agent": {
-    {{ with secret "$VAULT_AGENT_KV" }}
-    "role_id": {{ .Data.role_id | toJSON }},
-    "secret_id": {{ .Data.secret_id | toJSON }}
-    {{ end }}
-  }
-}
-  EOT
-  perms = "0640"
-  # Если какой-то из необязательных KV/ключей отсутствует, не роняем vault-agent,
-  # а просто создаём пустой объект. Обязательные значения (role_id/secret_id)
-  # дополнительно проверяются в bash перед перезапуском агента.
-  error_on_missing_key = false
-}
-EOF
-        else
-            # Если VAULT_AGENT_KV не задан, не вставляем блок secret вообще,
-            # чтобы не получить secret "" и падение агента.
-            cat << EOF
-  "vault-agent": {}
-}
-  EOT
-  perms = "0640"
-  error_on_missing_key = false
-}
-EOF
-        fi
-
-        # Блоки для сертификатов SBERCA (опционально, зависят от SBERCA_CERT_KV)
-        # ВАЖНО: perms = "0600" - только владелец может читать (по умолчанию)
-        # ДЛЯ ДОСТУПА ГРУППЕ: можно изменить на perms = "0640" чтобы группа va-read могла читать
-        # НО в Secure Edition мы копируем сертификаты в user-space, поэтому оставляем 0600
-        if [[ -n "$SBERCA_CERT_KV" ]]; then
-            cat << EOF
-
-template {
-  destination = "/opt/vault/certs/server_bundle.pem"
-  contents    = <<EOT
-{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
-{{ .Data.private_key }}
-{{ .Data.certificate }}
-{{ .Data.issuing_ca }}
-{{- end -}}
-  EOT
-  perms = "0640"
-}
-
-template {
-  destination = "/opt/vault/certs/ca_chain.crt"
-  contents = <<EOT
-{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" -}}
-{{ .Data.issuing_ca }}
-{{- end -}}
-  EOT
-  perms = "0640"
-}
-
-template {
-  destination = "/opt/vault/certs/grafana-client.pem"
-  contents = <<EOT
-{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
-{{ .Data.private_key }}
-{{ .Data.certificate }}
-{{ .Data.issuing_ca }}
-{{- end -}}
-  EOT
-  perms = "0640"
-}
-EOF
-        else
-            cat << EOF
-
-# SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
-EOF
-        fi
-
-    } > "$VAULT_AGENT_HCL"
+# NOTE: Template блоки для генерации data_sec.json и сертификатов
+# находятся в системной версии /opt/vault/conf/agent.hcl
+# Эта user-space версия создана только для справки.
+USER_EOF
+    
+    echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
     
     echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
     log_debug "✅ User-space agent.hcl created at $VAULT_AGENT_HCL"
@@ -2311,8 +2189,8 @@ EOF
     local SYSTEM_ROLE_ID_FILE="/opt/vault/conf/role_id.txt"
     local SYSTEM_SECRET_ID_FILE="/opt/vault/conf/secret_id.txt"
     
-    # Копируем файлы, если есть права
-    if [[ -f "$VAULT_ROLE_ID_FILE" ]]; then
+    # Копируем файлы, если есть права и они не пустые
+    if [[ -f "$VAULT_ROLE_ID_FILE" && -s "$VAULT_ROLE_ID_FILE" ]]; then
         if cp "$VAULT_ROLE_ID_FILE" "$SYSTEM_ROLE_ID_FILE" 2>/dev/null; then
             echo "[VAULT-CONFIG] ✅ role_id.txt скопирован в $SYSTEM_ROLE_ID_FILE" | tee /dev/stderr
             log_debug "✅ role_id.txt copied to $SYSTEM_ROLE_ID_FILE"
@@ -2321,9 +2199,13 @@ EOF
             echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать role_id.txt (нет прав)" | tee /dev/stderr
             log_debug "⚠️  Failed to copy role_id.txt (no permissions)"
         fi
+    else
+        echo "[VAULT-CONFIG] ⚠️  role_id.txt пустой или не существует" | tee /dev/stderr
+        log_debug "⚠️  role_id.txt is empty or does not exist"
+        print_warning "role_id.txt пустой - vault-agent не сможет аутентифицироваться!"
     fi
     
-    if [[ -f "$VAULT_SECRET_ID_FILE" ]]; then
+    if [[ -f "$VAULT_SECRET_ID_FILE" && -s "$VAULT_SECRET_ID_FILE" ]]; then
         if cp "$VAULT_SECRET_ID_FILE" "$SYSTEM_SECRET_ID_FILE" 2>/dev/null; then
             echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован в $SYSTEM_SECRET_ID_FILE" | tee /dev/stderr
             log_debug "✅ secret_id.txt copied to $SYSTEM_SECRET_ID_FILE"
@@ -2332,6 +2214,10 @@ EOF
             echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать secret_id.txt (нет прав)" | tee /dev/stderr
             log_debug "⚠️  Failed to copy secret_id.txt (no permissions)"
         fi
+    else
+        echo "[VAULT-CONFIG] ⚠️  secret_id.txt пустой или не существует" | tee /dev/stderr
+        log_debug "⚠️  secret_id.txt is empty or does not exist"
+        print_warning "secret_id.txt пустой - vault-agent не сможет аутентифицироваться!"
     fi
     
     # ============================================================
