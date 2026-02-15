@@ -13,67 +13,6 @@ def computeEnvironmentVariables() {
     }
 }
 
-def generateCertificatesFromVaultPKI() {
-    def certData = [
-        server_bundle_pem: '',
-        ca_chain_crt: '',
-        grafana_client_pem: ''
-    ]
-    
-    if (!params.SBERCA_CERT_KV?.trim()) {
-        echo "[WARNING] SBERCA_CERT_KV не задан, пропускаем генерацию сертификатов"
-        return certData
-    }
-    
-    try {
-        def fqdn = params.SERVER_ADDRESS ?: 'unknown.host'
-        def email = params.ADMIN_EMAIL ?: 'monitoring@sberbank.ru'
-        def ttl = '26280h'  // 3 года
-        
-        echo "[CERTS] Генерация сертификата через Vault PKI..."
-        echo "[CERTS]   common_name: ${fqdn}, email: ${email}, ttl: ${ttl}"
-        
-        def certJson = sh(
-            script: """#!/bin/bash
-                set -e
-                VAULT_TOKEN=\$(curl -s -X POST -H "X-Vault-Namespace: ${env.KAE}" \
-                    "https://${params.SEC_MAN_ADDR}/v1/auth/approle/login" \
-                    -d '{"role_id":"${env.VA_ROLE_ID}","secret_id":"${env.VA_SECRET_ID}"}' \
-                    | jq -r '.auth.client_token')
-                if [ -z "\$VAULT_TOKEN" ] || [ "\$VAULT_TOKEN" == "null" ]; then
-                    echo "[ERROR] Не удалось получить Vault токен" >&2
-                    exit 1
-                fi
-                echo "[CERTS] ✅ Vault токен получен" >&2
-                curl -s -X POST -H "X-Vault-Token: \$VAULT_TOKEN" -H "X-Vault-Namespace: ${env.KAE}" \
-                    "https://${params.SEC_MAN_ADDR}/v1/${params.SBERCA_CERT_KV}" \
-                    -d '{"common_name":"${fqdn}","email":"${email}","alt_names":"${fqdn}","ttl":"${ttl}"}'
-            """,
-            returnStdout: true
-        ).trim()
-        
-        def certResponse = readJSON text: certJson
-        if (!certResponse.data) {
-            echo "[ERROR] Vault PKI не вернул данные"
-            return certData
-        }
-        
-        def privateKey = certResponse.data.private_key ?: ''
-        def certificate = certResponse.data.certificate ?: ''
-        def issuingCa = certResponse.data.issuing_ca ?: ''
-        
-        certData.server_bundle_pem = "${privateKey}${certificate}${issuingCa}"
-        certData.ca_chain_crt = issuingCa
-        certData.grafana_client_pem = "${privateKey}${certificate}${issuingCa}"
-        
-        echo "[CERTS] ✅ Сертификаты сгенерированы (${certData.server_bundle_pem.length()} байт)"
-    } catch (Exception e) {
-        echo "[ERROR] Ошибка генерации сертификатов: ${e.message}"
-    }
-    
-    return certData
-}
-
 pipeline {
     agent none
 
@@ -344,10 +283,51 @@ pipeline {
                                     ]
                                 ]
                                 
-                                // Генерация сертификатов (вынесено в отдельную функцию)
-                                def certData = generateCertificatesFromVaultPKI()
-                                data['certificates'] = certData
+                                // ========================================
+                                // ГЕНЕРАЦИЯ СЕРТИФИКАТОВ через Vault PKI
+                                // ========================================
+                                def certData = [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
                                 
+                                if (params.SBERCA_CERT_KV?.trim()) {
+                                    try {
+                                        def fqdn = params.SERVER_ADDRESS ?: 'unknown.host'
+                                        def email = params.ADMIN_EMAIL ?: 'monitoring@sberbank.ru'
+                                        def ttl = '26280h'
+                                        
+                                        echo "[CERTS] Генерация через PKI: ${fqdn}, email: ${email}"
+                                        
+                                        def certJson = sh(script: """#!/bin/bash
+                                            set -e
+                                            VAULT_TOKEN=\$(curl -s -X POST -H "X-Vault-Namespace: ${env.KAE}" \
+                                                "https://${params.SEC_MAN_ADDR}/v1/auth/approle/login" \
+                                                -d '{"role_id":"${env.VA_ROLE_ID}","secret_id":"${env.VA_SECRET_ID}"}' | jq -r '.auth.client_token')
+                                            [ -z "\$VAULT_TOKEN" ] && echo "[ERROR] No token" >&2 && exit 1
+                                            echo "[CERTS] ✅ Token OK" >&2
+                                            curl -s -X POST -H "X-Vault-Token: \$VAULT_TOKEN" -H "X-Vault-Namespace: ${env.KAE}" \
+                                                "https://${params.SEC_MAN_ADDR}/v1/${params.SBERCA_CERT_KV}" \
+                                                -d '{"common_name":"${fqdn}","email":"${email}","alt_names":"${fqdn}","ttl":"${ttl}"}'
+                                        """, returnStdout: true).trim()
+                                        
+                                        def certResp = readJSON text: certJson
+                                        if (certResp.data) {
+                                            def pk = certResp.data.private_key ?: ''
+                                            def ct = certResp.data.certificate ?: ''
+                                            def ca = certResp.data.issuing_ca ?: ''
+                                            certData.server_bundle_pem = "${pk}${ct}${ca}"
+                                            certData.ca_chain_crt = ca
+                                            certData.grafana_client_pem = "${pk}${ct}${ca}"
+                                            echo "[CERTS] ✅ Generated (${certData.server_bundle_pem.length()} bytes)"
+                                        } else {
+                                            echo "[ERROR] No cert data from Vault"
+                                        }
+                                    } catch (Exception e) {
+                                        echo "[ERROR] Cert gen failed: ${e.message}"
+                                    }
+                                } else {
+                                    echo "[WARNING] SBERCA_CERT_KV not set"
+                                }
+                                
+                                data['certificates'] = certData
                                 writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(data)
                             }
                         } catch (Exception e) {
