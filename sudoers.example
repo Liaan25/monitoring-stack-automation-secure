@@ -32,3 +32,37 @@ ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status 
 ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
 ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
 ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
+
+# ============================================================
+# 2. System-level операции (требуют root)
+# ============================================================
+
+# Копирование credentials из /tmp/ в /opt/vault/conf/
+# ВАЖНО: Пути явно указаны с паттерном /tmp/role_id_*.txt для безопасности
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
+
+# Установка владельца для credentials (va-start:va-read)
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/secret_id.txt
+
+# Установка прав для credentials
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt
+
+# Создание и настройка /opt/vault/certs/
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/mkdir -p /opt/vault/certs
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/certs
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 750 /opt/vault/certs
+
+# Управление системным сервисом vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl status vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl is-active vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl start vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl stop vault-agent
+
+# Примечание: 
+# - NOEXEC предотвращает выполнение произвольных команд через shell escapes
+# - NOPASSWD не требует ввода пароля
+# - Все пути явно указаны для предотвращения злоупотреблений
