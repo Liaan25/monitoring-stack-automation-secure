@@ -55,6 +55,8 @@ validate_target() {
   case "$path" in
     /etc/environment.d/99-monitoring-vars.conf|\
     /opt/vault/conf/agent.hcl|\
+    /opt/vault/conf/role_id.txt|\
+    /opt/vault/conf/secret_id.txt|\
     /etc/grafana/grafana.ini|\
     /etc/prometheus/web-config.yml|\
     /etc/prometheus/prometheus.env|\

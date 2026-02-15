@@ -1,0 +1,186 @@
+# Sudo правила для Monitoring Stack (Secure Edition)
+# Для заявки в АС СУУПТ (IDM)
+# Версия: 1.0.0
+# Дата: 2026-02-15
+
+================================================================================
+  ВАЖНО: Правила соответствуют требованиям ИБ Сбербанка
+================================================================================
+
+1. Использован параметр NOEXEC для всех команд (предотвращение эскалации)
+2. Все пути явно указаны (НЕТ переменных окружения)
+3. Все команды явно перечислены (НЕТ wildcards или ALL)
+4. Wrapper'ы защищены SHA256 checksums
+5. Минимальные необходимые привилегии (принцип least privilege)
+
+================================================================================
+  РАЗДЕЛ 1: Управление User Units от имени mon_sys
+================================================================================
+
+Описание: Пользователь mon_ci управляет systemd user units под пользователем mon_sys
+Требуется для: Запуск/остановка/перезапуск мониторинговых сервисов
+
+ПРИМЕЧАНИЕ: Замените CI10742292 на ваш реальный KAE из NAMESPACE_CI
+
+# systemctl --user daemon-reload (для применения изменений в юнитах)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-reload
+
+# systemctl --user reset-failed (сброс failed статуса)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest.service
+
+# systemctl --user enable (автозапуск)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest.service
+
+# systemctl --user disable (отключение автозапуска)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-harvest.service
+
+# systemctl --user restart (перезапуск сервисов)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest.service
+
+# systemctl --user start (запуск сервисов)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-harvest.service
+
+# systemctl --user stop (остановка сервисов)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest.service
+
+# systemctl --user status (проверка статуса)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest.service
+
+# systemctl --user is-active (проверка активности)
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
+
+================================================================================
+  РАЗДЕЛ 2: Wrapper для копирования credentials в /opt/vault/conf/
+================================================================================
+
+Описание: Безопасное копирование role_id/secret_id из user-space в системный vault
+Требуется для: Аутентификация vault-agent для получения секретов
+Защита: SHA256 checksum (wrapper не может быть изменен без согласования)
+
+ПРИМЕЧАНИЕ: SHA256 checksum будет вычислен после финальной версии wrapper'а
+ПРИМЕЧАНИЕ: Замените FULL_PATH_TO_WRAPPER на абсолютный путь к wrapper'у
+
+# Копирование credentials в /opt/vault/conf/
+ALL=(root) NOEXEC: NOPASSWD: sha256:REPLACE_WITH_ACTUAL_SHA256_CHECKSUM /home/CI10742292-lnx-mon_ci/monitoring-deployment/wrappers/vault-credentials-installer.sh
+
+================================================================================
+  РАЗДЕЛ 3: Управление системным vault-agent (если требуется)
+================================================================================
+
+Описание: Перезапуск vault-agent для применения новых credentials
+Требуется для: Получение актуальных секретов и сертификатов из Vault
+ПРИМЕЧАНИЕ: Эти права могут НЕ требоваться если vault-agent управляется через RLM
+
+# vault-agent restart (только если vault-agent установлен как system service)
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent
+
+# vault-agent status
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl status vault-agent
+
+================================================================================
+  АЛЬТЕРНАТИВА: Использование групп вместо sudo
+================================================================================
+
+Вместо sudo правил для управления сервисами рекомендуется:
+
+1. Добавить mon_ci в группу va-read (для чтения секретов из /opt/vault/conf/)
+   Заявка через IDM: "Добавить пользователя в группу"
+
+2. Добавить mon_ci в группу va-start (для записи в /opt/vault/conf/)
+   Заявка через IDM: "Добавить пользователя в группу"
+
+3. Добавить mon_sys в группу systemd-journal (для чтения логов)
+   Заявка через IDM: "Добавить пользователя в группу"
+   
+   ОБОСНОВАНИЕ ИБ: Вместо sudo прав на journalctl
+
+4. Включить linger для mon_sys (user units работают всегда)
+   Использовать: sudo linuxadm-enable-linger CI10742292-lnx-mon_sys
+   
+   ОБОСНОВАНИЕ: Согласно документации SberInfra
+
+================================================================================
+  ВАЖНЫЕ ПРИМЕЧАНИЯ ДЛЯ СОГЛАСОВАНИЯ С ИБ
+================================================================================
+
+1. WRAPPER CHECKSUMS
+   - Все wrapper'ы защищены SHA256 checksums
+   - При изменении wrapper'а потребуется новая заявка в IDM
+   - Это предотвращает несанкционированную модификацию
+
+2. NOEXEC PARAMETER
+   - Все правила имеют NOEXEC для предотвращения эскалации привилегий
+   - Соответствует требованиям ИБ Сбербанка
+
+3. ЯВНЫЕ ПУТИ
+   - Все пути и команды явно указаны
+   - НЕТ использования переменных окружения в sudo rules
+   - НЕТ wildcards (*) или ALL
+
+4. МИНИМАЛЬНЫЕ ПРИВИЛЕГИИ
+   - Запрошены только необходимые команды
+   - systemctl ограничен конкретными сервисами
+   - НЕТ прав на системные сервисы (только monitoring-*)
+
+5. USER-SPACE АРХИТЕКТУРА
+   - Большинство операций НЕ требуют sudo
+   - Все конфиги, данные, логи в $HOME/monitoring/
+   - Только критические операции требуют повышения прав
+
+6. РАЗДЕЛЕНИЕ ПОЛНОМОЧИЙ
+   - mon_ci: технологический пользователь (CI/CD, deployment)
+   - mon_sys: сервисный пользователь (запуск сервисов, runtime)
+   - При компрометации mon_ci нельзя изменить бинарники
+   - При компрометации mon_sys нельзя задеплоить новый код
+
+================================================================================
+  ПРОВЕРКА ПОСЛЕ ПРИМЕНЕНИЯ
+================================================================================
+
+После применения sudo правил проверьте:
+
+1. Права на управление user units:
+   sudo -l -U CI10742292-lnx-mon_ci
+   
+   Должны быть видны все правила из РАЗДЕЛ 1
+
+2. Права на wrapper:
+   sudo -l -U CI10742292-lnx-mon_ci | grep vault-credentials-installer
+   
+   Должна быть видна команда с SHA256 checksum
+
+3. Проверка работы:
+   sudo -u CI10742292-lnx-mon_sys systemctl --user status monitoring-prometheus.service
+   
+   Должен вернуть статус сервиса (или ошибку что сервис не найден, если еще не создан)
+
+================================================================================
+  КОНТАКТЫ ДЛЯ ВОПРОСОВ
+================================================================================
+
+При возникновении вопросов по правилам обращайтесь:
+- Кибербезопасность: УАиРКБ ЦКЗ
+- Техподдержка IDM: @idminfra
+
+Документация:
+- Правила предоставления прав sudo: https://mapp.sberbank.ru/sberinfra/page/16201
+- Руководство по предоставлению прав SUDO: https://mapp.sberbank.ru/cybersecurity/scs-internal-regulations/5340334233/
+- Сопровождаем Linux Server без прав root/sudo: https://mapp.sberbank.ru/sberinfra/products-and-services/9409600216/
+
+================================================================================

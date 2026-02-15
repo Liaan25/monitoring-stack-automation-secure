@@ -324,7 +324,7 @@ create_debug_summary() {
         echo "           DEPLOYMENT SUMMARY"
         echo "================================================================"
         echo "Exit Code:     $exit_code"
-        echo "Elapsed Time:  ${elapsed_time}s ($(awk -v s="$elapsed_time" 'BEGIN{printf "%.1f", s/60}')m)"
+        echo "Elapsed Time:  ${elapsed_time}s ($(/usr/bin/awk -v s="$elapsed_time" 'BEGIN{printf "%.1f", s/60}')m)"
         echo "Finished:      $(date '+%Y-%m-%d %H:%M:%S %Z')"
         echo ""
         
@@ -385,7 +385,7 @@ format_elapsed_minutes() {
     local now_ts elapsed elapsed_min
     now_ts=$(date +%s)
     elapsed=$(( now_ts - SCRIPT_START_TS ))
-    elapsed_min=$(awk -v s="$elapsed" 'BEGIN{printf "%.1f", s/60}')
+    elapsed_min=$(/usr/bin/awk -v s="$elapsed" 'BEGIN{printf "%.1f", s/60}')
     printf "%sm" "$elapsed_min"
 }
 
@@ -495,7 +495,7 @@ install_vault_via_rlm() {
         local now_ts elapsed_sec elapsed_min
         now_ts=$(date +%s)
         elapsed_sec=$(( now_ts - start_ts ))
-        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+        elapsed_min=$(/usr/bin/awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
 
         # Цветной статус-индикатор
         local status_icon="⏳"
@@ -571,6 +571,50 @@ log_message() {
     log_dir=$(dirname "$LOG_FILE")
     mkdir -p "$log_dir" 2>/dev/null || true
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# ИБ-COMPLIANT: Создание защищенной директории для временных секретов в RAM
+# Требования ИБ: секреты должны храниться в /dev/shm (RAM) с автоочисткой
+create_secure_secrets_dir() {
+    local dir_name="monitoring-secrets-$$"
+    local secure_dir="/dev/shm/${dir_name}"
+    
+    if [[ ! -d "$secure_dir" ]]; then
+        mkdir -p "$secure_dir" || {
+            print_error "Не удалось создать защищенную директорию: $secure_dir"
+            return 1
+        }
+        
+        # Установка прав 700 (только владелец)
+        chmod 700 "$secure_dir" || {
+            print_error "Не удалось установить права на: $secure_dir"
+            return 1
+        }
+        
+        print_info "Создана защищенная директория для секретов: $secure_dir"
+        log_message "Создана защищенная директория для секретов (RAM): $secure_dir"
+    fi
+    
+    # Возвращаем путь через echo (для использования в переменной)
+    echo "$secure_dir"
+}
+
+# ИБ-COMPLIANT: Очистка защищенной директории с секретами
+cleanup_secure_secrets_dir() {
+    local secure_dir="$1"
+    
+    if [[ -n "$secure_dir" && -d "$secure_dir" && "$secure_dir" == /dev/shm/monitoring-secrets-* ]]; then
+        print_info "Очистка защищенной директории секретов: $secure_dir"
+        log_message "Очистка защищенной директории секретов: $secure_dir"
+        
+        # Затираем файлы перед удалением (paranoid mode)
+        find "$secure_dir" -type f -exec shred -n 3 -z -u {} \; 2>/dev/null || true
+        
+        # Удаляем директорию
+        rm -rf "$secure_dir" 2>/dev/null || true
+        
+        print_success "Защищенная директория очищена"
+    fi
 }
 
 # Универсальная функция добавления пользователя в группу as-admin через RLM
@@ -667,7 +711,7 @@ ensure_user_in_as_admin() {
         local now_ts elapsed_sec elapsed_min
         now_ts=$(date +%s)
         elapsed_sec=$(( now_ts - start_ts ))
-        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+        elapsed_min=$(/usr/bin/awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
 
         # Цветной статус-индикатор
         local status_icon="⏳"
@@ -809,7 +853,7 @@ ensure_user_in_va_read_group() {
         local now_ts elapsed_sec elapsed_min
         now_ts=$(date +%s)
         elapsed_sec=$(( now_ts - start_ts ))
-        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+        elapsed_min=$(/usr/bin/awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
 
         # Цветной статус-индикатор
         local status_icon="⏳"
@@ -940,7 +984,7 @@ install_vault_via_rlm() {
         local now_ts elapsed_sec elapsed_min
         now_ts=$(date +%s)
         elapsed_sec=$(( now_ts - start_ts ))
-        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+        elapsed_min=$(/usr/bin/awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
 
         # Цветной статус-индикатор
         local status_icon="⏳"
@@ -1085,7 +1129,7 @@ ensure_user_in_va_start_group() {
         local now_ts elapsed_sec elapsed_min
         now_ts=$(date +%s)
         elapsed_sec=$(( now_ts - start_ts ))
-        elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+        elapsed_min=$(/usr/bin/awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
 
         # Цветной статус-индикатор
         local status_icon="⏳"
@@ -1378,7 +1422,7 @@ ensure_mon_sys_in_grafana_group() {
         now_ts=$(date +%s)
         elapsed=$(( now_ts - start_ts ))
         elapsed_sec=$elapsed
-        elapsed_min=$(awk -v s="$elapsed" 'BEGIN{printf "%.1f", s/60}')
+        elapsed_min=$(/usr/bin/awk -v s="$elapsed" 'BEGIN{printf "%.1f", s/60}')
 
         # Информативный вывод
         echo "[INFO] ├─ Попытка $attempt/$max_attempts | Статус: $current_status | Время ожидания: ${elapsed_min}м (${elapsed_sec}с)" >&2
@@ -1386,7 +1430,7 @@ ensure_mon_sys_in_grafana_group() {
 
         if echo "$status_resp" | grep -q '"status":"success"'; then
             local total_time
-            total_time=$(awk -v s="$elapsed" 'BEGIN{printf "%.1f", s/60}')
+            total_time=$(/usr/bin/awk -v s="$elapsed" 'BEGIN{printf "%.1f", s/60}')
             print_success "🎉 Задача UVS_LINUX_ADD_USERS_GROUP для ${mon_sys_user} (grafana) выполнена за ${total_time}м (${elapsed_sec}с)"
             break
         fi
@@ -1525,9 +1569,9 @@ detect_network_info() {
 
     print_info "Определение домена через nslookup..."
     if command -v nslookup &> /dev/null; then
-        SERVER_DOMAIN=$(nslookup "$SERVER_IP" 2>/dev/null | grep 'name =' | awk '{print $4}' | sed 's/\.$//' | head -1)
+        SERVER_DOMAIN=$(nslookup "$SERVER_IP" 2>/dev/null | grep 'name =' | awk '{print $4}' | /usr/bin/sed 's/\.$//' | head -1)
         if [[ -z "$SERVER_DOMAIN" ]]; then
-            SERVER_DOMAIN=$(nslookup "$SERVER_IP" 2>/dev/null | grep -E "^$SERVER_IP" | awk '{print $2}' | sed 's/\.$//' | head -1)
+            SERVER_DOMAIN=$(nslookup "$SERVER_IP" 2>/dev/null | grep -E "^$SERVER_IP" | awk '{print $2}' | /usr/bin/sed 's/\.$//' | head -1)
         fi
     fi
 
@@ -2011,8 +2055,35 @@ setup_vault_config() {
     # ============================================
     local SYSTEM_VAULT_AGENT_HCL="/opt/vault/conf/agent.hcl"
     
+    # Проверка прав на запись в /opt/vault/conf/
+    echo "[VAULT-CONFIG] Проверка прав на запись в /opt/vault/conf/..." | tee /dev/stderr
+    log_debug "Checking write permissions to /opt/vault/conf/"
+    
+    local can_write_system=false
+    if [[ -w "/opt/vault/conf/" ]]; then
+        echo "[VAULT-CONFIG] ✅ Можем писать в /opt/vault/conf/" | tee /dev/stderr
+        log_debug "✅ Can write to /opt/vault/conf/"
+        can_write_system=true
+    else
+        echo "[VAULT-CONFIG] ⚠️  НЕТ прав на запись в /opt/vault/conf/" | tee /dev/stderr
+        log_debug "⚠️  NO write permissions to /opt/vault/conf/"
+        
+        # Проверяем состоим ли мы в группе va-start
+        if id | grep -q "${KAE}-lnx-va-start"; then
+            echo "[VAULT-CONFIG] ✅ Состоим в группе va-start, но права не применились" | tee /dev/stderr
+            print_warning "Пользователь в группе va-start, но нет прав - требуется перелогин"
+        else
+            echo "[VAULT-CONFIG] ℹ️  Не состоим в группе va-start" | tee /dev/stderr
+            print_info "Для записи в /opt/vault/conf/ нужно состоять в группе ${KAE}-lnx-va-start"
+        fi
+        
+        can_write_system=false
+    fi
+    
     # Создаем системный agent.hcl с помощью cat и перенаправления
-    cat > "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+    if [[ "$can_write_system" == "true" ]]; then
+        echo "[VAULT-CONFIG] Создание системного agent.hcl..." | tee /dev/stderr
+        cat > "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
 pid_file = "/opt/vault/log/vault-agent.pidfile"
 vault {
  address = "https://$SEC_MAN_ADDR"
@@ -2166,9 +2237,20 @@ SYS_EOF
 # SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
 SYS_EOF
     fi
-    
-    echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
-    log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
+        
+        echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
+        log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
+    else
+        # НЕТ прав на запись - создаем временный файл с инструкциями
+        echo "[VAULT-CONFIG] ⚠️  Не удалось создать системный agent.hcl (нет прав)" | tee /dev/stderr
+        log_debug "⚠️  Could not create system agent.hcl (no permissions)"
+        
+        print_warning "Нет прав на запись в /opt/vault/conf/"
+        print_info "Создан шаблон agent.hcl в: $VAULT_AGENT_HCL"
+        print_info "Необходимо скопировать его в системный путь:"
+        print_info "  sudo cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
+        print_info "Или запросить права через IDM на группу ${KAE}-lnx-va-start"
+    fi
     
     # ============================================
     # 2. USER-SPACE ВЕРСИЯ (для справки) - упрощенная
@@ -2231,35 +2313,73 @@ USER_EOF
     local SYSTEM_ROLE_ID_FILE="/opt/vault/conf/role_id.txt"
     local SYSTEM_SECRET_ID_FILE="/opt/vault/conf/secret_id.txt"
     
-    # Копируем файлы, если есть права и они не пустые
-    if [[ -f "$VAULT_ROLE_ID_FILE" && -s "$VAULT_ROLE_ID_FILE" ]]; then
-        if cp "$VAULT_ROLE_ID_FILE" "$SYSTEM_ROLE_ID_FILE" 2>/dev/null; then
-            echo "[VAULT-CONFIG] ✅ role_id.txt скопирован в $SYSTEM_ROLE_ID_FILE" | tee /dev/stderr
-            log_debug "✅ role_id.txt copied to $SYSTEM_ROLE_ID_FILE"
-            chmod 640 "$SYSTEM_ROLE_ID_FILE" 2>/dev/null || true
-        else
-            echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать role_id.txt (нет прав)" | tee /dev/stderr
-            log_debug "⚠️  Failed to copy role_id.txt (no permissions)"
-        fi
-    else
-        echo "[VAULT-CONFIG] ⚠️  role_id.txt пустой или не существует" | tee /dev/stderr
+    # Проверяем что файлы существуют и не пустые
+    if [[ ! -f "$VAULT_ROLE_ID_FILE" || ! -s "$VAULT_ROLE_ID_FILE" ]]; then
+        echo "[VAULT-CONFIG] ⚠️  role_id.txt пустой или не существует: $VAULT_ROLE_ID_FILE" | tee /dev/stderr
         log_debug "⚠️  role_id.txt is empty or does not exist"
         print_warning "role_id.txt пустой - vault-agent не сможет аутентифицироваться!"
     fi
     
-    if [[ -f "$VAULT_SECRET_ID_FILE" && -s "$VAULT_SECRET_ID_FILE" ]]; then
-        if cp "$VAULT_SECRET_ID_FILE" "$SYSTEM_SECRET_ID_FILE" 2>/dev/null; then
-            echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован в $SYSTEM_SECRET_ID_FILE" | tee /dev/stderr
-            log_debug "✅ secret_id.txt copied to $SYSTEM_SECRET_ID_FILE"
-            chmod 640 "$SYSTEM_SECRET_ID_FILE" 2>/dev/null || true
-        else
-            echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать secret_id.txt (нет прав)" | tee /dev/stderr
-            log_debug "⚠️  Failed to copy secret_id.txt (no permissions)"
-        fi
-    else
-        echo "[VAULT-CONFIG] ⚠️  secret_id.txt пустой или не существует" | tee /dev/stderr
+    if [[ ! -f "$VAULT_SECRET_ID_FILE" || ! -s "$VAULT_SECRET_ID_FILE" ]]; then
+        echo "[VAULT-CONFIG] ⚠️  secret_id.txt пустой или не существует: $VAULT_SECRET_ID_FILE" | tee /dev/stderr
         log_debug "⚠️  secret_id.txt is empty or does not exist"
         print_warning "secret_id.txt пустой - vault-agent не сможет аутентифицироваться!"
+    fi
+    
+    # SECURE EDITION: Используем wrapper для безопасного копирования
+    # Wrapper проверяет источники, устанавливает правильные права и владельцев
+    if [[ -f "$VAULT_ROLE_ID_FILE" && -s "$VAULT_ROLE_ID_FILE" && \
+          -f "$VAULT_SECRET_ID_FILE" && -s "$VAULT_SECRET_ID_FILE" ]]; then
+        
+        echo "[VAULT-CONFIG] Использование vault-credentials-installer wrapper..." | tee /dev/stderr
+        log_debug "Using vault-credentials-installer wrapper"
+        
+        # Проверка существования wrapper'а
+        if [[ ! -x "$WRAPPERS_DIR/vault-credentials-installer_launcher.sh" ]]; then
+            echo "[VAULT-CONFIG] ⚠️  vault-credentials-installer_launcher.sh не найден или не исполняемый" | tee /dev/stderr
+            log_debug "⚠️  vault-credentials-installer_launcher.sh not found or not executable"
+            
+            # Fallback: пробуем простое копирование
+            echo "[VAULT-CONFIG] Fallback: попытка прямого копирования..." | tee /dev/stderr
+            if cp "$VAULT_ROLE_ID_FILE" "$SYSTEM_ROLE_ID_FILE" 2>/dev/null && \
+               cp "$VAULT_SECRET_ID_FILE" "$SYSTEM_SECRET_ID_FILE" 2>/dev/null; then
+                echo "[VAULT-CONFIG] ✅ Credentials скопированы напрямую" | tee /dev/stderr
+                chmod 640 "$SYSTEM_ROLE_ID_FILE" "$SYSTEM_SECRET_ID_FILE" 2>/dev/null || true
+            else
+                echo "[VAULT-CONFIG] ❌ Не удалось скопировать credentials (нет прав)" | tee /dev/stderr
+                print_error "Не удалось скопировать credentials в /opt/vault/conf/"
+                print_info "Требуется sudo доступ или добавление в группу va-start"
+            fi
+        else
+            # Используем wrapper (может потребовать sudo)
+            echo "[VAULT-CONFIG] Попытка с sudo (через wrapper)..." | tee /dev/stderr
+            log_debug "Attempting with sudo (via wrapper)"
+            
+            if sudo -n "$WRAPPERS_DIR/vault-credentials-installer_launcher.sh" \
+                "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>&1 | tee -a "$DEBUG_LOG"; then
+                echo "[VAULT-CONFIG] ✅ Credentials установлены через wrapper с правильными правами" | tee /dev/stderr
+                log_debug "✅ Credentials installed via wrapper with correct permissions"
+                print_success "Credentials успешно скопированы в /opt/vault/conf/"
+            else
+                echo "[VAULT-CONFIG] ⚠️  Wrapper failed или нет sudo прав" | tee /dev/stderr
+                log_debug "⚠️  Wrapper failed or no sudo permissions"
+                
+                # Последняя попытка: без sudo
+                echo "[VAULT-CONFIG] Fallback: попытка без sudo..." | tee /dev/stderr
+                if "$WRAPPERS_DIR/vault-credentials-installer_launcher.sh" \
+                    "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>&1 | tee -a "$DEBUG_LOG"; then
+                    echo "[VAULT-CONFIG] ✅ Credentials установлены без sudo" | tee /dev/stderr
+                    print_success "Credentials успешно скопированы"
+                else
+                    echo "[VAULT-CONFIG] ❌ Все попытки неудачны" | tee /dev/stderr
+                    print_error "Не удалось установить credentials в /opt/vault/conf/"
+                    print_info "Проверьте права доступа или sudo настройки"
+                fi
+            fi
+        fi
+    else
+        echo "[VAULT-CONFIG] ⚠️  Пропускаем копирование - один или оба файла пустые/отсутствуют" | tee /dev/stderr
+        log_debug "⚠️  Skipping copy - one or both files are empty/missing"
     fi
     
     # ============================================================
@@ -2798,11 +2918,16 @@ setup_monitoring_user_units() {
     # User-юнит Prometheus
     local prom_unit="${user_systemd_dir}/monitoring-prometheus.service"
     
-    # SECURE EDITION: Используем пользовательские пути (соответствие ИБ)
-    # Все конфиги, данные и логи в $HOME/monitoring/
-    local prom_opts="--config.file=${PROMETHEUS_USER_CONFIG_DIR}/prometheus.yml --storage.tsdb.path=${PROMETHEUS_USER_DATA_DIR} --web.console.templates=${PROMETHEUS_USER_CONFIG_DIR}/consoles --web.console.libraries=${PROMETHEUS_USER_CONFIG_DIR}/console_libraries --web.config.file=${PROMETHEUS_USER_CONFIG_DIR}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}"
+    # SECURE EDITION: Явные пути для mon_sys пользователя (требования ИБ)
+    # Все конфиги, данные и логи в ${mon_sys_home}/monitoring/
+    local mon_sys_prometheus_config="${mon_sys_home}/monitoring/config/prometheus"
+    local mon_sys_prometheus_data="${mon_sys_home}/monitoring/data/prometheus"
+    local mon_sys_prometheus_logs="${mon_sys_home}/monitoring/logs/prometheus"
     
-    print_info "Prometheus параметры запуска (user-space): ${prom_opts:0:100}..."
+    print_info "Prometheus пути (user-space для $mon_sys_user):"
+    print_info "  Config: $mon_sys_prometheus_config"
+    print_info "  Data:   $mon_sys_prometheus_data"
+    print_info "  Logs:   $mon_sys_prometheus_logs"
     
     # Удаляем старый unit файл, чтобы гарантировать создание нового
     if [[ -f "$prom_unit" ]]; then
@@ -2812,6 +2937,7 @@ setup_monitoring_user_units() {
     
     print_info "Создание нового systemd unit файла: $prom_unit"
     
+    # ИБ-COMPLIANT: Явные пути в ExecStart (НЕ переменные окружения)
     cat > "$prom_unit" << EOF
 [Unit]
 Description=Monitoring Prometheus (user service - Secure Edition)
@@ -2819,12 +2945,12 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/prometheus ${prom_opts}
-WorkingDirectory=${PROMETHEUS_USER_DATA_DIR}
+ExecStart=/usr/bin/prometheus --config.file=${mon_sys_prometheus_config}/prometheus.yml --storage.tsdb.path=${mon_sys_prometheus_data} --web.console.templates=${mon_sys_prometheus_config}/consoles --web.console.libraries=${mon_sys_prometheus_config}/console_libraries --web.config.file=${mon_sys_prometheus_config}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}
+WorkingDirectory=${mon_sys_prometheus_data}
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:${PROMETHEUS_USER_LOGS_DIR}/prometheus.log
-StandardError=append:${PROMETHEUS_USER_LOGS_DIR}/prometheus.log
+StandardOutput=append:${mon_sys_prometheus_logs}/prometheus.log
+StandardError=append:${mon_sys_prometheus_logs}/prometheus.log
 
 [Install]
 WantedBy=default.target
@@ -2832,6 +2958,18 @@ EOF
 
     # User-юнит Grafana
     local graf_unit="${user_systemd_dir}/monitoring-grafana.service"
+    
+    # SECURE EDITION: Явные пути для mon_sys пользователя
+    local mon_sys_grafana_config="${mon_sys_home}/monitoring/config/grafana"
+    local mon_sys_grafana_data="${mon_sys_home}/monitoring/data/grafana"
+    local mon_sys_grafana_logs="${mon_sys_home}/monitoring/logs/grafana"
+    
+    print_info "Grafana пути (user-space для $mon_sys_user):"
+    print_info "  Config: $mon_sys_grafana_config"
+    print_info "  Data:   $mon_sys_grafana_data"
+    print_info "  Logs:   $mon_sys_grafana_logs"
+    
+    # ИБ-COMPLIANT: Явные пути в ExecStart
     cat > "$graf_unit" << EOF
 [Unit]
 Description=Monitoring Grafana (user service - Secure Edition)
@@ -2840,10 +2978,10 @@ After=network-online.target
 [Service]
 Type=simple
 # SECURE EDITION: Grafana config в пользовательском пространстве
-ExecStart=/usr/sbin/grafana-server --config=${GRAFANA_USER_CONFIG_DIR}/grafana.ini --homepath=/usr/share/grafana
-WorkingDirectory=${GRAFANA_USER_DATA_DIR}
-StandardOutput=append:${GRAFANA_USER_LOGS_DIR}/grafana.log
-StandardError=append:${GRAFANA_USER_LOGS_DIR}/grafana.log
+ExecStart=/usr/sbin/grafana-server --config=${mon_sys_grafana_config}/grafana.ini --homepath=/usr/share/grafana
+WorkingDirectory=${mon_sys_grafana_data}
+StandardOutput=append:${mon_sys_grafana_logs}/grafana.log
+StandardError=append:${mon_sys_grafana_logs}/grafana.log
 Restart=on-failure
 RestartSec=10
 
@@ -2853,8 +2991,16 @@ EOF
 
     # User-юнит Harvest (аналогично системному сервису)
     # SECURE EDITION: WorkingDirectory остается /opt/harvest (RPM бинарники)
-    # но конфиги будут в $HARVEST_USER_CONFIG_DIR
+    # но конфиги будут в ${mon_sys_home}/monitoring/config/harvest/
     local harvest_unit="${user_systemd_dir}/monitoring-harvest.service"
+    
+    local mon_sys_harvest_config="${mon_sys_home}/monitoring/config/harvest"
+    
+    print_info "Harvest пути (user-space для $mon_sys_user):"
+    print_info "  Config: $mon_sys_harvest_config"
+    print_info "  Binaries: /opt/harvest (RPM installation)"
+    
+    # ИБ-COMPLIANT: Явные пути в Environment
     cat > "$harvest_unit" << HARVEST_USER_SERVICE_EOF
 [Unit]
 Description=NetApp Harvest Poller (user service - Secure Edition)
@@ -2864,12 +3010,12 @@ After=network.target
 Type=oneshot
 # Бинарники из RPM остаются в /opt/harvest
 WorkingDirectory=/opt/harvest
-# Конфиги будут передаваться через --config (см. настройку harvest)
-ExecStart=/opt/harvest/bin/harvest start
-ExecStop=/opt/harvest/bin/harvest stop
+# Конфиги в user-space: передаются через --config
+ExecStart=/opt/harvest/bin/harvest start --config ${mon_sys_harvest_config}/harvest.yml
+ExecStop=/opt/harvest/bin/harvest stop --config ${mon_sys_harvest_config}/harvest.yml
 RemainAfterExit=yes
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/opt/harvest/bin
-Environment=HARVEST_CONF=${HARVEST_USER_CONFIG_DIR}
+Environment=HARVEST_CONF=${mon_sys_harvest_config}
 
 [Install]
 WantedBy=default.target
@@ -3122,7 +3268,7 @@ create_rlm_install_tasks() {
             local now_ts elapsed_sec elapsed_min
             now_ts=$(date +%s)
             elapsed_sec=$(( now_ts - start_ts ))
-            elapsed_min=$(awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
+            elapsed_min=$(/usr/bin/awk -v s="$elapsed_sec" 'BEGIN{printf "%.1f", s/60}')
 
             # Цветной статус-индикатор
             local status_icon="⏳"
@@ -3813,11 +3959,11 @@ datasources:
       tlsAuthWithCACert: true
     secureJsonData:
       tlsCACert: |
-        $(cat "$HOME/monitoring/certs/prometheus/ca_chain.crt" 2>/dev/null | sed 's/^/        /')
+        $(cat "$HOME/monitoring/certs/prometheus/ca_chain.crt" 2>/dev/null | /usr/bin/sed 's/^/        /')
       tlsClientCert: |
-        $(cat "$HOME/monitoring/certs/prometheus/client.crt" 2>/dev/null | sed 's/^/        /')
+        $(cat "$HOME/monitoring/certs/prometheus/client.crt" 2>/dev/null | /usr/bin/sed 's/^/        /')
       tlsClientKey: |
-        $(cat "$HOME/monitoring/certs/prometheus/client.key" 2>/dev/null | sed 's/^/        /')
+        $(cat "$HOME/monitoring/certs/prometheus/client.key" 2>/dev/null | /usr/bin/sed 's/^/        /')
 EOF
     
     print_success "Provisioning файл создан в $DATASOURCES_DIR/prometheus.yml"
@@ -4145,12 +4291,12 @@ setup_grafana_datasource_and_dashboards() {
             
             # Исправляем возможные проблемы
             # 1. Убираем Windows line endings
-            sed -i 's/\r$//' "$cred_json" 2>/dev/null
+            /usr/bin/sed -i 's/\r$//' "$cred_json" 2>/dev/null
             # 2. Убираем лишние запятые в конце объектов/массивов
-            sed -i 's/,\s*}/}/g' "$cred_json" 2>/dev/null
-            sed -i 's/,\s*]/]/g' "$cred_json" 2>/dev/null
+            /usr/bin/sed -i 's/,\s*}/}/g' "$cred_json" 2>/dev/null
+            /usr/bin/sed -i 's/,\s*]/]/g' "$cred_json" 2>/dev/null
             # 3. Убираем лишние пробелы
-            sed -i 's/^[[:space:]]*//;s/[[:space:]]*$//' "$cred_json" 2>/dev/null
+            /usr/bin/sed -i 's/^[[:space:]]*//;s/[[:space:]]*$//' "$cred_json" 2>/dev/null
             
             if jq empty "$cred_json" 2>/dev/null; then
                 print_success "JSON файл исправлен"
@@ -4720,7 +4866,7 @@ EOF_HEADER
                 # FALLBACK: Если jq не сработал, пробуем извлечь ID через grep/sed
                 if [[ -z "$sa_id" || "$sa_id" == "null" ]]; then
                     echo "DEBUG_ID_EXTRACTION: jq не извлек ID, пробуем альтернативный метод (grep/sed)" >&2
-                    sa_id=$(echo "$sa_body" | grep -o '"id":[0-9]*' | head -1 | sed 's/"id"://')
+                    sa_id=$(echo "$sa_body" | grep -o '"id":[0-9]*' | head -1 | /usr/bin/sed 's/"id"://')
                     echo "DEBUG_ID_EXTRACTION: sa_id после grep/sed='$sa_id'" >&2
                 fi
                 
