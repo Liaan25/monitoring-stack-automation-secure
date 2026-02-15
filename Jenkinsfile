@@ -303,22 +303,43 @@ pipeline {
                                                 -d '{"role_id":"${env.VA_ROLE_ID}","secret_id":"${env.VA_SECRET_ID}"}' | jq -r '.auth.client_token')
                                             [ -z "\$VAULT_TOKEN" ] && echo "[ERROR] No token" >&2 && exit 1
                                             echo "[CERTS] ✅ Token OK" >&2
-                                            curl -s -X POST -H "X-Vault-Token: \$VAULT_TOKEN" -H "X-Vault-Namespace: ${env.KAE}" \
+                                            echo "[CERTS] PKI path: ${params.SBERCA_CERT_KV}" >&2
+                                            echo "[CERTS] Request: common_name=${fqdn}, email=${email}, ttl=${ttl}" >&2
+                                            RESPONSE=\$(curl -s -X POST -H "X-Vault-Token: \$VAULT_TOKEN" -H "X-Vault-Namespace: ${env.KAE}" \
                                                 "https://${params.SEC_MAN_ADDR}/v1/${params.SBERCA_CERT_KV}" \
-                                                -d '{"common_name":"${fqdn}","email":"${email}","alt_names":"${fqdn}","ttl":"${ttl}"}'
+                                                -d '{"common_name":"${fqdn}","email":"${email}","alt_names":"${fqdn}","ttl":"${ttl}"}')
+                                            echo "[CERTS] Response preview:" >&2
+                                            echo "\$RESPONSE" | jq -c '{errors:.errors,data_keys:(.data|keys)}' 2>/dev/null >&2 || echo "\$RESPONSE" | head -c 500 >&2
+                                            echo "\$RESPONSE"
                                         """, returnStdout: true).trim()
                                         
+                                        echo "[CERTS] Raw response length: ${certJson.length()} chars"
+                                        
                                         def certResp = readJSON text: certJson
-                                        if (certResp.data) {
+                                        
+                                        // Проверяем наличие ошибок от Vault
+                                        if (certResp.errors) {
+                                            echo "[ERROR] Vault PKI returned errors: ${certResp.errors}"
+                                            echo "[ERROR] Full response: ${certJson.take(1000)}"
+                                        } else if (certResp.data) {
                                             def pk = certResp.data.private_key ?: ''
                                             def ct = certResp.data.certificate ?: ''
                                             def ca = certResp.data.issuing_ca ?: ''
-                                            certData.server_bundle_pem = "${pk}${ct}${ca}"
-                                            certData.ca_chain_crt = ca
-                                            certData.grafana_client_pem = "${pk}${ct}${ca}"
-                                            echo "[CERTS] ✅ Generated (${certData.server_bundle_pem.length()} bytes)"
+                                            
+                                            echo "[CERTS] Keys found: private_key=${pk.length()>0}, certificate=${ct.length()>0}, issuing_ca=${ca.length()>0}"
+                                            
+                                            if (pk && ct && ca) {
+                                                certData.server_bundle_pem = "${pk}${ct}${ca}"
+                                                certData.ca_chain_crt = ca
+                                                certData.grafana_client_pem = "${pk}${ct}${ca}"
+                                                echo "[CERTS] ✅ Generated (${certData.server_bundle_pem.length()} bytes)"
+                                            } else {
+                                                echo "[ERROR] Missing cert components: pk=${pk.length()}, ct=${ct.length()}, ca=${ca.length()}"
+                                            }
                                         } else {
                                             echo "[ERROR] No cert data from Vault"
+                                            echo "[ERROR] Response keys: ${certResp.keySet()}"
+                                            echo "[ERROR] Full response: ${certJson.take(1000)}"
                                         }
                                     } catch (Exception e) {
                                         echo "[ERROR] Cert gen failed: ${e.message}"
