@@ -20,8 +20,7 @@ pipeline {
         string(name: 'PROMETHEUS_PORT',    defaultValue: params.PROMETHEUS_PORT ?: '9090',description: 'Порт Prometheus')
         string(name: 'RLM_API_URL',        defaultValue: params.RLM_API_URL ?: '',        description: 'Базовый URL RLM API (например, https://api.rlm.sbrf.ru)')
         string(name: 'VAULT_CREDENTIAL_ID', defaultValue: params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev', description: 'Jenkins Credential ID для Vault токена (по умолчанию: vault-agent-dev)')
-        booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты (без переустановки пакетов и полного деплоя, ~1-2 минуты)')
-        booleanParam(name: 'SKIP_VAULT_INSTALL', defaultValue: true, description: '✅ Пропустить установку Vault через RLM (vault-agent НЕ используется в упрощенном подходе)')
+        booleanParam(name: 'SKIP_VAULT_INSTALL', defaultValue: true, description: '✅ Пропустить установку Vault через RLM (использовать уже установленный vault-agent)')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов (Grafana, Prometheus, Harvest) через RLM - использовать уже установленные пакеты')
         booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: true, description: '⚡ Пропустить CI диагностику (очистка, отладка, проверки сети) - только получение из Vault и развертывание')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить весь CDL этап (копирование и развертывание на сервер) - только CI проверки')
@@ -700,7 +699,6 @@ env \
   GRAFANA_WEB_KV="__GRAFANA_WEB_KV__" \
   SBERCA_CERT_KV="__SBERCA_CERT_KV__" \
   ADMIN_EMAIL="__ADMIN_EMAIL__" \
-  RENEW_CERTIFICATES_ONLY="__RENEW_CERTIFICATES_ONLY__" \
   SKIP_VAULT_INSTALL="__SKIP_VAULT_INSTALL__" \
   SKIP_RPM_INSTALL="__SKIP_RPM_INSTALL__" \
   GRAFANA_URL="$RPM_GRAFANA" \
@@ -728,10 +726,9 @@ REMOTE_EOF
                             .replace('__NETAPP_SSH_KV__',      params.NETAPP_SSH_KV      ?: '')
                             .replace('__GRAFANA_WEB_KV__',     params.GRAFANA_WEB_KV     ?: '')
                             .replace('__SBERCA_CERT_KV__',     params.SBERCA_CERT_KV     ?: '')
-                            .replace('__ADMIN_EMAIL__',               params.ADMIN_EMAIL             ?: '')
-                            .replace('__RENEW_CERTIFICATES_ONLY__',  params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')
-                            .replace('__SKIP_VAULT_INSTALL__',       params.SKIP_VAULT_INSTALL      ? 'true' : 'false')
-                            .replace('__SKIP_RPM_INSTALL__',         params.SKIP_RPM_INSTALL        ? 'true' : 'false')
+                            .replace('__ADMIN_EMAIL__',        params.ADMIN_EMAIL        ?: '')
+                            .replace('__SKIP_VAULT_INSTALL__', params.SKIP_VAULT_INSTALL ? 'true' : 'false')
+                            .replace('__SKIP_RPM_INSTALL__',   params.SKIP_RPM_INSTALL ? 'true' : 'false')
                             .replace('__DEPLOY_VERSION__',     env.VERSION_SHORT         ?: 'unknown')
                             .replace('__DEPLOY_GIT_COMMIT__',  env.VERSION_GIT_COMMIT    ?: 'unknown')
                             .replace('__DEPLOY_BUILD_DATE__',  env.VERSION_BUILD_DATE    ?: 'unknown')

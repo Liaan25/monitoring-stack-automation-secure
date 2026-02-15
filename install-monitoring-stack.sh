@@ -6279,54 +6279,170 @@ STATE_EOF
 # ============================================================
 
 get_certificates_from_jenkins() {
-    print_step "Получение сертификатов из Jenkins (user-space)"
-    log_debug "Getting certificates from Jenkins workspace"
+    print_step "Генерация сертификатов через Vault CLI (simplified подход)"
+    log_debug "Generating certificates via Vault CLI"
     
-    # Сертификаты должны быть переданы через Jenkins параметры или
-    # находиться в workspace Jenkins
-    local jenkins_certs_dir="${JENKINS_WORKSPACE:-$PWD}/certs"
+    echo "[CERTS-GEN] ========================================" | tee /dev/stderr
+    echo "[CERTS-GEN] Генерация сертификатов через Vault" | tee /dev/stderr
+    echo "[CERTS-GEN] ========================================" | tee /dev/stderr
     
-    echo "[CERTS-JENKINS] ========================================" | tee /dev/stderr
-    echo "[CERTS-JENKINS] Проверка сертификатов из Jenkins" | tee /dev/stderr
-    echo "[CERTS-JENKINS] ========================================" | tee /dev/stderr
+    # Проверяем наличие temp_data_cred.json
+    local cred_json_path=""
+    for candidate in "$LOCAL_CRED_JSON" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/home/${SUDO_USER:-$(whoami)}/temp_data_cred.json" "$HOME/monitoring-deployment/temp_data_cred.json"; do
+        if [[ -n "$candidate" && -f "$candidate" ]]; then
+            cred_json_path="$candidate"
+            break
+        fi
+    done
     
-    # Проверяем наличие сертификатов в Jenkins workspace
-    if [[ -d "$jenkins_certs_dir" ]]; then
-        echo "[CERTS-JENKINS] ✅ Найден каталог с сертификатами: $jenkins_certs_dir" | tee /dev/stderr
-        log_debug "Certificates directory found: $jenkins_certs_dir"
-        
-        # Копируем сертификаты в user-space monitoring directory
-        local target_dir="$HOME/monitoring/certs/vault"
-        mkdir -p "$target_dir"
-        
-        if [[ -f "$jenkins_certs_dir/server_bundle.pem" ]]; then
-            cp "$jenkins_certs_dir/server_bundle.pem" "$target_dir/"
-            chmod 600 "$target_dir/server_bundle.pem"
-            echo "[CERTS-JENKINS] ✅ Скопирован server_bundle.pem" | tee /dev/stderr
-        fi
-        
-        if [[ -f "$jenkins_certs_dir/ca_chain.crt" ]]; then
-            cp "$jenkins_certs_dir/ca_chain.crt" "$target_dir/"
-            chmod 600 "$target_dir/ca_chain.crt"
-            echo "[CERTS-JENKINS] ✅ Скопирован ca_chain.crt" | tee /dev/stderr
-        fi
-        
-        if [[ -f "$jenkins_certs_dir/grafana-client.pem" ]]; then
-            local grafana_target="$HOME/monitoring/certs/grafana"
-            mkdir -p "$grafana_target"
-            cp "$jenkins_certs_dir/grafana-client.pem" "$grafana_target/"
-            chmod 600 "$grafana_target/grafana-client.pem"
-            echo "[CERTS-JENKINS] ✅ Скопирован grafana-client.pem" | tee /dev/stderr
-        fi
-        
-        echo "[CERTS-JENKINS] ✅ Сертификаты успешно получены из Jenkins" | tee /dev/stderr
-    else
-        echo "[CERTS-JENKINS] ⚠️  Каталог $jenkins_certs_dir не найден" | tee /dev/stderr
-        echo "[CERTS-JENKINS] Сертификаты будут использованы из temp_data_cred.json или созданы self-signed" | tee /dev/stderr
-        log_debug "Certificates directory not found, using fallback"
+    if [[ -z "$cred_json_path" || ! -f "$cred_json_path" ]]; then
+        print_error "temp_data_cred.json не найден! Невозможно получить credentials для Vault."
+        echo "[CERTS-GEN] ❌ temp_data_cred.json не найден" | tee /dev/stderr
+        return 1
     fi
     
-    echo "[CERTS-JENKINS] ========================================" | tee /dev/stderr
+    echo "[CERTS-GEN] Используется temp_data_cred.json: $cred_json_path" | tee /dev/stderr
+    
+    # Извлекаем role_id и secret_id из temp_data_cred.json
+    local role_id secret_id
+    if ! role_id=$(jq -r '.["vault-agent"].role_id // empty' "$cred_json_path" 2>/dev/null); then
+        print_error "Не удалось извлечь role_id из temp_data_cred.json"
+        echo "[CERTS-GEN] ❌ Ошибка извлечения role_id" | tee /dev/stderr
+        return 1
+    fi
+    
+    if ! secret_id=$(jq -r '.["vault-agent"].secret_id // empty' "$cred_json_path" 2>/dev/null); then
+        print_error "Не удалось извлечь secret_id из temp_data_cred.json"
+        echo "[CERTS-GEN] ❌ Ошибка извлечения secret_id" | tee /dev/stderr
+        return 1
+    fi
+    
+    if [[ -z "$role_id" || -z "$secret_id" ]]; then
+        print_error "role_id или secret_id пустые в temp_data_cred.json"
+        echo "[CERTS-GEN] ❌ Пустые credentials" | tee /dev/stderr
+        return 1
+    fi
+    
+    echo "[CERTS-GEN] ✅ Credentials извлечены из temp_data_cred.json" | tee /dev/stderr
+    echo "[CERTS-GEN] role_id: ${role_id:0:8}..." | tee /dev/stderr
+    echo "[CERTS-GEN] secret_id: ${secret_id:0:8}..." | tee /dev/stderr
+    
+    # Проверяем наличие vault CLI
+    if ! command -v vault >/dev/null 2>&1; then
+        print_error "Команда 'vault' не найдена! Установите Vault CLI."
+        echo "[CERTS-GEN] ❌ vault CLI не найден" | tee /dev/stderr
+        return 1
+    fi
+    
+    echo "[CERTS-GEN] ✅ vault CLI найден: $(vault version | head -1)" | tee /dev/stderr
+    
+    # Настраиваем Vault environment
+    export VAULT_ADDR="${SEC_MAN_ADDR:-https://secman.sigma.sbrf.ru:8200}"
+    export VAULT_NAMESPACE="${KAE}"
+    export VAULT_SKIP_VERIFY="false"  # Для прода должно быть false
+    
+    echo "[CERTS-GEN] VAULT_ADDR: $VAULT_ADDR" | tee /dev/stderr
+    echo "[CERTS-GEN] VAULT_NAMESPACE: $VAULT_NAMESPACE" | tee /dev/stderr
+    
+    # Аутентификация в Vault через AppRole
+    echo "[CERTS-GEN] Аутентификация в Vault через AppRole..." | tee /dev/stderr
+    local vault_token
+    if ! vault_token=$(vault write -field=token auth/approle/login \
+        role_id="$role_id" \
+        secret_id="$secret_id" 2>&1); then
+        print_error "Не удалось аутентифицироваться в Vault"
+        echo "[CERTS-GEN] ❌ Ошибка аутентификации: $vault_token" | tee /dev/stderr
+        return 1
+    fi
+    
+    export VAULT_TOKEN="$vault_token"
+    echo "[CERTS-GEN] ✅ Аутентификация успешна, токен получен" | tee /dev/stderr
+    
+    # Определяем параметры для генерации сертификатов
+    local fqdn="${SERVER_DOMAIN:-$(hostname -f)}"
+    local email="${ADMIN_EMAIL:-monitoring@sberbank.ru}"
+    local ttl="26280h"  # 3 года (по умолчанию в Vault)
+    
+    echo "[CERTS-GEN] Параметры для сертификата:" | tee /dev/stderr
+    echo "[CERTS-GEN]   common_name: $fqdn" | tee /dev/stderr
+    echo "[CERTS-GEN]   email: $email" | tee /dev/stderr
+    echo "[CERTS-GEN]   alt_names: $fqdn" | tee /dev/stderr
+    echo "[CERTS-GEN]   ttl: $ttl" | tee /dev/stderr
+    
+    # Генерируем сертификат через Vault (аналогично agent.hcl)
+    echo "[CERTS-GEN] Генерация сертификата через Vault PKI..." | tee /dev/stderr
+    local cert_json="/tmp/vault_cert_${RANDOM}.json"
+    trap "rm -f '$cert_json' 2>/dev/null" EXIT INT TERM
+    
+    if ! vault write -format=json "pki/${KAE}/sberca/issue" \
+        common_name="$fqdn" \
+        email="$email" \
+        alt_names="$fqdn" \
+        ttl="$ttl" > "$cert_json" 2>&1; then
+        print_error "Не удалось сгенерировать сертификат через Vault PKI"
+        echo "[CERTS-GEN] ❌ Ошибка генерации сертификата" | tee /dev/stderr
+        cat "$cert_json" | tee /dev/stderr
+        return 1
+    fi
+    
+    echo "[CERTS-GEN] ✅ Сертификат успешно сгенерирован" | tee /dev/stderr
+    
+    # Извлекаем компоненты сертификата
+    local target_dir="$HOME/monitoring/certs/vault"
+    mkdir -p "$target_dir"
+    chmod 700 "$target_dir"
+    
+    echo "[CERTS-GEN] Извлечение компонентов сертификата..." | tee /dev/stderr
+    
+    # Извлекаем private_key, certificate, issuing_ca
+    if ! jq -r '.data.private_key' "$cert_json" > "$target_dir/server.key" 2>/dev/null; then
+        print_error "Не удалось извлечь private_key"
+        return 1
+    fi
+    chmod 600 "$target_dir/server.key"
+    echo "[CERTS-GEN] ✅ server.key извлечен" | tee /dev/stderr
+    
+    if ! jq -r '.data.certificate' "$cert_json" > "$target_dir/server.crt" 2>/dev/null; then
+        print_error "Не удалось извлечь certificate"
+        return 1
+    fi
+    chmod 600 "$target_dir/server.crt"
+    echo "[CERTS-GEN] ✅ server.crt извлечен" | tee /dev/stderr
+    
+    if ! jq -r '.data.issuing_ca' "$cert_json" > "$target_dir/ca_chain.crt" 2>/dev/null; then
+        print_error "Не удалось извлечь issuing_ca"
+        return 1
+    fi
+    chmod 600 "$target_dir/ca_chain.crt"
+    echo "[CERTS-GEN] ✅ ca_chain.crt извлечен" | tee /dev/stderr
+    
+    # Создаем server_bundle.pem (key + cert + ca_chain)
+    cat "$target_dir/server.key" "$target_dir/server.crt" "$target_dir/ca_chain.crt" > "$target_dir/server_bundle.pem"
+    chmod 600 "$target_dir/server_bundle.pem"
+    echo "[CERTS-GEN] ✅ server_bundle.pem создан" | tee /dev/stderr
+    
+    # Создаем копию для Grafana client
+    local grafana_target="$HOME/monitoring/certs/grafana"
+    mkdir -p "$grafana_target"
+    chmod 700 "$grafana_target"
+    cp "$target_dir/server_bundle.pem" "$grafana_target/grafana-client.pem"
+    chmod 600 "$grafana_target/grafana-client.pem"
+    echo "[CERTS-GEN] ✅ grafana-client.pem создан" | tee /dev/stderr
+    
+    # Очистка временных файлов
+    rm -f "$cert_json"
+    unset VAULT_TOKEN
+    
+    echo "[CERTS-GEN] ========================================" | tee /dev/stderr
+    echo "[CERTS-GEN] ✅ Все сертификаты успешно сгенерированы" | tee /dev/stderr
+    echo "[CERTS-GEN] ========================================" | tee /dev/stderr
+    
+    # Показываем информацию о сгенерированном сертификате
+    echo "[CERTS-GEN] Информация о сертификате:" | tee /dev/stderr
+    openssl x509 -in "$target_dir/server.crt" -noout -text | grep -E "Subject:|Not Before|Not After|DNS:" | tee /dev/stderr
+    
+    log_debug "Certificates generated successfully via Vault CLI"
+    return 0
 }
 
 distribute_certificates_to_services() {
