@@ -34,35 +34,61 @@ ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-acti
 ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
 
 # ============================================================
-# 2. System-level операции (требуют root)
+# LEGACY: System-level операции (требуют root)
+# ============================================================
+# ВНИМАНИЕ: Эта секция закомментирована в пользу упрощенного подхода
+# без vault-agent и системных путей (/opt/vault/).
+#
+# ТЕКУЩИЙ ПОДХОД (Simplified):
+# - Используются только User-level операции (systemctl --user)
+# - Все файлы хранятся в $HOME/monitoring/ (user-space)
+# - НЕ требуется sudo для файловых операций
+# - НЕ используются системные пути /opt/vault/
+# - НЕ требуются пользователи va-start/va-read
+#
+# LEGACY ПОДХОД (vault-agent):
+# - Требуются System-level sudo-права для работы с /opt/vault/
+# - Используется системный сервис vault-agent
+# - Автоматическая ротация сертификатов
+#
+# КАК ВЕРНУТЬСЯ К LEGACY:
+# 1. Раскомментируйте эту секцию (строки 36-68)
+# 2. Создайте IDM заявку с этими sudo-правилами
+# 3. Раскомментируйте setup_vault_config() в install-monitoring-stack.sh
+# 4. См. документацию: HOW-TO-REVERT.md
+#
+# Дата закомментирования: 15.02.2026
+# Причина: Упрощение архитектуры согласно требованиям ИБ
 # ============================================================
 
-# Копирование credentials из /tmp/ в /opt/vault/conf/
-# ВАЖНО: Пути явно указаны с паттерном /tmp/role_id_*.txt для безопасности
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
+# # Копирование credentials из /tmp/ в /opt/vault/conf/
+# # ВАЖНО: Пути явно указаны с паттерном /tmp/role_id_*.txt для безопасности
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
+# 
+# # Установка владельца для credentials (va-start:va-read)
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/role_id.txt
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/secret_id.txt
+# 
+# # Установка прав для credentials
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/role_id.txt
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt
+# 
+# # Создание и настройка /opt/vault/certs/
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/mkdir -p /opt/vault/certs
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/certs
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 750 /opt/vault/certs
+# 
+# # Управление системным сервисом vault-agent
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl status vault-agent
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl is-active vault-agent
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl start vault-agent
+# ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl stop vault-agent
 
-# Установка владельца для credentials (va-start:va-read)
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/role_id.txt
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/secret_id.txt
-
-# Установка прав для credentials
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/role_id.txt
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt
-
-# Создание и настройка /opt/vault/certs/
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/mkdir -p /opt/vault/certs
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/certs
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 750 /opt/vault/certs
-
-# Управление системным сервисом vault-agent
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl status vault-agent
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl is-active vault-agent
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl start vault-agent
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl stop vault-agent
-
-# Примечание: 
+# ============================================================
+# Примечание (для LEGACY подхода): 
 # - NOEXEC предотвращает выполнение произвольных команд через shell escapes
 # - NOPASSWD не требует ввода пароля
 # - Все пути явно указаны для предотвращения злоупотреблений
+# ============================================================
