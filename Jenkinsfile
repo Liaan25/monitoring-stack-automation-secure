@@ -21,7 +21,6 @@ pipeline {
         string(name: 'RLM_API_URL',        defaultValue: params.RLM_API_URL ?: '',        description: 'Базовый URL RLM API (например, https://api.rlm.sbrf.ru)')
         string(name: 'VAULT_CREDENTIAL_ID', defaultValue: params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev', description: 'Jenkins Credential ID для Vault токена (по умолчанию: vault-agent-dev)')
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты (без переустановки пакетов и полного деплоя, ~1-2 минуты)')
-        booleanParam(name: 'SKIP_VAULT_INSTALL', defaultValue: true, description: '✅ Пропустить установку Vault через RLM (vault-agent НЕ используется в упрощенном подходе)')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов (Grafana, Prometheus, Harvest) через RLM - использовать уже установленные пакеты')
         booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: true, description: '⚡ Пропустить CI диагностику (очистка, отладка, проверки сети) - только получение из Vault и развертывание')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить весь CDL этап (копирование и развертывание на сервер) - только CI проверки')
@@ -340,6 +339,105 @@ pipeline {
                                         pass: (env.VA_GRAFANA_WEB_PASS ?: '')
                                     ]
                                 ]
+                                
+                                // ========================================
+                                // ГЕНЕРАЦИЯ СЕРТИФИКАТОВ через Vault PKI
+                                // ========================================
+                                echo "[CERTS] Генерация сертификатов через Vault PKI..."
+                                
+                                def certData = [
+                                    server_bundle_pem: '',
+                                    ca_chain_crt: '',
+                                    grafana_client_pem: ''
+                                ]
+                                
+                                if (params.SBERCA_CERT_KV?.trim()) {
+                                    try {
+                                        // Определяем параметры для сертификата
+                                        def fqdn = params.SERVER_ADDRESS ?: 'unknown.host'
+                                        def email = params.ADMIN_EMAIL ?: 'monitoring@sberbank.ru'
+                                        def ttl = '26280h'  // 3 года
+                                        
+                                        echo "[CERTS] Параметры для сертификата:"
+                                        echo "[CERTS]   common_name: ${fqdn}"
+                                        echo "[CERTS]   email: ${email}"
+                                        echo "[CERTS]   alt_names: ${fqdn}"
+                                        echo "[CERTS]   ttl: ${ttl}"
+                                        echo "[CERTS]   PKI path: ${params.SBERCA_CERT_KV}"
+                                        
+                                        // Генерируем сертификат через Vault PKI
+                                        // Используем sh с curl, так как Jenkins Vault plugin не поддерживает PKI напрямую
+                                        def certJson = sh(
+                                            script: """#!/bin/bash
+                                                set -e
+                                                
+                                                # Аутентификация в Vault через AppRole (получаем токен)
+                                                VAULT_TOKEN=\$(curl -s -X POST \
+                                                    -H "X-Vault-Namespace: ${env.KAE}" \
+                                                    "https://${params.SEC_MAN_ADDR}/v1/auth/approle/login" \
+                                                    -d '{"role_id":"${env.VA_ROLE_ID}","secret_id":"${env.VA_SECRET_ID}"}' \
+                                                    | jq -r '.auth.client_token')
+                                                
+                                                if [ -z "\$VAULT_TOKEN" ] || [ "\$VAULT_TOKEN" == "null" ]; then
+                                                    echo "[ERROR] Не удалось получить Vault токен"
+                                                    exit 1
+                                                fi
+                                                
+                                                echo "[CERTS] ✅ Vault токен получен" >&2
+                                                
+                                                # Генерируем сертификат через PKI
+                                                curl -s -X POST \
+                                                    -H "X-Vault-Token: \$VAULT_TOKEN" \
+                                                    -H "X-Vault-Namespace: ${env.KAE}" \
+                                                    "https://${params.SEC_MAN_ADDR}/v1/${params.SBERCA_CERT_KV}" \
+                                                    -d '{
+                                                        "common_name": "${fqdn}",
+                                                        "email": "${email}",
+                                                        "alt_names": "${fqdn}",
+                                                        "ttl": "${ttl}"
+                                                    }'
+                                            """,
+                                            returnStdout: true
+                                        ).trim()
+                                        
+                                        // Парсим JSON ответ
+                                        def certResponse = readJSON text: certJson
+                                        
+                                        if (!certResponse.data) {
+                                            echo "[ERROR] Vault PKI не вернул данные сертификата"
+                                            echo "[ERROR] Response: ${certJson}"
+                                            error("Не удалось сгенерировать сертификат")
+                                        }
+                                        
+                                        echo "[CERTS] ✅ Сертификат успешно сгенерирован через Vault PKI"
+                                        
+                                        // Извлекаем компоненты сертификата
+                                        def privateKey = certResponse.data.private_key ?: ''
+                                        def certificate = certResponse.data.certificate ?: ''
+                                        def issuingCa = certResponse.data.issuing_ca ?: ''
+                                        
+                                        // Формируем файлы (как в agent.hcl)
+                                        certData.server_bundle_pem = "${privateKey}${certificate}${issuingCa}"
+                                        certData.ca_chain_crt = issuingCa
+                                        certData.grafana_client_pem = "${privateKey}${certificate}${issuingCa}"
+                                        
+                                        echo "[CERTS] ✅ server_bundle.pem создан (${certData.server_bundle_pem.length()} байт)"
+                                        echo "[CERTS] ✅ ca_chain.crt создан (${certData.ca_chain_crt.length()} байт)"
+                                        echo "[CERTS] ✅ grafana-client.pem создан (${certData.grafana_client_pem.length()} байт)"
+                                        
+                                    } catch (Exception e) {
+                                        echo "[ERROR] Не удалось сгенерировать сертификаты: ${e.message}"
+                                        echo "[WARNING] Продолжаем без сертификатов (будут использованы self-signed)"
+                                        certData.server_bundle_pem = ''
+                                        certData.ca_chain_crt = ''
+                                        certData.grafana_client_pem = ''
+                                    }
+                                } else {
+                                    echo "[WARNING] SBERCA_CERT_KV не задан, пропускаем генерацию сертификатов"
+                                }
+                                
+                                // Добавляем сертификаты в data
+                                data['certificates'] = certData
                                 
                                 writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(data)
                             }
@@ -701,7 +799,6 @@ env \
   SBERCA_CERT_KV="__SBERCA_CERT_KV__" \
   ADMIN_EMAIL="__ADMIN_EMAIL__" \
   RENEW_CERTIFICATES_ONLY="__RENEW_CERTIFICATES_ONLY__" \
-  SKIP_VAULT_INSTALL="__SKIP_VAULT_INSTALL__" \
   SKIP_RPM_INSTALL="__SKIP_RPM_INSTALL__" \
   GRAFANA_URL="$RPM_GRAFANA" \
   PROMETHEUS_URL="$RPM_PROMETHEUS" \
@@ -730,7 +827,6 @@ REMOTE_EOF
                             .replace('__SBERCA_CERT_KV__',     params.SBERCA_CERT_KV     ?: '')
                             .replace('__ADMIN_EMAIL__',               params.ADMIN_EMAIL             ?: '')
                             .replace('__RENEW_CERTIFICATES_ONLY__',  params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')
-                            .replace('__SKIP_VAULT_INSTALL__',       params.SKIP_VAULT_INSTALL      ? 'true' : 'false')
                             .replace('__SKIP_RPM_INSTALL__',         params.SKIP_RPM_INSTALL        ? 'true' : 'false')
                             .replace('__DEPLOY_VERSION__',     env.VERSION_SHORT         ?: 'unknown')
                             .replace('__DEPLOY_GIT_COMMIT__',  env.VERSION_GIT_COMMIT    ?: 'unknown')
