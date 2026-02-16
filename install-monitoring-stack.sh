@@ -1811,314 +1811,314 @@ create_directories() {
 # Причина: Упрощение архитектуры согласно требованиям ИБ
 # ============================================================
 
-# setup_vault_config() {
-#     print_step "Настройка Vault конфигурации"
-#     ensure_working_directory
-# 
-#     # Проверяем, что SERVER_DOMAIN определен
-#     if [[ -z "$SERVER_DOMAIN" ]]; then
-#         print_error "SERVER_DOMAIN не определен. Запустите detect_network_info() сначала."
-#         exit 1
-#     fi
+setup_vault_config() {
+    print_step "Настройка Vault конфигурации"
+    ensure_working_directory
 
-#    mkdir -p "$VAULT_CONF_DIR" "$VAULT_LOG_DIR" "$VAULT_CERTS_DIR"
+    # Проверяем, что SERVER_DOMAIN определен
+    if [[ -z "$SERVER_DOMAIN" ]]; then
+        print_error "SERVER_DOMAIN не определен. Запустите detect_network_info() сначала."
+        exit 1
+    fi
+
+   mkdir -p "$VAULT_CONF_DIR" "$VAULT_LOG_DIR" "$VAULT_CERTS_DIR"
     # Ищем временный JSON с cred в известных местах (учитываем запуск под sudo)
-#    local cred_json_path=""
-#    for candidate in "$LOCAL_CRED_JSON" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/home/${SUDO_USER:-}/temp_data_cred.json" "/tmp/temp_data_cred.json"; do
-#        if [[ -n "$candidate" && -f "$candidate" ]]; then
-#            cred_json_path="$candidate"
-#            break
-#        fi
-#    done
-#    if [[ -z "$cred_json_path" ]]; then
-#        print_error "Временный файл с учетными данными не найден (проверены стандартные пути)"
-#        exit 1
-#    fi
+   local cred_json_path=""
+   for candidate in "$LOCAL_CRED_JSON" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/home/${SUDO_USER:-}/temp_data_cred.json" "/tmp/temp_data_cred.json"; do
+       if [[ -n "$candidate" && -f "$candidate" ]]; then
+           cred_json_path="$candidate"
+           break
+       fi
+   done
+   if [[ -z "$cred_json_path" ]]; then
+       print_error "Временный файл с учетными данными не найден (проверены стандартные пути)"
+       exit 1
+   fi
     
     # ===== РАСШИРЕННАЯ ДИАГНОСТИКА SECRETS =====
-#    echo "[DEBUG-SECRETS] ========================================" >&2
-#    echo "[DEBUG-SECRETS] Диагностика secrets-manager-wrapper" >&2
-#    echo "[DEBUG-SECRETS] ========================================" >&2
-#    log_debug "========================================"
-#    log_debug "ДИАГНОСТИКА: secrets extraction"
-#    log_debug "========================================"
+   echo "[DEBUG-SECRETS] ========================================" >&2
+   echo "[DEBUG-SECRETS] Диагностика secrets-manager-wrapper" >&2
+   echo "[DEBUG-SECRETS] ========================================" >&2
+   log_debug "========================================"
+   log_debug "ДИАГНОСТИКА: secrets extraction"
+   log_debug "========================================"
     
-#    echo "[DEBUG-SECRETS] Файл с credentials: $cred_json_path" >&2
-#    log_debug "Credentials file: $cred_json_path"
+   echo "[DEBUG-SECRETS] Файл с credentials: $cred_json_path" >&2
+   log_debug "Credentials file: $cred_json_path"
     
-#    if [[ -f "$cred_json_path" ]]; then
-#        echo "[DEBUG-SECRETS] ✅ Файл существует" >&2
-#        echo "[DEBUG-SECRETS] Размер: $(stat -c%s "$cred_json_path" 2>/dev/null || echo "unknown") байт" >&2
-#        echo "[DEBUG-SECRETS] Права: $(ls -la "$cred_json_path")" >&2
-#        log_debug "✅ Credentials file exists: $(stat -c%s "$cred_json_path" 2>/dev/null || echo "unknown") bytes"
+   if [[ -f "$cred_json_path" ]]; then
+       echo "[DEBUG-SECRETS] ✅ Файл существует" >&2
+       echo "[DEBUG-SECRETS] Размер: $(stat -c%s "$cred_json_path" 2>/dev/null || echo "unknown") байт" >&2
+       echo "[DEBUG-SECRETS] Права: $(ls -la "$cred_json_path")" >&2
+       log_debug "✅ Credentials file exists: $(stat -c%s "$cred_json_path" 2>/dev/null || echo "unknown") bytes"
         
         # БЕЗОПАСНО: Показываем только структуру JSON (ключи без значений)
-#        echo "[DEBUG-SECRETS] Структура JSON (только ключи):" >&2
-#        jq -r 'keys | .[]' "$cred_json_path" 2>&1 >&2 || echo "[DEBUG-SECRETS] (не удалось прочитать структуру)" >&2
+       echo "[DEBUG-SECRETS] Структура JSON (только ключи):" >&2
+       jq -r 'keys | .[]' "$cred_json_path" 2>&1 >&2 || echo "[DEBUG-SECRETS] (не удалось прочитать структуру)" >&2
         
         # Проверяем наличие нужных полей
-#        echo "[DEBUG-SECRETS] ----------------------------------------" >&2
-#        echo "[DEBUG-SECRETS] Проверка наличия поля 'vault-agent':" >&2
-#        if jq -e '.["vault-agent"]' "$cred_json_path" >/dev/null 2>&1; then
-#            echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent' существует" >&2
-#            log_debug "✅ Field 'vault-agent' exists"
+       echo "[DEBUG-SECRETS] ----------------------------------------" >&2
+       echo "[DEBUG-SECRETS] Проверка наличия поля 'vault-agent':" >&2
+       if jq -e '.["vault-agent"]' "$cred_json_path" >/dev/null 2>&1; then
+           echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent' существует" >&2
+           log_debug "✅ Field 'vault-agent' exists"
             
-#            echo "[DEBUG-SECRETS] Проверка наличия 'vault-agent.role_id':" >&2
-#            if jq -e '.["vault-agent"].role_id' "$cred_json_path" >/dev/null 2>&1; then
-#                echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent.role_id' существует" >&2
-#                log_debug "✅ Field 'vault-agent.role_id' exists"
-#            else
-#                echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent.role_id' НЕ существует" >&2
-#                log_debug "❌ Field 'vault-agent.role_id' NOT exists"
-#            fi
+           echo "[DEBUG-SECRETS] Проверка наличия 'vault-agent.role_id':" >&2
+           if jq -e '.["vault-agent"].role_id' "$cred_json_path" >/dev/null 2>&1; then
+               echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent.role_id' существует" >&2
+               log_debug "✅ Field 'vault-agent.role_id' exists"
+           else
+               echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent.role_id' НЕ существует" >&2
+               log_debug "❌ Field 'vault-agent.role_id' NOT exists"
+           fi
             
-#            echo "[DEBUG-SECRETS] Проверка наличия 'vault-agent.secret_id':" >&2
-#            if jq -e '.["vault-agent"].secret_id' "$cred_json_path" >/dev/null 2>&1; then
-#                echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent.secret_id' существует" >&2
-#                log_debug "✅ Field 'vault-agent.secret_id' exists"
-#            else
-#                echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent.secret_id' НЕ существует" >&2
-#                log_debug "❌ Field 'vault-agent.secret_id' NOT exists"
-#            fi
-#        else
-#            echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent' НЕ существует" >&2
-#            log_debug "❌ Field 'vault-agent' NOT exists"
-#        fi
-#    else
-#        echo "[DEBUG-SECRETS] ❌ Файл НЕ существует" >&2
-#        log_debug "❌ Credentials file NOT exists"
-#    fi
+           echo "[DEBUG-SECRETS] Проверка наличия 'vault-agent.secret_id':" >&2
+           if jq -e '.["vault-agent"].secret_id' "$cred_json_path" >/dev/null 2>&1; then
+               echo "[DEBUG-SECRETS] ✅ Поле 'vault-agent.secret_id' существует" >&2
+               log_debug "✅ Field 'vault-agent.secret_id' exists"
+           else
+               echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent.secret_id' НЕ существует" >&2
+               log_debug "❌ Field 'vault-agent.secret_id' NOT exists"
+           fi
+       else
+           echo "[DEBUG-SECRETS] ❌ Поле 'vault-agent' НЕ существует" >&2
+           log_debug "❌ Field 'vault-agent' NOT exists"
+       fi
+   else
+       echo "[DEBUG-SECRETS] ❌ Файл НЕ существует" >&2
+       log_debug "❌ Credentials file NOT exists"
+   fi
     
-#    echo "[DEBUG-SECRETS] ========================================" >&2
-#    echo "[DEBUG-SECRETS] Проверка secrets-manager-wrapper:" >&2
+   echo "[DEBUG-SECRETS] ========================================" >&2
+   echo "[DEBUG-SECRETS] Проверка secrets-manager-wrapper:" >&2
     
-#    local wrapper_path="$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh"
-#    echo "[DEBUG-SECRETS] Путь: $wrapper_path" >&2
-#    log_debug "Wrapper path: $wrapper_path"
+   local wrapper_path="$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh"
+   echo "[DEBUG-SECRETS] Путь: $wrapper_path" >&2
+   log_debug "Wrapper path: $wrapper_path"
     
-#    if [[ -f "$wrapper_path" ]]; then
-#        echo "[DEBUG-SECRETS] ✅ Файл существует" >&2
-#        echo "[DEBUG-SECRETS] Права: $(ls -la "$wrapper_path")" >&2
-#        log_debug "✅ Wrapper exists: $(ls -la "$wrapper_path")"
+   if [[ -f "$wrapper_path" ]]; then
+       echo "[DEBUG-SECRETS] ✅ Файл существует" >&2
+       echo "[DEBUG-SECRETS] Права: $(ls -la "$wrapper_path")" >&2
+       log_debug "✅ Wrapper exists: $(ls -la "$wrapper_path")"
         
-#        if [[ -x "$wrapper_path" ]]; then
-#            echo "[DEBUG-SECRETS] ✅ Файл исполняемый" >&2
-#            log_debug "✅ Wrapper is executable"
-#        else
-#            echo "[DEBUG-SECRETS] ❌ Файл НЕ исполняемый" >&2
-#            log_debug "❌ Wrapper NOT executable"
-#        fi
-#    else
-#        echo "[DEBUG-SECRETS] ❌ Файл НЕ существует" >&2
-#        log_debug "❌ Wrapper NOT exists"
-#    fi
+       if [[ -x "$wrapper_path" ]]; then
+           echo "[DEBUG-SECRETS] ✅ Файл исполняемый" >&2
+           log_debug "✅ Wrapper is executable"
+       else
+           echo "[DEBUG-SECRETS] ❌ Файл НЕ исполняемый" >&2
+           log_debug "❌ Wrapper NOT executable"
+       fi
+   else
+       echo "[DEBUG-SECRETS] ❌ Файл НЕ существует" >&2
+       log_debug "❌ Wrapper NOT exists"
+   fi
     
-#    echo "[DEBUG-SECRETS] ========================================" >&2
+   echo "[DEBUG-SECRETS] ========================================" >&2
     
     # SECURITY: Используем secrets-manager-wrapper для безопасного извлечения секретов
     # Пишем role_id/secret_id напрямую из JSON в файлы через wrapper (автоматическая очистка)
-#    echo "[VAULT-CONFIG] Извлечение секретов..." | tee /dev/stderr
+   echo "[VAULT-CONFIG] Извлечение секретов..." | tee /dev/stderr
     
-#    local secrets_extracted=false
+   local secrets_extracted=false
     
     # Сначала пробуем через wrapper (безопасный способ)
-#    if [[ -x "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" ]]; then
-#        echo "[VAULT-CONFIG] Используем secrets-manager-wrapper..." | tee /dev/stderr
-#        echo "[DEBUG-SECRETS] Выполнение: extract_secret role_id..." >&2
-#        log_debug "Executing: extract_secret for role_id"
+   if [[ -x "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" ]]; then
+       echo "[VAULT-CONFIG] Используем secrets-manager-wrapper..." | tee /dev/stderr
+       echo "[DEBUG-SECRETS] Выполнение: extract_secret role_id..." >&2
+       log_debug "Executing: extract_secret for role_id"
         
-#        local role_id_stdout role_id_stderr role_id_exit
-#        role_id_stdout=$(mktemp)
-#        role_id_stderr=$(mktemp)
+       local role_id_stdout role_id_stderr role_id_exit
+       role_id_stdout=$(mktemp)
+       role_id_stderr=$(mktemp)
         
-#        "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.role_id" > "$role_id_stdout" 2> "$role_id_stderr"
-#        role_id_exit=$?
+       "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.role_id" > "$role_id_stdout" 2> "$role_id_stderr"
+       role_id_exit=$?
         
-#        echo "[DEBUG-SECRETS] Exit code: $role_id_exit" >&2
-#        log_debug "role_id extraction exit code: $role_id_exit"
+       echo "[DEBUG-SECRETS] Exit code: $role_id_exit" >&2
+       log_debug "role_id extraction exit code: $role_id_exit"
         
-#        if [[ $role_id_exit -eq 0 && -s "$role_id_stdout" ]]; then
-#            echo "[DEBUG-SECRETS] ✅ role_id успешно извлечен" >&2
-#            log_debug "✅ role_id extracted successfully"
-#            cat "$role_id_stdout" > "$VAULT_ROLE_ID_FILE"
-#            secrets_extracted=true
-#        else
-#            echo "[DEBUG-SECRETS] ⚠️  Не удалось извлечь role_id или результат пустой" >&2
-#            echo "[DEBUG-SECRETS] STDOUT:" >&2
-#            cat "$role_id_stdout" >&2
-#            echo "[DEBUG-SECRETS] STDERR:" >&2
-#            cat "$role_id_stderr" >&2
-#            log_debug "⚠️  role_id extraction failed or empty"
+       if [[ $role_id_exit -eq 0 && -s "$role_id_stdout" ]]; then
+           echo "[DEBUG-SECRETS] ✅ role_id успешно извлечен" >&2
+           log_debug "✅ role_id extracted successfully"
+           cat "$role_id_stdout" > "$VAULT_ROLE_ID_FILE"
+           secrets_extracted=true
+       else
+           echo "[DEBUG-SECRETS] ⚠️  Не удалось извлечь role_id или результат пустой" >&2
+           echo "[DEBUG-SECRETS] STDOUT:" >&2
+           cat "$role_id_stdout" >&2
+           echo "[DEBUG-SECRETS] STDERR:" >&2
+           cat "$role_id_stderr" >&2
+           log_debug "⚠️  role_id extraction failed or empty"
             # Не выходим с ошибкой, продолжаем с пустыми файлами
-#        fi
+       fi
         
-#        rm -f "$role_id_stdout" "$role_id_stderr"
+       rm -f "$role_id_stdout" "$role_id_stderr"
         
-#        echo "[DEBUG-SECRETS] ----------------------------------------" >&2
-#        echo "[DEBUG-SECRETS] Выполнение: extract_secret secret_id..." >&2
-#        log_debug "Executing: extract_secret for secret_id"
+       echo "[DEBUG-SECRETS] ----------------------------------------" >&2
+       echo "[DEBUG-SECRETS] Выполнение: extract_secret secret_id..." >&2
+       log_debug "Executing: extract_secret for secret_id"
         
-#        local secret_id_stdout secret_id_stderr secret_id_exit
-#        secret_id_stdout=$(mktemp)
-#        secret_id_stderr=$(mktemp)
+       local secret_id_stdout secret_id_stderr secret_id_exit
+       secret_id_stdout=$(mktemp)
+       secret_id_stderr=$(mktemp)
         
-#        "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.secret_id" > "$secret_id_stdout" 2> "$secret_id_stderr"
-#        secret_id_exit=$?
+       "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" extract_secret "$cred_json_path" "vault-agent.secret_id" > "$secret_id_stdout" 2> "$secret_id_stderr"
+       secret_id_exit=$?
         
-#        echo "[DEBUG-SECRETS] Exit code: $secret_id_exit" >&2
-#        log_debug "secret_id extraction exit code: $secret_id_exit"
+       echo "[DEBUG-SECRETS] Exit code: $secret_id_exit" >&2
+       log_debug "secret_id extraction exit code: $secret_id_exit"
         
-#        if [[ $secret_id_exit -eq 0 && -s "$secret_id_stdout" ]]; then
-#            echo "[DEBUG-SECRETS] ✅ secret_id успешно извлечен" >&2
-#            log_debug "✅ secret_id extracted successfully"
-#            cat "$secret_id_stdout" > "$VAULT_SECRET_ID_FILE"
-#            secrets_extracted=true
-#        else
-#            echo "[DEBUG-SECRETS] ⚠️  Не удалось извлечь secret_id или результат пустой" >&2
-#            echo "[DEBUG-SECRETS] STDOUT:" >&2
-#            cat "$secret_id_stdout" >&2
-#            echo "[DEBUG-SECRETS] STDERR:" >&2
-#            cat "$secret_id_stderr" >&2
-#            log_debug "⚠️  secret_id extraction failed or empty"
+       if [[ $secret_id_exit -eq 0 && -s "$secret_id_stdout" ]]; then
+           echo "[DEBUG-SECRETS] ✅ secret_id успешно извлечен" >&2
+           log_debug "✅ secret_id extracted successfully"
+           cat "$secret_id_stdout" > "$VAULT_SECRET_ID_FILE"
+           secrets_extracted=true
+       else
+           echo "[DEBUG-SECRETS] ⚠️  Не удалось извлечь secret_id или результат пустой" >&2
+           echo "[DEBUG-SECRETS] STDOUT:" >&2
+           cat "$secret_id_stdout" >&2
+           echo "[DEBUG-SECRETS] STDERR:" >&2
+           cat "$secret_id_stderr" >&2
+           log_debug "⚠️  secret_id extraction failed or empty"
             # Не выходим с ошибкой, продолжаем с пустыми файлами
-#        fi
+       fi
         
-#        rm -f "$secret_id_stdout" "$secret_id_stderr"
+       rm -f "$secret_id_stdout" "$secret_id_stderr"
         
-#        echo "[DEBUG-SECRETS] ========================================" | tee /dev/stderr
+       echo "[DEBUG-SECRETS] ========================================" | tee /dev/stderr
         
-#        if [[ "$secrets_extracted" == "true" ]]; then
-#            echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены через wrapper" | tee /dev/stderr
-#        else
-#            echo "[VAULT-CONFIG] ⚠️  Секреты НЕ извлечены через wrapper" | tee /dev/stderr
-#        fi
-#    else
-#        echo "[VAULT-CONFIG] ⚠️  secrets-manager-wrapper_launcher.sh не найден или не исполняемый" | tee /dev/stderr
-#        log_debug "⚠️  Wrapper not found or not executable"
-#    fi
+       if [[ "$secrets_extracted" == "true" ]]; then
+           echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены через wrapper" | tee /dev/stderr
+       else
+           echo "[VAULT-CONFIG] ⚠️  Секреты НЕ извлечены через wrapper" | tee /dev/stderr
+       fi
+   else
+       echo "[VAULT-CONFIG] ⚠️  secrets-manager-wrapper_launcher.sh не найден или не исполняемый" | tee /dev/stderr
+       log_debug "⚠️  Wrapper not found or not executable"
+   fi
     
     # ВТОРОЙ ЭТАП: Извлечение секретов в /tmp/ через jq
     # SECURE EDITION: Используем /tmp/ с случайным суффиксом для безопасности
     # и автоматическую очистку через trap
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] Извлечение секретов в /tmp/ через jq" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    log_debug "========================================"
-#    log_debug "EXTRACTING: secrets to /tmp/ via jq"
-#    log_debug "========================================"
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   echo "[VAULT-CONFIG] Извлечение секретов в /tmp/ через jq" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   log_debug "========================================"
+   log_debug "EXTRACTING: secrets to /tmp/ via jq"
+   log_debug "========================================"
     
     # Используем /tmp/ с случайным суффиксом для безопасности
-#    local TMP_ROLE_ID="/tmp/role_id_${RANDOM}${RANDOM}.txt"
-#    local TMP_SECRET_ID="/tmp/secret_id_${RANDOM}${RANDOM}.txt"
+   local TMP_ROLE_ID="/tmp/role_id_${RANDOM}${RANDOM}.txt"
+   local TMP_SECRET_ID="/tmp/secret_id_${RANDOM}${RANDOM}.txt"
     
-#    echo "[VAULT-CONFIG] Временные файлы:" | tee /dev/stderr
-#    echo "[VAULT-CONFIG]   TMP_ROLE_ID=$TMP_ROLE_ID" | tee /dev/stderr
-#    echo "[VAULT-CONFIG]   TMP_SECRET_ID=$TMP_SECRET_ID" | tee /dev/stderr
-#    log_debug "TMP_ROLE_ID=$TMP_ROLE_ID"
-#    log_debug "TMP_SECRET_ID=$TMP_SECRET_ID"
+   echo "[VAULT-CONFIG] Временные файлы:" | tee /dev/stderr
+   echo "[VAULT-CONFIG]   TMP_ROLE_ID=$TMP_ROLE_ID" | tee /dev/stderr
+   echo "[VAULT-CONFIG]   TMP_SECRET_ID=$TMP_SECRET_ID" | tee /dev/stderr
+   log_debug "TMP_ROLE_ID=$TMP_ROLE_ID"
+   log_debug "TMP_SECRET_ID=$TMP_SECRET_ID"
     
     # Trap для автоматической очистки временных файлов
-#    trap 'rm -f "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null' EXIT INT TERM
+   trap 'rm -f "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null' EXIT INT TERM
     
-#    if command -v jq >/dev/null 2>&1 && [[ -f "$cred_json_path" ]]; then
-#        echo "[VAULT-CONFIG] jq доступен, извлекаем секреты..." | tee /dev/stderr
-#        log_debug "jq available, extracting secrets"
+   if command -v jq >/dev/null 2>&1 && [[ -f "$cred_json_path" ]]; then
+       echo "[VAULT-CONFIG] jq доступен, извлекаем секреты..." | tee /dev/stderr
+       log_debug "jq available, extracting secrets"
         
         # Проверяем, есть ли секреты в файле (используем правильный синтаксис)
-#        if jq -e '.["vault-agent"].role_id' "$cred_json_path" >/dev/null 2>&1 && \
-#           jq -e '.["vault-agent"].secret_id' "$cred_json_path" >/dev/null 2>&1; then
-#            echo "[VAULT-CONFIG] ✅ Секреты найдены в JSON файле" | tee /dev/stderr
-#            log_debug "✅ Secrets found in JSON file"
+       if jq -e '.["vault-agent"].role_id' "$cred_json_path" >/dev/null 2>&1 && \
+          jq -e '.["vault-agent"].secret_id' "$cred_json_path" >/dev/null 2>&1; then
+           echo "[VAULT-CONFIG] ✅ Секреты найдены в JSON файле" | tee /dev/stderr
+           log_debug "✅ Secrets found in JSON file"
             
             # Извлекаем в /tmp/ с правами 600
-#            if jq -r '.["vault-agent"].role_id' "$cred_json_path" > "$TMP_ROLE_ID" 2>/dev/null && \
-#               jq -r '.["vault-agent"].secret_id' "$cred_json_path" > "$TMP_SECRET_ID" 2>/dev/null; then
+           if jq -r '.["vault-agent"].role_id' "$cred_json_path" > "$TMP_ROLE_ID" 2>/dev/null && \
+              jq -r '.["vault-agent"].secret_id' "$cred_json_path" > "$TMP_SECRET_ID" 2>/dev/null; then
                 
                 # Устанавливаем строгие права (только для текущего пользователя)
-#                chmod 600 "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null
+               chmod 600 "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null
                 
-#                echo "[VAULT-CONFIG] Проверка извлеченных файлов..." | tee /dev/stderr
-#                log_debug "Checking extracted files"
+               echo "[VAULT-CONFIG] Проверка извлеченных файлов..." | tee /dev/stderr
+               log_debug "Checking extracted files"
                 
                 # Проверяем что файлы не пустые
-#                if [[ -s "$TMP_ROLE_ID" && -s "$TMP_SECRET_ID" ]]; then
-#                    local role_id_size secret_id_size
-#                    role_id_size=$(stat -c%s "$TMP_ROLE_ID" 2>/dev/null || echo "0")
-#                    secret_id_size=$(stat -c%s "$TMP_SECRET_ID" 2>/dev/null || echo "0")
+               if [[ -s "$TMP_ROLE_ID" && -s "$TMP_SECRET_ID" ]]; then
+                   local role_id_size secret_id_size
+                   role_id_size=$(stat -c%s "$TMP_ROLE_ID" 2>/dev/null || echo "0")
+                   secret_id_size=$(stat -c%s "$TMP_SECRET_ID" 2>/dev/null || echo "0")
                     
-#                    echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены в /tmp/" | tee /dev/stderr
-#                    echo "[VAULT-CONFIG]   role_id: $role_id_size байт" | tee /dev/stderr
-#                    echo "[VAULT-CONFIG]   secret_id: $secret_id_size байт" | tee /dev/stderr
-#                    log_debug "✅ Secrets extracted to /tmp/ successfully"
-#                    log_debug "role_id size: $role_id_size bytes"
-#                    log_debug "secret_id size: $secret_id_size bytes"
+                   echo "[VAULT-CONFIG] ✅ Секреты успешно извлечены в /tmp/" | tee /dev/stderr
+                   echo "[VAULT-CONFIG]   role_id: $role_id_size байт" | tee /dev/stderr
+                   echo "[VAULT-CONFIG]   secret_id: $secret_id_size байт" | tee /dev/stderr
+                   log_debug "✅ Secrets extracted to /tmp/ successfully"
+                   log_debug "role_id size: $role_id_size bytes"
+                   log_debug "secret_id size: $secret_id_size bytes"
                     
-#                    secrets_extracted=true
+                   secrets_extracted=true
                     
                     # Также копируем в user-space для справки
-#                    echo "[VAULT-CONFIG] Копирование в user-space для справки..." | tee /dev/stderr
-#                    if cp "$TMP_ROLE_ID" "$VAULT_ROLE_ID_FILE" 2>/dev/null && \
-#                       cp "$TMP_SECRET_ID" "$VAULT_SECRET_ID_FILE" 2>/dev/null; then
-#                        chmod 640 "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>/dev/null || true
-#                        echo "[VAULT-CONFIG] ✅ Скопировано в user-space" | tee /dev/stderr
-#                        log_debug "✅ Copied to user-space"
-#                    else
-#                        echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать в user-space (не критично)" | tee /dev/stderr
-#                        log_debug "⚠️  Failed to copy to user-space (not critical)"
-#                    fi
-#                else
-#                    echo "[VAULT-CONFIG] ❌ Извлеченные секреты пустые" | tee /dev/stderr
-#                    log_debug "❌ Extracted secrets are empty"
-#                    secrets_extracted=false
-#                fi
-#            else
-#                echo "[VAULT-CONFIG] ❌ Ошибка при извлечении секретов через jq" | tee /dev/stderr
-#                log_debug "❌ Error extracting secrets via jq"
-#                secrets_extracted=false
-#            fi
-#        else
-#            echo "[VAULT-CONFIG] ❌ Секреты НЕ найдены в JSON файле" | tee /dev/stderr
-#            echo "[VAULT-CONFIG] Проверьте наличие полей: .['vault-agent'].role_id и .['vault-agent'].secret_id" | tee /dev/stderr
-#            log_debug "❌ Secrets NOT found in JSON file"
-#            secrets_extracted=false
-#        fi
-#    else
-#        echo "[VAULT-CONFIG] ❌ jq не найден или файл недоступен" | tee /dev/stderr
-#        log_debug "❌ jq not found or file inaccessible"
-#        secrets_extracted=false
-#    fi
+                   echo "[VAULT-CONFIG] Копирование в user-space для справки..." | tee /dev/stderr
+                   if cp "$TMP_ROLE_ID" "$VAULT_ROLE_ID_FILE" 2>/dev/null && \
+                      cp "$TMP_SECRET_ID" "$VAULT_SECRET_ID_FILE" 2>/dev/null; then
+                       chmod 640 "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>/dev/null || true
+                       echo "[VAULT-CONFIG] ✅ Скопировано в user-space" | tee /dev/stderr
+                       log_debug "✅ Copied to user-space"
+                   else
+                       echo "[VAULT-CONFIG] ⚠️  Не удалось скопировать в user-space (не критично)" | tee /dev/stderr
+                       log_debug "⚠️  Failed to copy to user-space (not critical)"
+                   fi
+               else
+                   echo "[VAULT-CONFIG] ❌ Извлеченные секреты пустые" | tee /dev/stderr
+                   log_debug "❌ Extracted secrets are empty"
+                   secrets_extracted=false
+               fi
+           else
+               echo "[VAULT-CONFIG] ❌ Ошибка при извлечении секретов через jq" | tee /dev/stderr
+               log_debug "❌ Error extracting secrets via jq"
+               secrets_extracted=false
+           fi
+       else
+           echo "[VAULT-CONFIG] ❌ Секреты НЕ найдены в JSON файле" | tee /dev/stderr
+           echo "[VAULT-CONFIG] Проверьте наличие полей: .['vault-agent'].role_id и .['vault-agent'].secret_id" | tee /dev/stderr
+           log_debug "❌ Secrets NOT found in JSON file"
+           secrets_extracted=false
+       fi
+   else
+       echo "[VAULT-CONFIG] ❌ jq не найден или файл недоступен" | tee /dev/stderr
+       log_debug "❌ jq not found or file inaccessible"
+       secrets_extracted=false
+   fi
     
-#    if [[ "$secrets_extracted" != "true" ]]; then
-#        echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
-#        log_debug "⚠️  vault-agent will NOT be able to authenticate"
-#        print_warning "Секреты vault-agent не извлечены. Vault-agent не сможет работать."
-#    fi
+   if [[ "$secrets_extracted" != "true" ]]; then
+       echo "[VAULT-CONFIG] ⚠️  Vault-agent НЕ сможет аутентифицироваться!" | tee /dev/stderr
+       log_debug "⚠️  vault-agent will NOT be able to authenticate"
+       print_warning "Секреты vault-agent не извлечены. Vault-agent не сможет работать."
+   fi
     
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] После извлечения секретов" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    log_debug "========================================"
-#    log_debug "POST-SECRETS: Setting permissions"
-#    log_debug "========================================"
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   echo "[VAULT-CONFIG] После извлечения секретов" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   log_debug "========================================"
+   log_debug "POST-SECRETS: Setting permissions"
+   log_debug "========================================"
     
-#    echo "[VAULT-CONFIG] Установка прав на файлы секретов..." | tee /dev/stderr
-#    echo "[VAULT-CONFIG] VAULT_ROLE_ID_FILE=$VAULT_ROLE_ID_FILE" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] VAULT_SECRET_ID_FILE=$VAULT_SECRET_ID_FILE" | tee /dev/stderr
-#    log_debug "VAULT_ROLE_ID_FILE=$VAULT_ROLE_ID_FILE"
-#    log_debug "VAULT_SECRET_ID_FILE=$VAULT_SECRET_ID_FILE"
+   echo "[VAULT-CONFIG] Установка прав на файлы секретов..." | tee /dev/stderr
+   echo "[VAULT-CONFIG] VAULT_ROLE_ID_FILE=$VAULT_ROLE_ID_FILE" | tee /dev/stderr
+   echo "[VAULT-CONFIG] VAULT_SECRET_ID_FILE=$VAULT_SECRET_ID_FILE" | tee /dev/stderr
+   log_debug "VAULT_ROLE_ID_FILE=$VAULT_ROLE_ID_FILE"
+   log_debug "VAULT_SECRET_ID_FILE=$VAULT_SECRET_ID_FILE"
     
     # Права только на файлы (директории оставляем как настроил RLM)
-#    if chmod 640 "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>/dev/null; then
-#        echo "[VAULT-CONFIG] ✅ chmod 640 успешен" | tee /dev/stderr
-#        log_debug "✅ chmod 640 successful"
-#    else
-#        echo "[VAULT-CONFIG] ⚠️  chmod 640 failed (не критично)" | tee /dev/stderr
-#        log_debug "⚠️  chmod 640 failed"
-#    fi
+   if chmod 640 "$VAULT_ROLE_ID_FILE" "$VAULT_SECRET_ID_FILE" 2>/dev/null; then
+       echo "[VAULT-CONFIG] ✅ chmod 640 успешен" | tee /dev/stderr
+       log_debug "✅ chmod 640 successful"
+   else
+       echo "[VAULT-CONFIG] ⚠️  chmod 640 failed (не критично)" | tee /dev/stderr
+       log_debug "⚠️  chmod 640 failed"
+   fi
     
     # SECURE EDITION: Пропускаем chown операции (нет доступа к /opt/, не нужны в user-space)
-#    echo "[VAULT-CONFIG] SECURE EDITION: Пропускаем chown операции (не нужны в user-space)" | tee /dev/stderr
-#    log_debug "SECURE EDITION: Skipping chown operations"
+   echo "[VAULT-CONFIG] SECURE EDITION: Пропускаем chown операции (не нужны в user-space)" | tee /dev/stderr
+   log_debug "SECURE EDITION: Skipping chown operations"
     
     # Приводим владельца/группу каталога certs и файлов role_id/secret_id к тем же, что у conf
     # ЗАКОММЕНТИРОВАНО для Secure Edition - все файлы уже в $HOME с правильными правами
@@ -2128,271 +2128,271 @@ create_directories() {
     #     /usr/bin/chown --reference=/opt/vault/conf /opt/vault/conf/role_id.txt /opt/vault/conf/secret_id.txt 2>/dev/null || true
     # fi
     
-#    echo "[VAULT-CONFIG] Создание vault-agent.conf..." | tee /dev/stderr
-#    log_debug "Creating vault-agent.conf"
+   echo "[VAULT-CONFIG] Создание vault-agent.conf..." | tee /dev/stderr
+   log_debug "Creating vault-agent.conf"
 
-#    echo "[VAULT-CONFIG] Начинается блок генерации vault-agent.conf..." | tee /dev/stderr
-#    log_debug "Generating vault-agent.conf content"
+   echo "[VAULT-CONFIG] Начинается блок генерации vault-agent.conf..." | tee /dev/stderr
+   log_debug "Generating vault-agent.conf content"
     
     # Создаем две версии agent.hcl:
     # 1. Системная версия (для vault-agent) - с путями /opt/vault/
     # 2. User-space версия (для справки) - с путями $HOME/monitoring/
     
-#    echo "[VAULT-CONFIG] Создание системной версии agent.hcl..." | tee /dev/stderr
+   echo "[VAULT-CONFIG] Создание системной версии agent.hcl..." | tee /dev/stderr
     
     # ============================================
     # 1. СИСТЕМНАЯ ВЕРСИЯ (для vault-agent)
     # ============================================
-#    local SYSTEM_VAULT_AGENT_HCL="/opt/vault/conf/agent.hcl"
+   local SYSTEM_VAULT_AGENT_HCL="/opt/vault/conf/agent.hcl"
     
     # Проверка прав на запись в /opt/vault/conf/
-#    echo "[VAULT-CONFIG] Проверка прав на запись в /opt/vault/conf/..." | tee /dev/stderr
-#    log_debug "Checking write permissions to /opt/vault/conf/"
+   echo "[VAULT-CONFIG] Проверка прав на запись в /opt/vault/conf/..." | tee /dev/stderr
+   log_debug "Checking write permissions to /opt/vault/conf/"
     
-#    local can_write_system=false
-#    if [[ -w "/opt/vault/conf/" ]]; then
-#        echo "[VAULT-CONFIG] ✅ Можем писать в /opt/vault/conf/" | tee /dev/stderr
-#        log_debug "✅ Can write to /opt/vault/conf/"
-#        can_write_system=true
-#    else
-#        echo "[VAULT-CONFIG] ⚠️  НЕТ прав на запись в /opt/vault/conf/" | tee /dev/stderr
-#        log_debug "⚠️  NO write permissions to /opt/vault/conf/"
+   local can_write_system=false
+   if [[ -w "/opt/vault/conf/" ]]; then
+       echo "[VAULT-CONFIG] ✅ Можем писать в /opt/vault/conf/" | tee /dev/stderr
+       log_debug "✅ Can write to /opt/vault/conf/"
+       can_write_system=true
+   else
+       echo "[VAULT-CONFIG] ⚠️  НЕТ прав на запись в /opt/vault/conf/" | tee /dev/stderr
+       log_debug "⚠️  NO write permissions to /opt/vault/conf/"
         
         # Проверяем состоим ли мы в группе va-start
-#        if id | grep -q "${KAE}-lnx-va-start"; then
-#            echo "[VAULT-CONFIG] ✅ Состоим в группе va-start, но права не применились" | tee /dev/stderr
-#            print_warning "Пользователь в группе va-start, но нет прав - требуется перелогин"
-#        else
-#            echo "[VAULT-CONFIG] ℹ️  Не состоим в группе va-start" | tee /dev/stderr
-#            print_info "Для записи в /opt/vault/conf/ нужно состоять в группе ${KAE}-lnx-va-start"
-#        fi
+       if id | grep -q "${KAE}-lnx-va-start"; then
+           echo "[VAULT-CONFIG] ✅ Состоим в группе va-start, но права не применились" | tee /dev/stderr
+           print_warning "Пользователь в группе va-start, но нет прав - требуется перелогин"
+       else
+           echo "[VAULT-CONFIG] ℹ️  Не состоим в группе va-start" | tee /dev/stderr
+           print_info "Для записи в /opt/vault/conf/ нужно состоять в группе ${KAE}-lnx-va-start"
+       fi
         
-#        can_write_system=false
-#    fi
+       can_write_system=false
+   fi
     
     # Создаем системный agent.hcl с помощью cat и перенаправления
-#    if [[ "$can_write_system" == "true" ]]; then
-#        echo "[VAULT-CONFIG] Создание системного agent.hcl..." | tee /dev/stderr
-#        cat > "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#pid_file = "/opt/vault/log/vault-agent.pidfile"
-#vault {
-# address = "https://$SEC_MAN_ADDR"
-# tls_skip_verify = "false"
-# ca_path = "/opt/vault/conf/ca-trust"
-#}
-#auto_auth {
-# method "approle" {
-# namespace = "$NAMESPACE_CI"
-# mount_path = "auth/approle"
+   if [[ "$can_write_system" == "true" ]]; then
+       echo "[VAULT-CONFIG] Создание системного agent.hcl..." | tee /dev/stderr
+       cat > "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+pid_file = "/opt/vault/log/vault-agent.pidfile"
+vault {
+address = "https://$SEC_MAN_ADDR"
+tls_skip_verify = "false"
+ca_path = "/opt/vault/conf/ca-trust"
+}
+auto_auth {
+method "approle" {
+namespace = "$NAMESPACE_CI"
+mount_path = "auth/approle"
 
-# config = {
-# role_id_file_path = "/opt/vault/conf/role_id.txt"
-# secret_id_file_path = "/opt/vault/conf/secret_id.txt"
-# remove_secret_id_file_after_reading = false
-#}
-#}
-#}
-#log_destination "Tengry" {
-# log_format = "json"
-# log_path = "/opt/vault/log"
-# log_rotate = "5"
-# log_max_size = "5mb"
-# log_level = "trace"
-# log_file = "agent.log"
-#}
+config = {
+role_id_file_path = "/opt/vault/conf/role_id.txt"
+secret_id_file_path = "/opt/vault/conf/secret_id.txt"
+remove_secret_id_file_after_reading = false
+}
+}
+}
+log_destination "Tengry" {
+log_format = "json"
+log_path = "/opt/vault/log"
+log_rotate = "5"
+log_max_size = "5mb"
+log_level = "trace"
+log_file = "agent.log"
+}
 
-#template {
-#  destination = "/opt/vault/conf/data_sec.json"
-#  contents    = <<EOT
-#{
-#SYS_EOF
+template {
+ destination = "/opt/vault/conf/data_sec.json"
+ contents    = <<EOT
+{
+SYS_EOF
 
     # Добавляем блок rpm_url
-#    if [[ -n "$RPM_URL_KV" ]]; then
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "rpm_url": {
-#    {{ with secret "$RPM_URL_KV" }}
-#    "harvest": {{ .Data.harvest | toJSON }},
-#    "prometheus": {{ .Data.prometheus | toJSON }},
-#    "grafana": {{ .Data.grafana | toJSON }}
-#    {{ end }}
-#  },
-#SYS_EOF
-#    else
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "rpm_url": {},
-#SYS_EOF
-#    fi
+   if [[ -n "$RPM_URL_KV" ]]; then
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "rpm_url": {
+   {{ with secret "$RPM_URL_KV" }}
+   "harvest": {{ .Data.harvest | toJSON }},
+   "prometheus": {{ .Data.prometheus | toJSON }},
+   "grafana": {{ .Data.grafana | toJSON }}
+   {{ end }}
+ },
+SYS_EOF
+   else
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "rpm_url": {},
+SYS_EOF
+   fi
 
     # Добавляем блок netapp_ssh
-#    if [[ -n "$NETAPP_SSH_KV" ]]; then
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "netapp_ssh": {
-#    {{ with secret "$NETAPP_SSH_KV" }}
-#    "addr": {{ .Data.addr | toJSON }},
-#    "user": {{ .Data.user | toJSON }},
-#    "pass": {{ .Data.pass | toJSON }}
-#    {{ end }}
-#  },
-#SYS_EOF
-#    else
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "netapp_ssh": {},
-#SYS_EOF
-#    fi
+   if [[ -n "$NETAPP_SSH_KV" ]]; then
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "netapp_ssh": {
+   {{ with secret "$NETAPP_SSH_KV" }}
+   "addr": {{ .Data.addr | toJSON }},
+   "user": {{ .Data.user | toJSON }},
+   "pass": {{ .Data.pass | toJSON }}
+   {{ end }}
+ },
+SYS_EOF
+   else
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "netapp_ssh": {},
+SYS_EOF
+   fi
 
     # Добавляем блок grafana_web
-#    if [[ -n "$GRAFANA_WEB_KV" ]]; then
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "grafana_web": {
-#    {{ with secret "$GRAFANA_WEB_KV" }}
-#    "user": {{ .Data.user | toJSON }},
-#    "pass": {{ .Data.pass | toJSON }}
-#    {{ end }}
-#  },
-#SYS_EOF
-#    else
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "grafana_web": {},
-#SYS_EOF
-#    fi
+   if [[ -n "$GRAFANA_WEB_KV" ]]; then
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "grafana_web": {
+   {{ with secret "$GRAFANA_WEB_KV" }}
+   "user": {{ .Data.user | toJSON }},
+   "pass": {{ .Data.pass | toJSON }}
+   {{ end }}
+ },
+SYS_EOF
+   else
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "grafana_web": {},
+SYS_EOF
+   fi
 
     # Добавляем блок vault-agent
-#    if [[ -n "$VAULT_AGENT_KV" ]]; then
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "vault-agent": {
-#    {{ with secret "$VAULT_AGENT_KV" }}
-#    "role_id": {{ .Data.role_id | toJSON }},
-#    "secret_id": {{ .Data.secret_id | toJSON }}
-#    {{ end }}
-#  }
-#}
-#  EOT
-#  perms = "0640"
-#  error_on_missing_key = false
-#}
-#SYS_EOF
-#    else
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
-#  "vault-agent": {}
-#}
-#  EOT
-#  perms = "0640"
-#  error_on_missing_key = false
-#}
-#SYS_EOF
-#    fi
+   if [[ -n "$VAULT_AGENT_KV" ]]; then
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "vault-agent": {
+   {{ with secret "$VAULT_AGENT_KV" }}
+   "role_id": {{ .Data.role_id | toJSON }},
+   "secret_id": {{ .Data.secret_id | toJSON }}
+   {{ end }}
+ }
+}
+ EOT
+ perms = "0640"
+ error_on_missing_key = false
+}
+SYS_EOF
+   else
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+ "vault-agent": {}
+}
+ EOT
+ perms = "0640"
+ error_on_missing_key = false
+}
+SYS_EOF
+   fi
 
     # Добавляем блоки для сертификатов SBERCA
-#    if [[ -n "$SBERCA_CERT_KV" ]]; then
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+   if [[ -n "$SBERCA_CERT_KV" ]]; then
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
 
-#template {
-#  destination = "/opt/vault/certs/server_bundle.pem"
-#  contents    = <<EOT
-#{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
-#{{ .Data.private_key }}
-#{{ .Data.certificate }}
-#{{ .Data.issuing_ca }}
-#{{- end -}}
-#  EOT
-#  perms = "0640"
-#}
+template {
+ destination = "/opt/vault/certs/server_bundle.pem"
+ contents    = <<EOT
+{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
+{{ .Data.private_key }}
+{{ .Data.certificate }}
+{{ .Data.issuing_ca }}
+{{- end -}}
+ EOT
+ perms = "0640"
+}
 
-#template {
-#  destination = "/opt/vault/certs/ca_chain.crt"
-#  contents = <<EOT
-#{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" -}}
-#{{ .Data.issuing_ca }}
-#{{- end -}}
-#  EOT
-#  perms = "0640"
-#}
+template {
+ destination = "/opt/vault/certs/ca_chain.crt"
+ contents = <<EOT
+{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" -}}
+{{ .Data.issuing_ca }}
+{{- end -}}
+ EOT
+ perms = "0640"
+}
 
-#template {
-#  destination = "/opt/vault/certs/grafana-client.pem"
-#  contents    = <<EOT
-#{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
-#{{ .Data.private_key }}
-#{{ .Data.certificate }}
-#{{ .Data.issuing_ca }}
-#{{- end -}}
-#  EOT
-#  perms = "0640"
-#}
-#SYS_EOF
-#    else
-#        cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+template {
+ destination = "/opt/vault/certs/grafana-client.pem"
+ contents    = <<EOT
+{{- with secret "$SBERCA_CERT_KV" "common_name=${SERVER_DOMAIN}" "email=$ADMIN_EMAIL" "alt_names=${SERVER_DOMAIN}" -}}
+{{ .Data.private_key }}
+{{ .Data.certificate }}
+{{ .Data.issuing_ca }}
+{{- end -}}
+ EOT
+ perms = "0640"
+}
+SYS_EOF
+   else
+       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
 
-# SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
-#SYS_EOF
-#    fi
+SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
+SYS_EOF
+   fi
         
-#        echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
-#        log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
-#    else
+       echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
+       log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
+   else
         # НЕТ прав на запись - создаем временный файл с инструкциями
-#        echo "[VAULT-CONFIG] ⚠️  Не удалось создать системный agent.hcl (нет прав)" | tee /dev/stderr
-#        log_debug "⚠️  Could not create system agent.hcl (no permissions)"
+       echo "[VAULT-CONFIG] ⚠️  Не удалось создать системный agent.hcl (нет прав)" | tee /dev/stderr
+       log_debug "⚠️  Could not create system agent.hcl (no permissions)"
         
-#        print_warning "Нет прав на запись в /opt/vault/conf/"
-#        print_info "Создан шаблон agent.hcl в: $VAULT_AGENT_HCL"
-#        print_info "Необходимо скопировать его в системный путь:"
-#        print_info "  sudo cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
-#        print_info "Или запросить права через IDM на группу ${KAE}-lnx-va-start"
-#    fi
+       print_warning "Нет прав на запись в /opt/vault/conf/"
+       print_info "Создан шаблон agent.hcl в: $VAULT_AGENT_HCL"
+       print_info "Необходимо скопировать его в системный путь:"
+       print_info "  sudo cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
+       print_info "Или запросить права через IDM на группу ${KAE}-lnx-va-start"
+   fi
     
     # ============================================
     # 2. USER-SPACE ВЕРСИЯ (для справки) - упрощенная
     # ============================================
-#    echo "[VAULT-CONFIG] Создание user-space версии agent.hcl..." | tee /dev/stderr
+   echo "[VAULT-CONFIG] Создание user-space версии agent.hcl..." | tee /dev/stderr
     
     # Создаем простую user-space версию
-#    cat > "$VAULT_AGENT_HCL" << USER_EOF
-# User-space версия agent.hcl (только для справки)
-# Полная системная версия в /opt/vault/conf/agent.hcl
+   cat > "$VAULT_AGENT_HCL" << USER_EOF
+User-space версия agent.hcl (только для справки)
+Полная системная версия в /opt/vault/conf/agent.hcl
 
-#pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
-#vault {
-# address = "https://$SEC_MAN_ADDR"
-# tls_skip_verify = "false"
-# ca_path = "$VAULT_CONF_DIR/ca-trust"
-#}
-#auto_auth {
-# method "approle" {
-# namespace = "$NAMESPACE_CI"
-# mount_path = "auth/approle"
+pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
+vault {
+address = "https://$SEC_MAN_ADDR"
+tls_skip_verify = "false"
+ca_path = "$VAULT_CONF_DIR/ca-trust"
+}
+auto_auth {
+method "approle" {
+namespace = "$NAMESPACE_CI"
+mount_path = "auth/approle"
 
-# config = {
-# role_id_file_path = "$VAULT_ROLE_ID_FILE"
-# secret_id_file_path = "$VAULT_SECRET_ID_FILE"
-# remove_secret_id_file_after_reading = false
-#}
-#}
-#}
-#log_destination "Tengry" {
-# log_format = "json"
-# log_path = "$VAULT_LOG_DIR"
-# log_rotate = "5"
-# log_max_size = "5mb"
-# log_level = "trace"
-# log_file = "agent.log"
-#}
+config = {
+role_id_file_path = "$VAULT_ROLE_ID_FILE"
+secret_id_file_path = "$VAULT_SECRET_ID_FILE"
+remove_secret_id_file_after_reading = false
+}
+}
+}
+log_destination "Tengry" {
+log_format = "json"
+log_path = "$VAULT_LOG_DIR"
+log_rotate = "5"
+log_max_size = "5mb"
+log_level = "trace"
+log_file = "agent.log"
+}
 
-# NOTE: Template блоки для генерации data_sec.json и сертификатов
-# находятся в системной версии /opt/vault/conf/agent.hcl
-# Эта user-space версия создана только для справки.
-#USER_EOF
+NOTE: Template блоки для генерации data_sec.json и сертификатов
+находятся в системной версии /opt/vault/conf/agent.hcl
+Эта user-space версия создана только для справки.
+USER_EOF
     
-#    echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
     
-#    echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
-#    log_debug "✅ User-space agent.hcl created at $VAULT_AGENT_HCL"
+   echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
+   log_debug "✅ User-space agent.hcl created at $VAULT_AGENT_HCL"
 
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] Созданы обе версии agent.hcl" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    log_debug "Both versions of agent.hcl created"
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   echo "[VAULT-CONFIG] Созданы обе версии agent.hcl" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   log_debug "Both versions of agent.hcl created"
     
     # ============================================================
     # КОПИРОВАНИЕ CREDENTIALS В /OPT/VAULT/CONF/ (SECURE EDITION)
@@ -2401,221 +2401,221 @@ create_directories() {
     # в системные пути согласно требованиям ИБ
     # ============================================================
     
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] Копирование credentials в /opt/vault/conf/" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    log_debug "========================================"
-#    log_debug "COPYING: credentials to /opt/vault/conf/"
-#    log_debug "========================================"
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   echo "[VAULT-CONFIG] Копирование credentials в /opt/vault/conf/" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   log_debug "========================================"
+   log_debug "COPYING: credentials to /opt/vault/conf/"
+   log_debug "========================================"
     
     # Проверяем что временные файлы в /tmp/ существуют и не пустые
-#    if [[ "$secrets_extracted" == "true" && -s "$TMP_ROLE_ID" && -s "$TMP_SECRET_ID" ]]; then
-#        echo "[VAULT-CONFIG] ✅ Секреты извлечены в /tmp/, начинаем копирование..." | tee /dev/stderr
-#        log_debug "✅ Secrets extracted to /tmp/, starting copy"
+   if [[ "$secrets_extracted" == "true" && -s "$TMP_ROLE_ID" && -s "$TMP_SECRET_ID" ]]; then
+       echo "[VAULT-CONFIG] ✅ Секреты извлечены в /tmp/, начинаем копирование..." | tee /dev/stderr
+       log_debug "✅ Secrets extracted to /tmp/, starting copy"
         
         # 1. Создаем /opt/vault/certs/ если не существует
-#        if [[ ! -d "/opt/vault/certs" ]]; then
-#            echo "[VAULT-CONFIG] Создание /opt/vault/certs/..." | tee /dev/stderr
-#            log_debug "Creating /opt/vault/certs/"
+       if [[ ! -d "/opt/vault/certs" ]]; then
+           echo "[VAULT-CONFIG] Создание /opt/vault/certs/..." | tee /dev/stderr
+           log_debug "Creating /opt/vault/certs/"
             
-#            if sudo -n /usr/bin/mkdir -p /opt/vault/certs 2>/dev/null; then
-#                echo "[VAULT-CONFIG] ✅ /opt/vault/certs/ создана" | tee /dev/stderr
-#                log_debug "✅ /opt/vault/certs/ created"
+           if sudo -n /usr/bin/mkdir -p /opt/vault/certs 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ /opt/vault/certs/ создана" | tee /dev/stderr
+               log_debug "✅ /opt/vault/certs/ created"
                 
                 # Устанавливаем владельца и права
-#                if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/certs 2>/dev/null; then
-#                    echo "[VAULT-CONFIG] ✅ Владелец установлен: ${KAE}-lnx-va-start:${KAE}-lnx-va-read" | tee /dev/stderr
-#                    log_debug "✅ Owner set for /opt/vault/certs/"
-#                fi
+               if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/certs 2>/dev/null; then
+                   echo "[VAULT-CONFIG] ✅ Владелец установлен: ${KAE}-lnx-va-start:${KAE}-lnx-va-read" | tee /dev/stderr
+                   log_debug "✅ Owner set for /opt/vault/certs/"
+               fi
                 
-#                if sudo -n /usr/bin/chmod 750 /opt/vault/certs 2>/dev/null; then
-#                    echo "[VAULT-CONFIG] ✅ Права установлены: 750" | tee /dev/stderr
-#                    log_debug "✅ Permissions set for /opt/vault/certs/"
-#                fi
-#            else
-#                echo "[VAULT-CONFIG] ⚠️  Не удалось создать /opt/vault/certs/ (требуется sudo)" | tee /dev/stderr
-#                log_debug "⚠️  Failed to create /opt/vault/certs/ (sudo required)"
-#                print_warning "Не удалось создать /opt/vault/certs/ - добавьте sudo-права"
-#            fi
-#        else
-#            echo "[VAULT-CONFIG] ✅ /opt/vault/certs/ уже существует" | tee /dev/stderr
-#            log_debug "✅ /opt/vault/certs/ already exists"
-#        fi
+               if sudo -n /usr/bin/chmod 750 /opt/vault/certs 2>/dev/null; then
+                   echo "[VAULT-CONFIG] ✅ Права установлены: 750" | tee /dev/stderr
+                   log_debug "✅ Permissions set for /opt/vault/certs/"
+               fi
+           else
+               echo "[VAULT-CONFIG] ⚠️  Не удалось создать /opt/vault/certs/ (требуется sudo)" | tee /dev/stderr
+               log_debug "⚠️  Failed to create /opt/vault/certs/ (sudo required)"
+               print_warning "Не удалось создать /opt/vault/certs/ - добавьте sudo-права"
+           fi
+       else
+           echo "[VAULT-CONFIG] ✅ /opt/vault/certs/ уже существует" | tee /dev/stderr
+           log_debug "✅ /opt/vault/certs/ already exists"
+       fi
         
         # 2. Копируем role_id.txt из /tmp/ в /opt/vault/conf/
-#        echo "[VAULT-CONFIG] Копирование role_id.txt..." | tee /dev/stderr
-#        log_debug "Copying role_id.txt from $TMP_ROLE_ID to /opt/vault/conf/"
+       echo "[VAULT-CONFIG] Копирование role_id.txt..." | tee /dev/stderr
+       log_debug "Copying role_id.txt from $TMP_ROLE_ID to /opt/vault/conf/"
         
-#        if sudo -n /usr/bin/cp "$TMP_ROLE_ID" /opt/vault/conf/role_id.txt 2>/dev/null; then
-#            echo "[VAULT-CONFIG] ✅ role_id.txt скопирован" | tee /dev/stderr
-#            log_debug "✅ role_id.txt copied"
+       if sudo -n /usr/bin/cp "$TMP_ROLE_ID" /opt/vault/conf/role_id.txt 2>/dev/null; then
+           echo "[VAULT-CONFIG] ✅ role_id.txt скопирован" | tee /dev/stderr
+           log_debug "✅ role_id.txt copied"
             
             # Устанавливаем владельца и права
-#            if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/conf/role_id.txt 2>/dev/null; then
-#                echo "[VAULT-CONFIG] ✅ Владелец role_id.txt установлен" | tee /dev/stderr
-#                log_debug "✅ Owner set for role_id.txt"
-#            fi
+           if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/conf/role_id.txt 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ Владелец role_id.txt установлен" | tee /dev/stderr
+               log_debug "✅ Owner set for role_id.txt"
+           fi
             
-#            if sudo -n /usr/bin/chmod 640 /opt/vault/conf/role_id.txt 2>/dev/null; then
-#                echo "[VAULT-CONFIG] ✅ Права role_id.txt установлены: 640" | tee /dev/stderr
-#                log_debug "✅ Permissions set for role_id.txt"
-#            fi
+           if sudo -n /usr/bin/chmod 640 /opt/vault/conf/role_id.txt 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ Права role_id.txt установлены: 640" | tee /dev/stderr
+               log_debug "✅ Permissions set for role_id.txt"
+           fi
             
-#            print_success "role_id.txt установлен в /opt/vault/conf/"
-#        else
-#            echo "[VAULT-CONFIG] ❌ Не удалось скопировать role_id.txt (требуется sudo)" | tee /dev/stderr
-#            log_debug "❌ Failed to copy role_id.txt (sudo required)"
-#            print_error "Не удалось скопировать role_id.txt - добавьте sudo-права"
-#        fi
+           print_success "role_id.txt установлен в /opt/vault/conf/"
+       else
+           echo "[VAULT-CONFIG] ❌ Не удалось скопировать role_id.txt (требуется sudo)" | tee /dev/stderr
+           log_debug "❌ Failed to copy role_id.txt (sudo required)"
+           print_error "Не удалось скопировать role_id.txt - добавьте sudo-права"
+       fi
         
         # 3. Копируем secret_id.txt из /tmp/ в /opt/vault/conf/
-#        echo "[VAULT-CONFIG] Копирование secret_id.txt..." | tee /dev/stderr
-#        log_debug "Copying secret_id.txt from $TMP_SECRET_ID to /opt/vault/conf/"
+       echo "[VAULT-CONFIG] Копирование secret_id.txt..." | tee /dev/stderr
+       log_debug "Copying secret_id.txt from $TMP_SECRET_ID to /opt/vault/conf/"
         
-#        if sudo -n /usr/bin/cp "$TMP_SECRET_ID" /opt/vault/conf/secret_id.txt 2>/dev/null; then
-#            echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован" | tee /dev/stderr
-#            log_debug "✅ secret_id.txt copied"
+       if sudo -n /usr/bin/cp "$TMP_SECRET_ID" /opt/vault/conf/secret_id.txt 2>/dev/null; then
+           echo "[VAULT-CONFIG] ✅ secret_id.txt скопирован" | tee /dev/stderr
+           log_debug "✅ secret_id.txt copied"
             
             # Устанавливаем владельца и права
-#            if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/conf/secret_id.txt 2>/dev/null; then
-#                echo "[VAULT-CONFIG] ✅ Владелец secret_id.txt установлен" | tee /dev/stderr
-#                log_debug "✅ Owner set for secret_id.txt"
-#            fi
+           if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/conf/secret_id.txt 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ Владелец secret_id.txt установлен" | tee /dev/stderr
+               log_debug "✅ Owner set for secret_id.txt"
+           fi
             
-#            if sudo -n /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt 2>/dev/null; then
-#                echo "[VAULT-CONFIG] ✅ Права secret_id.txt установлены: 640" | tee /dev/stderr
-#                log_debug "✅ Permissions set for secret_id.txt"
-#            fi
+           if sudo -n /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ Права secret_id.txt установлены: 640" | tee /dev/stderr
+               log_debug "✅ Permissions set for secret_id.txt"
+           fi
             
-#            print_success "secret_id.txt установлен в /opt/vault/conf/"
-#        else
-#            echo "[VAULT-CONFIG] ❌ Не удалось скопировать secret_id.txt (требуется sudo)" | tee /dev/stderr
-#            log_debug "❌ Failed to copy secret_id.txt (sudo required)"
-#            print_error "Не удалось скопировать secret_id.txt - добавьте sudo-права"
-#        fi
+           print_success "secret_id.txt установлен в /opt/vault/conf/"
+       else
+           echo "[VAULT-CONFIG] ❌ Не удалось скопировать secret_id.txt (требуется sudo)" | tee /dev/stderr
+           log_debug "❌ Failed to copy secret_id.txt (sudo required)"
+           print_error "Не удалось скопировать secret_id.txt - добавьте sudo-права"
+       fi
         
         # 4. Очищаем временные файлы из /tmp/ (важно для безопасности!)
-#        echo "[VAULT-CONFIG] Очистка временных файлов из /tmp/..." | tee /dev/stderr
-#        log_debug "Cleaning up temporary files from /tmp/"
+       echo "[VAULT-CONFIG] Очистка временных файлов из /tmp/..." | tee /dev/stderr
+       log_debug "Cleaning up temporary files from /tmp/"
         
-#        if rm -f "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null; then
-#            echo "[VAULT-CONFIG] ✅ Временные файлы удалены" | tee /dev/stderr
-#            log_debug "✅ Temporary files removed"
-#        else
-#            echo "[VAULT-CONFIG] ⚠️  Не удалось удалить временные файлы" | tee /dev/stderr
-#            log_debug "⚠️  Failed to remove temporary files"
-#        fi
+       if rm -f "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null; then
+           echo "[VAULT-CONFIG] ✅ Временные файлы удалены" | tee /dev/stderr
+           log_debug "✅ Temporary files removed"
+       else
+           echo "[VAULT-CONFIG] ⚠️  Не удалось удалить временные файлы" | tee /dev/stderr
+           log_debug "⚠️  Failed to remove temporary files"
+       fi
         
-#        echo "[VAULT-CONFIG] ✅ Credentials успешно установлены в /opt/vault/conf/" | tee /dev/stderr
-#        log_debug "✅ Credentials successfully installed"
-#    else
-#        echo "[VAULT-CONFIG] ⚠️  Секреты не извлечены или файлы пустые, пропускаем копирование" | tee /dev/stderr
-#        log_debug "⚠️  Secrets not extracted or files empty, skipping copy"
-#        print_warning "Секреты не извлечены - vault-agent не сможет аутентифицироваться"
-#    fi
+       echo "[VAULT-CONFIG] ✅ Credentials успешно установлены в /opt/vault/conf/" | tee /dev/stderr
+       log_debug "✅ Credentials successfully installed"
+   else
+       echo "[VAULT-CONFIG] ⚠️  Секреты не извлечены или файлы пустые, пропускаем копирование" | tee /dev/stderr
+       log_debug "⚠️  Secrets not extracted or files empty, skipping copy"
+       print_warning "Секреты не извлечены - vault-agent не сможет аутентифицироваться"
+   fi
     
     # ============================================================
     # ПРИМЕНЕНИЕ КОНФИГУРАЦИИ К VAULT-AGENT
     # ============================================================
-#    echo "[VAULT-CONFIG] Применение конфигурации к vault-agent..." | tee /dev/stderr
-#    log_debug "Applying configuration to vault-agent"
+   echo "[VAULT-CONFIG] Применение конфигурации к vault-agent..." | tee /dev/stderr
+   log_debug "Applying configuration to vault-agent"
     
-#    local current_user
-#    current_user=$(whoami)
+   local current_user
+   current_user=$(whoami)
     
     # Проверяем, можем ли записать в /opt/vault/conf/
-#    if [[ -w "/opt/vault/conf/" ]]; then
-#        echo "[VAULT-CONFIG] ✅ Пользователь $current_user может писать в /opt/vault/conf/" | tee /dev/stderr
-#        log_debug "✅ User $current_user can write to /opt/vault/conf/"
+   if [[ -w "/opt/vault/conf/" ]]; then
+       echo "[VAULT-CONFIG] ✅ Пользователь $current_user может писать в /opt/vault/conf/" | tee /dev/stderr
+       log_debug "✅ User $current_user can write to /opt/vault/conf/"
         
         # Проверяем, отличается ли новый конфиг от существующего
-#        if [[ -f "$SYSTEM_VAULT_AGENT_HCL" ]]; then
-#            echo "[VAULT-CONFIG] ✅ Системный agent.hcl уже создан" | tee /dev/stderr
-#            log_debug "✅ System agent.hcl already created"
+       if [[ -f "$SYSTEM_VAULT_AGENT_HCL" ]]; then
+           echo "[VAULT-CONFIG] ✅ Системный agent.hcl уже создан" | tee /dev/stderr
+           log_debug "✅ System agent.hcl already created"
             
             # Пробуем перезапустить vault-agent
-#            echo "[VAULT-CONFIG] Попытка перезапуска vault-agent..." | tee /dev/stderr
-#            log_debug "Attempting to restart vault-agent"
+           echo "[VAULT-CONFIG] Попытка перезапуска vault-agent..." | tee /dev/stderr
+           log_debug "Attempting to restart vault-agent"
             
             # Используем sudo с полным путем согласно требованиям ИБ
-#            if sudo -n /usr/bin/systemctl restart vault-agent 2>/dev/null; then
-#                echo "[VAULT-CONFIG] ✅ vault-agent перезапущен успешно" | tee /dev/stderr
-#                log_debug "✅ vault-agent restarted successfully"
-#                print_success "vault-agent успешно перезапущен"
+           if sudo -n /usr/bin/systemctl restart vault-agent 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ vault-agent перезапущен успешно" | tee /dev/stderr
+               log_debug "✅ vault-agent restarted successfully"
+               print_success "vault-agent успешно перезапущен"
                 
                 # Ждем 5 секунд для стабилизации
-#                echo "[VAULT-CONFIG] Ожидание стабилизации vault-agent (5 сек)..." | tee /dev/stderr
-#                sleep 5
+               echo "[VAULT-CONFIG] Ожидание стабилизации vault-agent (5 сек)..." | tee /dev/stderr
+               sleep 5
                 
                 # Проверяем статус после перезапуска
-#                echo "[VAULT-CONFIG] Проверка статуса vault-agent..." | tee /dev/stderr
-#                if sudo -n /usr/bin/systemctl is-active vault-agent >/dev/null 2>&1; then
-#                    echo "[VAULT-CONFIG] ✅ vault-agent активен (running)" | tee /dev/stderr
-#                    log_debug "✅ vault-agent is active (running)"
-#                    print_success "vault-agent работает с новым конфигом"
+               echo "[VAULT-CONFIG] Проверка статуса vault-agent..." | tee /dev/stderr
+               if sudo -n /usr/bin/systemctl is-active vault-agent >/dev/null 2>&1; then
+                   echo "[VAULT-CONFIG] ✅ vault-agent активен (running)" | tee /dev/stderr
+                   log_debug "✅ vault-agent is active (running)"
+                   print_success "vault-agent работает с новым конфигом"
                     
                     # Ждем еще 5 секунд для генерации сертификатов
-#                    echo "[VAULT-CONFIG] Ожидание генерации сертификатов (5 сек)..." | tee /dev/stderr
-#                    sleep 5
+                   echo "[VAULT-CONFIG] Ожидание генерации сертификатов (5 сек)..." | tee /dev/stderr
+                   sleep 5
                     
                     # Проверяем наличие сертификатов
-#                    if [[ -f "/opt/vault/certs/server_bundle.pem" && -s "/opt/vault/certs/server_bundle.pem" ]]; then
-#                        echo "[VAULT-CONFIG] ✅ Сертификаты успешно сгенерированы" | tee /dev/stderr
-#                        log_debug "✅ Certificates generated successfully"
-#                        print_success "Сертификаты vault-agent созданы"
-#                    else
-#                        echo "[VAULT-CONFIG] ⚠️  Сертификаты еще не сгенерированы (могут появиться позже)" | tee /dev/stderr
-#                        log_debug "⚠️  Certificates not yet generated"
-#                        print_warning "Сертификаты еще не созданы - проверьте логи vault-agent"
-#                    fi
-#                else
-#                    echo "[VAULT-CONFIG] ⚠️  vault-agent не активен после перезапуска" | tee /dev/stderr
-#                    log_debug "⚠️  vault-agent not active after restart"
-#                    print_warning "vault-agent запущен, но не активен - проверьте логи"
+                   if [[ -f "/opt/vault/certs/server_bundle.pem" && -s "/opt/vault/certs/server_bundle.pem" ]]; then
+                       echo "[VAULT-CONFIG] ✅ Сертификаты успешно сгенерированы" | tee /dev/stderr
+                       log_debug "✅ Certificates generated successfully"
+                       print_success "Сертификаты vault-agent созданы"
+                   else
+                       echo "[VAULT-CONFIG] ⚠️  Сертификаты еще не сгенерированы (могут появиться позже)" | tee /dev/stderr
+                       log_debug "⚠️  Certificates not yet generated"
+                       print_warning "Сертификаты еще не созданы - проверьте логи vault-agent"
+                   fi
+               else
+                   echo "[VAULT-CONFIG] ⚠️  vault-agent не активен после перезапуска" | tee /dev/stderr
+                   log_debug "⚠️  vault-agent not active after restart"
+                   print_warning "vault-agent запущен, но не активен - проверьте логи"
                     
                     # Показываем статус для диагностики
-#                    if sudo -n /usr/bin/systemctl status vault-agent --no-pager 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG"; then
-#                        echo "[VAULT-CONFIG] Статус vault-agent записан в лог" | tee /dev/stderr
-#                    fi
-#                fi
-#            else
-#                echo "[VAULT-CONFIG] ❌ Не удалось перезапустить vault-agent (требуется sudo)" | tee /dev/stderr
-#                log_debug "❌ Failed to restart vault-agent (sudo required)"
-#                print_error "Не удалось перезапустить vault-agent - добавьте sudo-права"
-#                print_info "Требуемое sudo-правило: ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent"
-#                print_info "Перезапустите вручную: sudo systemctl restart vault-agent"
-#            fi
-#        fi
-#    else
-#        echo "[VAULT-CONFIG] ⚠️  Пользователь $current_user НЕ может писать в /opt/vault/conf/" | tee /dev/stderr
-#        log_debug "⚠️  User $current_user cannot write to /opt/vault/conf/"
+                   if sudo -n /usr/bin/systemctl status vault-agent --no-pager 2>&1 | tee -a "$DIAGNOSTIC_RLM_LOG"; then
+                       echo "[VAULT-CONFIG] Статус vault-agent записан в лог" | tee /dev/stderr
+                   fi
+               fi
+           else
+               echo "[VAULT-CONFIG] ❌ Не удалось перезапустить vault-agent (требуется sudo)" | tee /dev/stderr
+               log_debug "❌ Failed to restart vault-agent (sudo required)"
+               print_error "Не удалось перезапустить vault-agent - добавьте sudo-права"
+               print_info "Требуемое sudo-правило: ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent"
+               print_info "Перезапустите вручную: sudo systemctl restart vault-agent"
+           fi
+       fi
+   else
+       echo "[VAULT-CONFIG] ⚠️  Пользователь $current_user НЕ может писать в /opt/vault/conf/" | tee /dev/stderr
+       log_debug "⚠️  User $current_user cannot write to /opt/vault/conf/"
         
         # Добавляем в группу va-start для доступа на запись
-#        echo "[VAULT-CONFIG] Добавляем $current_user в группу ${KAE}-lnx-va-start..." | tee /dev/stderr
-#        log_debug "Adding $current_user to ${KAE}-lnx-va-start group"
+       echo "[VAULT-CONFIG] Добавляем $current_user в группу ${KAE}-lnx-va-start..." | tee /dev/stderr
+       log_debug "Adding $current_user to ${KAE}-lnx-va-start group"
         
-#        if ensure_user_in_va_start_group "$current_user"; then
-#            echo "[VAULT-CONFIG] ✅ Пользователь добавлен в группу va-start" | tee /dev/stderr
-#            log_debug "✅ User added to va-start group"
-#            print_info "ВАЖНО: Изменения группы применятся в новой сессии"
-#            print_info "Пробуем записать agent.hcl (может потребоваться перелогин)"
-#        else
-#            echo "[VAULT-CONFIG] ❌ Не удалось добавить в группу va-start" | tee /dev/stderr
-#            log_debug "❌ Failed to add to va-start group"
-#            print_warning "Не удалось добавить в группу va-start"
-#            print_info "Добавьте пользователя $current_user в группу ${KAE}-lnx-va-start вручную через IDM"
-#            print_info "После этого agent.hcl можно скопировать: cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
-#        fi
-#    fi
+       if ensure_user_in_va_start_group "$current_user"; then
+           echo "[VAULT-CONFIG] ✅ Пользователь добавлен в группу va-start" | tee /dev/stderr
+           log_debug "✅ User added to va-start group"
+           print_info "ВАЖНО: Изменения группы применятся в новой сессии"
+           print_info "Пробуем записать agent.hcl (может потребоваться перелогин)"
+       else
+           echo "[VAULT-CONFIG] ❌ Не удалось добавить в группу va-start" | tee /dev/stderr
+           log_debug "❌ Failed to add to va-start group"
+           print_warning "Не удалось добавить в группу va-start"
+           print_info "Добавьте пользователя $current_user в группу ${KAE}-lnx-va-start вручную через IDM"
+           print_info "После этого agent.hcl можно скопировать: cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
+       fi
+   fi
     
     
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] ✅ setup_vault_config ЗАВЕРШЕНА УСПЕШНО" | tee /dev/stderr
-#    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-#    log_debug "========================================"
-#    log_debug "✅ setup_vault_config COMPLETED SUCCESSFULLY"
-#    log_debug "========================================"
-#}
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ✅ setup_vault_config ЗАВЕРШЕНА УСПЕШНО" | tee /dev/stderr
+   echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
+   log_debug "========================================"
+   log_debug "✅ setup_vault_config COMPLETED SUCCESSFULLY"
+   log_debug "========================================"
+}
 
 load_config_from_json() {
     print_step "Загрузка конфигурации из параметров Jenkins"
@@ -6676,30 +6676,30 @@ main() {
     # 3. См. документацию: HOW-TO-REVERT.md
     # ============================================================
     
-    # echo "[MAIN] ========================================" | tee /dev/stderr
-    # write_diagnostic "========================================="
-    # write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
-    # write_diagnostic "========================================="
-    # write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
-    # 
-    # if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
-    #     write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
-    #     write_diagnostic "Действие: используем уже установленный vault-agent"
-    #     echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
-    #     log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
-    #     print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
-    # else
-    #     write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
-    #     echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
-    #     log_debug "Calling: install_vault_via_rlm"
-    #     
-    #     install_vault_via_rlm
-    #     
-    #     echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
-    #     log_debug "Completed: install_vault_via_rlm"
-    #     write_diagnostic "install_vault_via_rlm выполнена"
-    # fi
-    # write_diagnostic ""
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    write_diagnostic "========================================="
+    write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
+    write_diagnostic "========================================="
+    write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
+    
+    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
+        write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
+        write_diagnostic "Действие: используем уже установленный vault-agent"
+        echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
+        print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
+    else
+        write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
+        echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
+        log_debug "Calling: install_vault_via_rlm"
+        
+        install_vault_via_rlm
+        
+        echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
+        log_debug "Completed: install_vault_via_rlm"
+        write_diagnostic "install_vault_via_rlm выполнена"
+    fi
+    write_diagnostic ""
     
     # ============================================================
     # LEGACY: setup_vault_config (закомментирован)
@@ -6712,15 +6712,15 @@ main() {
     # 4. См. документацию: HOW-TO-REVERT.md
     # ============================================================
     
-    # echo "[MAIN] ========================================" | tee /dev/stderr
-    # echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
-    # log_debug "Calling: setup_vault_config"
-    # 
-    # setup_vault_config
-    # 
-    # echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
-    # log_debug "Completed: setup_vault_config"
-    # write_diagnostic "setup_vault_config выполнена"
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
+    log_debug "Calling: setup_vault_config"
+    
+    setup_vault_config
+    
+    echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
+    log_debug "Completed: setup_vault_config"
+    write_diagnostic "setup_vault_config выполнена"
     
     # ============================================================
     # SIMPLIFIED APPROACH: Получение сертификатов из Jenkins
@@ -6728,14 +6728,14 @@ main() {
     # Упрощенный подход без vault-agent - все в user-space
     # ============================================================
     
-    echo "[MAIN] ========================================" | tee /dev/stderr
-    echo "[MAIN] Вызов get_certificates_from_jenkins..." | tee /dev/stderr
-    log_debug "Calling: get_certificates_from_jenkins"
+    # echo "[MAIN] ========================================" | tee /dev/stderr
+    # echo "[MAIN] Вызов get_certificates_from_jenkins..." | tee /dev/stderr
+    # log_debug "Calling: get_certificates_from_jenkins"
     
-    get_certificates_from_jenkins
+#     # get_certificates_from_jenkins
     
-    echo "[MAIN] ✅ get_certificates_from_jenkins завершена успешно" | tee /dev/stderr
-    log_debug "Completed: get_certificates_from_jenkins"
+#     # echo "[MAIN] ✅ get_certificates_from_jenkins завершена успешно" | tee /dev/stderr
+    # log_debug "Completed: get_certificates_from_jenkins"
     write_diagnostic "get_certificates_from_jenkins выполнена"
 
     echo "[MAIN] Вызов load_config_from_json..." | tee /dev/stderr
