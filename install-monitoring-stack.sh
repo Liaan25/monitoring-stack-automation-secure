@@ -6273,9 +6273,83 @@ STATE_EOF
 }
 
 # ============================================================
-# SIMPLIFIED APPROACH: Certificate Renewal Functions
+# VAULT-AGENT APPROACH: Certificate Functions
 # ============================================================
-# Упрощенный подход без vault-agent - все в user-space
+# Сертификаты генерируются vault-agent и копируются из /opt/vault/certs/
+# ============================================================
+
+copy_certificates_from_vault_agent() {
+    print_step "Копирование сертификатов из vault-agent (/opt/vault/certs/)"
+    log_debug "Copying certificates from vault-agent"
+    
+    echo "[CERTS-COPY-VA] ========================================" | tee /dev/stderr
+    echo "[CERTS-COPY-VA] Копирование сертификатов vault-agent" | tee /dev/stderr
+    echo "[CERTS-COPY-VA] ========================================" | tee /dev/stderr
+    
+    # Проверяем наличие сертификатов в /opt/vault/certs/
+    if [[ ! -f "/opt/vault/certs/server_bundle.pem" ]]; then
+        print_error "Сертификаты не найдены в /opt/vault/certs/"
+        echo "[CERTS-COPY-VA] ❌ /opt/vault/certs/server_bundle.pem не найден" | tee /dev/stderr
+        echo "[CERTS-COPY-VA] Возможно, vault-agent еще не сгенерировал сертификаты" | tee /dev/stderr
+        echo "[CERTS-COPY-VA] Проверьте: sudo systemctl status vault-agent" | tee /dev/stderr
+        echo "[CERTS-COPY-VA] Логи: sudo journalctl -u vault-agent -n 50" | tee /dev/stderr
+        return 1
+    fi
+    
+    echo "[CERTS-COPY-VA] ✅ Сертификаты найдены в /opt/vault/certs/" | tee /dev/stderr
+    
+    # Создаем целевые каталоги в user-space
+    local vault_certs_dir="$HOME/monitoring/certs/vault"
+    local grafana_certs_dir="$HOME/monitoring/certs/grafana"
+    
+    mkdir -p "$vault_certs_dir"
+    mkdir -p "$grafana_certs_dir"
+    chmod 700 "$vault_certs_dir"
+    chmod 700 "$grafana_certs_dir"
+    
+    # Копируем server_bundle.pem
+    echo "[CERTS-COPY-VA] Копирование server_bundle.pem..." | tee /dev/stderr
+    if cp /opt/vault/certs/server_bundle.pem "$vault_certs_dir/server_bundle.pem" 2>/dev/null; then
+        chmod 600 "$vault_certs_dir/server_bundle.pem"
+        local size=$(stat -f%z "$vault_certs_dir/server_bundle.pem" 2>/dev/null || stat -c%s "$vault_certs_dir/server_bundle.pem" 2>/dev/null || echo "0")
+        echo "[CERTS-COPY-VA] ✅ server_bundle.pem скопирован ($size байт)" | tee /dev/stderr
+    else
+        print_error "Не удалось скопировать server_bundle.pem"
+        return 1
+    fi
+    
+    # Копируем ca_chain.crt
+    echo "[CERTS-COPY-VA] Копирование ca_chain.crt..." | tee /dev/stderr
+    if cp /opt/vault/certs/ca_chain.crt "$vault_certs_dir/ca_chain.crt" 2>/dev/null; then
+        chmod 600 "$vault_certs_dir/ca_chain.crt"
+        local size=$(stat -f%z "$vault_certs_dir/ca_chain.crt" 2>/dev/null || stat -c%s "$vault_certs_dir/ca_chain.crt" 2>/dev/null || echo "0")
+        echo "[CERTS-COPY-VA] ✅ ca_chain.crt скопирован ($size байт)" | tee /dev/stderr
+    else
+        print_warning "ca_chain.crt не найден (опционально)"
+    fi
+    
+    # Копируем grafana-client.pem
+    echo "[CERTS-COPY-VA] Копирование grafana-client.pem..." | tee /dev/stderr
+    if cp /opt/vault/certs/grafana-client.pem "$grafana_certs_dir/grafana-client.pem" 2>/dev/null; then
+        chmod 600 "$grafana_certs_dir/grafana-client.pem"
+        local size=$(stat -f%z "$grafana_certs_dir/grafana-client.pem" 2>/dev/null || stat -c%s "$grafana_certs_dir/grafana-client.pem" 2>/dev/null || echo "0")
+        echo "[CERTS-COPY-VA] ✅ grafana-client.pem скопирован ($size байт)" | tee /dev/stderr
+    else
+        print_warning "grafana-client.pem не найден (опционально)"
+    fi
+    
+    echo "[CERTS-COPY-VA] ========================================" | tee /dev/stderr
+    echo "[CERTS-COPY-VA] ✅ Сертификаты успешно скопированы" | tee /dev/stderr
+    echo "[CERTS-COPY-VA] ========================================" | tee /dev/stderr
+    
+    return 0
+}
+
+# ============================================================
+# LEGACY: SIMPLIFIED APPROACH (закомментирован)
+# ============================================================
+# Старый подход: извлечение сертификатов из temp_data_cred.json (Jenkins)
+# Для возврата к этому подходу см. HOW-TO-REVERT.md
 # ============================================================
 
 get_certificates_from_jenkins() {
@@ -6489,8 +6563,8 @@ renew_certificates_only() {
     echo "[CERT-RENEW] Certificate Renewal Mode" | tee /dev/stderr
     echo "[CERT-RENEW] ========================================" | tee /dev/stderr
     
-    # 1. Получаем сертификаты из Jenkins
-    get_certificates_from_jenkins
+    # 1. Копируем сертификаты из vault-agent
+    copy_certificates_from_vault_agent
     
     # 2. Распределяем по сервисам
     distribute_certificates_to_services
@@ -6723,10 +6797,26 @@ main() {
     write_diagnostic "setup_vault_config выполнена"
     
     # ============================================================
-    # SIMPLIFIED APPROACH: Получение сертификатов из Jenkins
+    # КОПИРОВАНИЕ СЕРТИФИКАТОВ ИЗ VAULT-AGENT
     # ============================================================
-    # Упрощенный подход без vault-agent - все в user-space
+    # После запуска vault-agent (в setup_vault_config), сертификаты
+    # генерируются автоматически в /opt/vault/certs/
+    # Копируем их в user-space для использования сервисами
     # ============================================================
+    
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов copy_certificates_from_vault_agent..." | tee /dev/stderr
+    log_debug "Calling: copy_certificates_from_vault_agent"
+    
+    copy_certificates_from_vault_agent || {
+        echo "[MAIN] ⚠️  copy_certificates_from_vault_agent FAILED" | tee /dev/stderr
+        log_debug "WARNING: copy_certificates_from_vault_agent failed"
+        print_warning "Не удалось скопировать сертификаты. Проверьте vault-agent: sudo systemctl status vault-agent"
+    }
+    
+    echo "[MAIN] ✅ copy_certificates_from_vault_agent завершена" | tee /dev/stderr
+    log_debug "Completed: copy_certificates_from_vault_agent"
+    write_diagnostic "copy_certificates_from_vault_agent выполнена"
     
     # echo "[MAIN] ========================================" | tee /dev/stderr
     # echo "[MAIN] Вызов get_certificates_from_jenkins..." | tee /dev/stderr
