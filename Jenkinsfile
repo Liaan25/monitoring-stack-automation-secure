@@ -335,12 +335,24 @@ pipeline {
                                                 echo "[CERTS] Attempt 2 result:" >&2
                                             fi
                                             
+                                            # Если все еще permission denied, пробуем без namespace в пути (только в header)
+                                            if echo "\$RESPONSE" | grep -q "permission denied"; then
+                                                echo "[CERTS] Attempt 2 failed, trying path without namespace prefix..." >&2
+                                                # Убираем namespace из начала пути (CI04523276_CI10742292/)
+                                                PKI_PATH_SHORT=\$(echo "\$PKI_PATH" | sed 's|^[^/]*/||')
+                                                echo "[CERTS] Short path: \$PKI_PATH_SHORT" >&2
+                                                RESPONSE=\$(curl -s -X POST -H "X-Vault-Token: \$VAULT_TOKEN" -H "X-Vault-Namespace: \$PKI_NAMESPACE" \
+                                                    "https://${params.SEC_MAN_ADDR}/v1/\$PKI_PATH_SHORT" \
+                                                    -d '{"common_name":"${fqdn}","email":"${email}","alt_names":"${fqdn}","ttl":"${ttl}"}')
+                                                echo "[CERTS] Attempt 3 result:" >&2
+                                            fi
+                                            
                                             # Если все еще permission denied, пробуем GET для fetch endpoint
                                             if echo "\$RESPONSE" | grep -q "permission denied" && echo "\$PKI_PATH" | grep -q "/fetch/"; then
-                                                echo "[CERTS] Attempt 2 failed, trying GET method for fetch endpoint..." >&2
+                                                echo "[CERTS] Attempt 3 failed, trying GET method for fetch endpoint..." >&2
                                                 RESPONSE=\$(curl -s -X GET -H "X-Vault-Token: \$VAULT_TOKEN" \
                                                     "https://${params.SEC_MAN_ADDR}/v1/\$PKI_PATH?common_name=${fqdn}&email=${email}&alt_names=${fqdn}&ttl=${ttl}")
-                                                echo "[CERTS] Attempt 3 result:" >&2
+                                                echo "[CERTS] Attempt 4 result:" >&2
                                             fi
                                             
                                             echo "[CERTS] Response preview:" >&2
