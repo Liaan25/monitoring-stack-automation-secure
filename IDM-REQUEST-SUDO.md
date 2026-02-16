@@ -42,8 +42,9 @@ ALL=(${KAE}-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active m
 
 ```
 # Копирование role_id и secret_id из /tmp/
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
+# ВАЖНО: Используются фиксированные имена (без wildcards) согласно требованиям ИБ
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_secret_id.txt /opt/vault/conf/secret_id.txt
 
 # Копирование agent.hcl из user-space
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /home/${KAE}-lnx-mon_ci/monitoring/config/vault/agent.hcl /opt/vault/conf/agent.hcl
@@ -103,10 +104,11 @@ ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl stop vault-agent
 - Не требует ввода пароля
 - Критично для автоматизации CI/CD pipeline
 
-### ✅ Явные пути
-- Все пути явно указаны (не используются wildcards где не нужно)
-- `/tmp/role_id_*.txt` - единственный wildcard, ограниченный конкретным паттерном
-- Предотвращает злоупотребления
+### ✅ Явные пути (без wildcards)
+- Все пути явно указаны **БЕЗ wildcards** согласно требованиям ИБ
+- Используются фиксированные имена файлов: `/tmp/vault_role_id.txt`, `/tmp/vault_secret_id.txt`
+- Файлы создаются с правами 600 и удаляются сразу после копирования
+- Предотвращает злоупотребления и race conditions
 
 ### ✅ Минимальные привилегии
 - Пользователь может выполнять **только** указанные команды
@@ -125,9 +127,9 @@ ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
 ... (остальные команды systemctl --user)
 
-# Vault-agent credentials и config
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
+# Vault-agent credentials и config (фиксированные пути без wildcards)
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_secret_id.txt /opt/vault/conf/secret_id.txt
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /home/CI10742292-lnx-mon_ci/monitoring/config/vault/agent.hcl /opt/vault/conf/agent.hcl
 
 # Chown для vault-agent файлов
@@ -160,8 +162,10 @@ ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl stop vault-agent
 После одобрения IDM заявки, проверьте на сервере:
 
 ```bash
-# 1. Проверка sudo для копирования
-sudo -n /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
+# 1. Проверка sudo для копирования (создайте тестовый файл)
+echo "test" > /tmp/vault_role_id.txt
+sudo -n /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+rm /tmp/vault_role_id.txt
 
 # 2. Проверка sudo для vault-agent
 sudo -n /usr/bin/systemctl status vault-agent

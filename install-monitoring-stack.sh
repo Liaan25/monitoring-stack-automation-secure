@@ -2007,9 +2007,13 @@ setup_vault_config() {
    log_debug "EXTRACTING: secrets to /tmp/ via jq"
    log_debug "========================================"
     
-    # Используем /tmp/ с случайным суффиксом для безопасности
-   local TMP_ROLE_ID="/tmp/role_id_${RANDOM}${RANDOM}.txt"
-   local TMP_SECRET_ID="/tmp/secret_id_${RANDOM}${RANDOM}.txt"
+    # Используем /tmp/ с фиксированными именами (требование ИБ - нет wildcards в sudoers)
+    # БЕЗОПАСНОСТЬ: файлы с mode 600, удаляются сразу после копирования
+   local TMP_ROLE_ID="/tmp/vault_role_id.txt"
+   local TMP_SECRET_ID="/tmp/vault_secret_id.txt"
+    
+    # Удаляем старые файлы если остались от предыдущего запуска
+   rm -f "$TMP_ROLE_ID" "$TMP_SECRET_ID" 2>/dev/null
     
    echo "[VAULT-CONFIG] Временные файлы:" | tee /dev/stderr
    echo "[VAULT-CONFIG]   TMP_ROLE_ID=$TMP_ROLE_ID" | tee /dev/stderr

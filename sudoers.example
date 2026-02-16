@@ -62,9 +62,10 @@ ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-acti
 # ============================================================
 
 # Копирование credentials из /tmp/ в /opt/vault/conf/
-# ВАЖНО: Пути явно указаны с паттерном /tmp/role_id_*.txt для безопасности
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
-ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
+# ВАЖНО: Используются фиксированные имена файлов (без wildcards) для безопасности
+# Файлы создаются скриптом, копируются через sudo, затем сразу удаляются
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_secret_id.txt /opt/vault/conf/secret_id.txt
 
 # Копирование agent.hcl из user-space в /opt/vault/conf/
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /home/CI84324523-lnx-mon_ci/monitoring/config/vault/agent.hcl /opt/vault/conf/agent.hcl
