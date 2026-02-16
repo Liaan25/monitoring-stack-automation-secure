@@ -66,13 +66,18 @@ ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-acti
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/role_id_*.txt /opt/vault/conf/role_id.txt
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/secret_id_*.txt /opt/vault/conf/secret_id.txt
 
+# Копирование agent.hcl из user-space в /opt/vault/conf/
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /home/CI84324523-lnx-mon_ci/monitoring/config/vault/agent.hcl /opt/vault/conf/agent.hcl
+
 # Установка владельца для credentials (va-start:va-read)
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/role_id.txt
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/secret_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI84324523-lnx-va-start:CI84324523-lnx-va-read /opt/vault/conf/agent.hcl
 
-# Установка прав для credentials
+# Установка прав для credentials и agent.hcl
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/role_id.txt
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/agent.hcl
 
 # Создание и настройка /opt/vault/certs/
 ALL=(root) NOEXEC: NOPASSWD: /usr/bin/mkdir -p /opt/vault/certs

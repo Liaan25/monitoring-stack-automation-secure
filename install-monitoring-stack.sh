@@ -2138,42 +2138,20 @@ setup_vault_config() {
     # 1. Системная версия (для vault-agent) - с путями /opt/vault/
     # 2. User-space версия (для справки) - с путями $HOME/monitoring/
     
-   echo "[VAULT-CONFIG] Создание системной версии agent.hcl..." | tee /dev/stderr
+   echo "[VAULT-CONFIG] Создание agent.hcl в user-space..." | tee /dev/stderr
     
     # ============================================
-    # 1. СИСТЕМНАЯ ВЕРСИЯ (для vault-agent)
+    # ПОЛНАЯ ВЕРСИЯ agent.hcl (в user-space)
     # ============================================
-   local SYSTEM_VAULT_AGENT_HCL="/opt/vault/conf/agent.hcl"
+    # Создаем полную версию в user-space, затем копируем через sudo в /opt/vault/conf/
+    # Это безопаснее и соответствует требованиям ИБ
+    # ============================================
     
-    # Проверка прав на запись в /opt/vault/conf/
-   echo "[VAULT-CONFIG] Проверка прав на запись в /opt/vault/conf/..." | tee /dev/stderr
-   log_debug "Checking write permissions to /opt/vault/conf/"
+   echo "[VAULT-CONFIG] Генерация полного agent.hcl..." | tee /dev/stderr
+   log_debug "Generating full agent.hcl configuration"
     
-   local can_write_system=false
-   if [[ -w "/opt/vault/conf/" ]]; then
-       echo "[VAULT-CONFIG] ✅ Можем писать в /opt/vault/conf/" | tee /dev/stderr
-       log_debug "✅ Can write to /opt/vault/conf/"
-       can_write_system=true
-   else
-       echo "[VAULT-CONFIG] ⚠️  НЕТ прав на запись в /opt/vault/conf/" | tee /dev/stderr
-       log_debug "⚠️  NO write permissions to /opt/vault/conf/"
-        
-        # Проверяем состоим ли мы в группе va-start
-       if id | grep -q "${KAE}-lnx-va-start"; then
-           echo "[VAULT-CONFIG] ✅ Состоим в группе va-start, но права не применились" | tee /dev/stderr
-           print_warning "Пользователь в группе va-start, но нет прав - требуется перелогин"
-       else
-           echo "[VAULT-CONFIG] ℹ️  Не состоим в группе va-start" | tee /dev/stderr
-           print_info "Для записи в /opt/vault/conf/ нужно состоять в группе ${KAE}-lnx-va-start"
-       fi
-        
-       can_write_system=false
-   fi
-    
-    # Создаем системный agent.hcl с помощью cat и перенаправления
-   if [[ "$can_write_system" == "true" ]]; then
-       echo "[VAULT-CONFIG] Создание системного agent.hcl..." | tee /dev/stderr
-       cat > "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+    # Создаем полный agent.hcl в user-space
+   cat > "$VAULT_AGENT_HCL" << SYS_EOF
 pid_file = "/opt/vault/log/vault-agent.pidfile"
 vault {
 address = "https://$SEC_MAN_ADDR"
@@ -2209,7 +2187,7 @@ SYS_EOF
 
     # Добавляем блок rpm_url
    if [[ -n "$RPM_URL_KV" ]]; then
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "rpm_url": {
    {{ with secret "$RPM_URL_KV" }}
    "harvest": {{ .Data.harvest | toJSON }},
@@ -2219,14 +2197,14 @@ SYS_EOF
  },
 SYS_EOF
    else
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "rpm_url": {},
 SYS_EOF
    fi
 
     # Добавляем блок netapp_ssh
    if [[ -n "$NETAPP_SSH_KV" ]]; then
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "netapp_ssh": {
    {{ with secret "$NETAPP_SSH_KV" }}
    "addr": {{ .Data.addr | toJSON }},
@@ -2236,14 +2214,14 @@ SYS_EOF
  },
 SYS_EOF
    else
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "netapp_ssh": {},
 SYS_EOF
    fi
 
     # Добавляем блок grafana_web
    if [[ -n "$GRAFANA_WEB_KV" ]]; then
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "grafana_web": {
    {{ with secret "$GRAFANA_WEB_KV" }}
    "user": {{ .Data.user | toJSON }},
@@ -2252,14 +2230,14 @@ SYS_EOF
  },
 SYS_EOF
    else
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "grafana_web": {},
 SYS_EOF
    fi
 
     # Добавляем блок vault-agent
    if [[ -n "$VAULT_AGENT_KV" ]]; then
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "vault-agent": {
    {{ with secret "$VAULT_AGENT_KV" }}
    "role_id": {{ .Data.role_id | toJSON }},
@@ -2273,7 +2251,7 @@ SYS_EOF
 }
 SYS_EOF
    else
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "vault-agent": {}
 }
  EOT
@@ -2285,7 +2263,7 @@ SYS_EOF
 
     # Добавляем блоки для сертификатов SBERCA
    if [[ -n "$SBERCA_CERT_KV" ]]; then
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
 
 template {
  destination = "/opt/vault/certs/server_bundle.pem"
@@ -2322,77 +2300,20 @@ template {
 }
 SYS_EOF
    else
-       cat >> "$SYSTEM_VAULT_AGENT_HCL" << SYS_EOF
+       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
 
 SBERCA_CERT_KV не задан, шаблоны сертификатов не будут использоваться vault-agent.
 SYS_EOF
    fi
         
-       echo "[VAULT-CONFIG] ✅ Системный agent.hcl создан в: $SYSTEM_VAULT_AGENT_HCL" | tee /dev/stderr
-       log_debug "✅ System agent.hcl created at $SYSTEM_VAULT_AGENT_HCL"
-   else
-        # НЕТ прав на запись - создаем временный файл с инструкциями
-       echo "[VAULT-CONFIG] ⚠️  Не удалось создать системный agent.hcl (нет прав)" | tee /dev/stderr
-       log_debug "⚠️  Could not create system agent.hcl (no permissions)"
-        
-       print_warning "Нет прав на запись в /opt/vault/conf/"
-       print_info "Создан шаблон agent.hcl в: $VAULT_AGENT_HCL"
-       print_info "Необходимо скопировать его в системный путь:"
-       print_info "  sudo cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl"
-       print_info "Или запросить права через IDM на группу ${KAE}-lnx-va-start"
-   fi
-    
-    # ============================================
-    # 2. USER-SPACE ВЕРСИЯ (для справки) - упрощенная
-    # ============================================
-   echo "[VAULT-CONFIG] Создание user-space версии agent.hcl..." | tee /dev/stderr
-    
-    # Создаем простую user-space версию
-   cat > "$VAULT_AGENT_HCL" << USER_EOF
-User-space версия agent.hcl (только для справки)
-Полная системная версия в /opt/vault/conf/agent.hcl
-
-pid_file = "$VAULT_LOG_DIR/vault-agent.pidfile"
-vault {
-address = "https://$SEC_MAN_ADDR"
-tls_skip_verify = "false"
-ca_path = "$VAULT_CONF_DIR/ca-trust"
-}
-auto_auth {
-method "approle" {
-namespace = "$NAMESPACE_CI"
-mount_path = "auth/approle"
-
-config = {
-role_id_file_path = "$VAULT_ROLE_ID_FILE"
-secret_id_file_path = "$VAULT_SECRET_ID_FILE"
-remove_secret_id_file_after_reading = false
-}
-}
-}
-log_destination "Tengry" {
-log_format = "json"
-log_path = "$VAULT_LOG_DIR"
-log_rotate = "5"
-log_max_size = "5mb"
-log_level = "trace"
-log_file = "agent.log"
-}
-
-NOTE: Template блоки для генерации data_sec.json и сертификатов
-находятся в системной версии /opt/vault/conf/agent.hcl
-Эта user-space версия создана только для справки.
-USER_EOF
-    
-   echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
-    
-   echo "[VAULT-CONFIG] ✅ User-space agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
-   log_debug "✅ User-space agent.hcl created at $VAULT_AGENT_HCL"
-
+   echo "[VAULT-CONFIG] ✅ agent.hcl создан в: $VAULT_AGENT_HCL" | tee /dev/stderr
+   log_debug "✅ agent.hcl created at $VAULT_AGENT_HCL"
+   print_success "agent.hcl успешно создан"
+   
    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-   echo "[VAULT-CONFIG] Созданы обе версии agent.hcl" | tee /dev/stderr
+   echo "[VAULT-CONFIG] agent.hcl будет скопирован в /opt/vault/conf/ через sudo" | tee /dev/stderr
    echo "[VAULT-CONFIG] ========================================" | tee /dev/stderr
-   log_debug "Both versions of agent.hcl created"
+   log_debug "agent.hcl will be copied to /opt/vault/conf/ via sudo"
     
     # ============================================================
     # КОПИРОВАНИЕ CREDENTIALS В /OPT/VAULT/CONF/ (SECURE EDITION)
@@ -2494,6 +2415,35 @@ USER_EOF
            print_error "Не удалось скопировать secret_id.txt - добавьте sudo-права"
        fi
         
+        # 3. Копируем agent.hcl из user-space в /opt/vault/conf/
+       echo "[VAULT-CONFIG] Копирование agent.hcl..." | tee /dev/stderr
+       log_debug "Copying agent.hcl from $VAULT_AGENT_HCL to /opt/vault/conf/"
+        
+       if [[ -f "$VAULT_AGENT_HCL" ]]; then
+           if sudo -n /usr/bin/cp "$VAULT_AGENT_HCL" /opt/vault/conf/agent.hcl 2>/dev/null; then
+               echo "[VAULT-CONFIG] ✅ agent.hcl скопирован" | tee /dev/stderr
+               log_debug "✅ agent.hcl copied"
+                
+                # Установка владельца
+               if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/conf/agent.hcl 2>/dev/null; then
+                   log_debug "✅ agent.hcl chown successful"
+               fi
+                
+                # Установка прав
+               if sudo -n /usr/bin/chmod 640 /opt/vault/conf/agent.hcl 2>/dev/null; then
+                   echo "[VAULT-CONFIG] ✅ agent.hcl права установлены (640)" | tee /dev/stderr
+                   log_debug "✅ agent.hcl chmod 640 successful"
+               fi
+           else
+               echo "[VAULT-CONFIG] ❌ Не удалось скопировать agent.hcl (требуется sudo)" | tee /dev/stderr
+               log_debug "❌ Failed to copy agent.hcl (sudo required)"
+               print_error "Не удалось скопировать agent.hcl - добавьте sudo-права"
+           fi
+       else
+           echo "[VAULT-CONFIG] ⚠️  agent.hcl не найден в: $VAULT_AGENT_HCL" | tee /dev/stderr
+           log_debug "⚠️  agent.hcl not found"
+       fi
+        
         # 4. Очищаем временные файлы из /tmp/ (важно для безопасности!)
        echo "[VAULT-CONFIG] Очистка временных файлов из /tmp/..." | tee /dev/stderr
        log_debug "Cleaning up temporary files from /tmp/"
@@ -2529,7 +2479,7 @@ USER_EOF
        log_debug "✅ User $current_user can write to /opt/vault/conf/"
         
         # Проверяем, отличается ли новый конфиг от существующего
-       if [[ -f "$SYSTEM_VAULT_AGENT_HCL" ]]; then
+       if [[ -f "$VAULT_AGENT_HCL" ]]; then
            echo "[VAULT-CONFIG] ✅ Системный agent.hcl уже создан" | tee /dev/stderr
            log_debug "✅ System agent.hcl already created"
             
