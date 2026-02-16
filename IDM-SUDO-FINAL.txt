@@ -1,0 +1,84 @@
+# ============================================================
+# SUDO ПРАВА ДЛЯ IDM ЗАЯВКИ
+# ============================================================
+# Пользователь: CI10742292-lnx-mon_ci
+# Сервер: tvlds-mvp001939.ca.sbrf.ru
+# Назначение: Автоматизация развертывания monitoring stack
+# ============================================================
+
+# ------------------------------------------------------------
+# БЛОК 1: Управление user-юнитами мониторинга
+# (выполняется от имени CI10742292-lnx-mon_sys)
+# ------------------------------------------------------------
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-reload
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
+
+# ------------------------------------------------------------
+# БЛОК 2: Копирование credentials в /opt/vault/conf/
+# (выполняется от root)
+# ------------------------------------------------------------
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /tmp/vault_secret_id.txt /opt/vault/conf/secret_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp /home/CI10742292-lnx-mon_ci/monitoring/config/vault/agent.hcl /opt/vault/conf/agent.hcl
+
+# ------------------------------------------------------------
+# БЛОК 3: Установка владельца для файлов vault-agent
+# (выполняется от root, ВНИМАНИЕ: экранирование двоеточия!)
+# ------------------------------------------------------------
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI10742292-lnx-va-start\:CI10742292-lnx-va-read /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI10742292-lnx-va-start\:CI10742292-lnx-va-read /opt/vault/conf/secret_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI10742292-lnx-va-start\:CI10742292-lnx-va-read /opt/vault/conf/agent.hcl
+
+# ------------------------------------------------------------
+# БЛОК 4: Установка прав для файлов vault-agent
+# (выполняется от root)
+# ------------------------------------------------------------
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/role_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/secret_id.txt
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 640 /opt/vault/conf/agent.hcl
+
+# ------------------------------------------------------------
+# БЛОК 5: Создание и настройка /opt/vault/certs/
+# (выполняется от root, ВНИМАНИЕ: экранирование двоеточия!)
+# ------------------------------------------------------------
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/mkdir -p /opt/vault/certs
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chown CI10742292-lnx-va-start\:CI10742292-lnx-va-read /opt/vault/certs
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/chmod 750 /opt/vault/certs
+
+# ------------------------------------------------------------
+# БЛОК 6: Управление системным сервисом vault-agent
+# (выполняется от root)
+# ------------------------------------------------------------
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl restart vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl status vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl is-active vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl start vault-agent
+ALL=(root) NOEXEC: NOPASSWD: /usr/bin/systemctl stop vault-agent
+
+# ============================================================
+# ИТОГО: 37 sudo-правил
+# ============================================================
+# Блок 1: 18 прав (user-юниты)
+# Блок 2: 3 права (копирование файлов)
+# Блок 3: 3 права (chown для файлов)
+# Блок 4: 3 права (chmod для файлов)
+# Блок 5: 3 права (создание /opt/vault/certs/)
+# Блок 6: 5 прав (управление vault-agent)
+# ============================================================
