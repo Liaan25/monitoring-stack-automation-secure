@@ -56,8 +56,8 @@ set -e
 KEY_FILE='${keyFileName}'
 
 # Базовая структурная проверка PEM заголовков
-grep -Eq '^-----BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----$' "\$KEY_FILE"
-grep -Eq '^-----END (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----$' "\$KEY_FILE"
+grep -Eq '^-----BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----\$' "\$KEY_FILE"
+grep -Eq '^-----END (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----\$' "\$KEY_FILE"
 
 # Криптографическая проверка читаемости ключа (без вывода)
 if command -v ssh-keygen >/dev/null 2>&1; then
