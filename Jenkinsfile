@@ -13,12 +13,88 @@ def computeEnvironmentVariables() {
     }
 }
 
+def withVaultSshCredentials(scriptContext, Closure body) {
+    def vaultCredId = scriptContext.params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
+    def sshKvPath = scriptContext.params.SSH_KV_PATH?.trim()
+    if (!sshKvPath) {
+        scriptContext.error("❌ Не указан SSH_KV_PATH (путь к SSH ключу в Vault)")
+    }
+
+    def sshLogin = scriptContext.params.SSH_LOGIN?.trim()
+    if (!sshLogin) {
+        sshLogin = scriptContext.env.DEPLOY_USER
+    }
+
+    scriptContext.withVault([
+        configuration: [
+            vaultUrl: "https://${scriptContext.params.SEC_MAN_ADDR}",
+            engineVersion: 1,
+            skipSslVerification: false,
+            vaultCredentialId: vaultCredId
+        ],
+        vaultSecrets: [[
+            path: sshKvPath,
+            secretValues: [
+                [envVar: 'VA_SSH_PRIVATE_KEY', vaultKey: 'private_key']
+            ]
+        ]]
+    ]) {
+        def privateKey = scriptContext.env.VA_SSH_PRIVATE_KEY ?: ''
+        if (!privateKey.trim()) {
+            scriptContext.error("❌ В Vault не найден private_key по пути ${sshKvPath}")
+        }
+
+        def keyFileName = ".vault_ssh_key_${java.util.UUID.randomUUID().toString().replace('-', '')}.pem"
+        scriptContext.writeFile(file: keyFileName, text: privateKey.endsWith('\n') ? privateKey : privateKey + '\n')
+        scriptContext.sh "chmod 600 '${keyFileName}'"
+
+        // Безопасная валидация SSH private key (без вывода содержимого ключа в логи)
+        def keyValidationStatus = scriptContext.sh(
+            script: """#!/bin/bash
+set +x
+set -e
+KEY_FILE='${keyFileName}'
+
+# Базовая структурная проверка PEM заголовков
+grep -Eq '^-----BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----$' "\$KEY_FILE"
+grep -Eq '^-----END (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----$' "\$KEY_FILE"
+
+# Криптографическая проверка читаемости ключа (без вывода)
+if command -v ssh-keygen >/dev/null 2>&1; then
+  ssh-keygen -y -f "\$KEY_FILE" >/dev/null 2>&1
+elif command -v openssl >/dev/null 2>&1; then
+  openssl pkey -in "\$KEY_FILE" -noout >/dev/null 2>&1
+else
+  exit 7
+fi
+""",
+            returnStatus: true
+        )
+        if (keyValidationStatus != 0) {
+            scriptContext.error("❌ Некорректный SSH private key из Vault (формат/читаемость не прошли проверку)")
+        }
+
+        try {
+            scriptContext.withEnv([
+                "SSH_KEY=${scriptContext.pwd()}/${keyFileName}",
+                "SSH_USER=${sshLogin}"
+            ]) {
+                body()
+            }
+        } finally {
+            scriptContext.sh "rm -f '${keyFileName}'"
+            scriptContext.env.VA_SSH_PRIVATE_KEY = ''
+        }
+    }
+}
+
 pipeline {
     agent none
 
     parameters {
         string(name: 'SERVER_ADDRESS',     defaultValue: params.SERVER_ADDRESS ?: '',     description: 'Адрес сервера для подключения по SSH')
-        string(name: 'SSH_CREDENTIALS_ID', defaultValue: params.SSH_CREDENTIALS_ID ?: '', description: 'ID Jenkins Credentials (SSH Username with private key)')
+        string(name: 'SSH_KV_PATH',       defaultValue: params.SSH_KV_PATH ?: 'A/INFRANAS/GLOB/IFT/SSH/CI10742294-sshkey-ift-ci', description: 'Путь KV в Vault для SSH private key')
+        string(name: 'SSH_LOGIN',         defaultValue: params.SSH_LOGIN ?: '',             description: 'Логин для SSH (если пусто, используется <KAE>-lnx-mon_ci)')
         string(name: 'SEC_MAN_ADDR',       defaultValue: params.SEC_MAN_ADDR ?: '',       description: 'Адрес Vault для SecMan')
         string(name: 'NAMESPACE_CI',       defaultValue: params.NAMESPACE_CI ?: '',       description: 'Namespace для CI в Vault')
         string(name: 'NETAPP_API_ADDR',    defaultValue: params.NETAPP_API_ADDR ?: '',    description: 'FQDN/IP NetApp API')
@@ -138,8 +214,8 @@ pipeline {
                     if (!params.SERVER_ADDRESS?.trim()) {
                         error("❌ Не указан SERVER_ADDRESS")
                     }
-                    if (!params.SSH_CREDENTIALS_ID?.trim()) {
-                        error("❌ Не указан SSH_CREDENTIALS_ID")
+                    if (!params.SSH_KV_PATH?.trim()) {
+                        error("❌ Не указан SSH_KV_PATH")
                     }
                     if (!params.NAMESPACE_CI?.trim()) {
                         error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)")
@@ -360,16 +436,9 @@ pipeline {
                         echo "[OK] Все файлы на месте"
                     '''
                     
-                    withCredentials([
-                        sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
-                    ]) {
-                        // ВАЖНО: SSH_USER должен совпадать с DEPLOY_USER
-                        echo "[INFO] Подключение под пользователем: ${env.SSH_USER} (ожидается: ${env.DEPLOY_USER})"
-                        
-                        if (env.SSH_USER != env.DEPLOY_USER) {
-                            echo "[WARNING] SSH_USER (${env.SSH_USER}) не совпадает с DEPLOY_USER (${env.DEPLOY_USER})"
-                            echo "[WARNING] Убедитесь, что SSH credentials настроены для CI-пользователя!"
-                        }
+                    withVaultSshCredentials(this) {
+                        def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
+                        echo "[INFO] Подключение под пользователем: ${env.SSH_USER} (ожидается: ${expectedSshUser})"
                         
                         // Генерируем лаунчеры
                         writeFile file: 'prep_clone.sh', text: '''#!/bin/bash
@@ -508,35 +577,33 @@ REMOTE_EOF
 '''
                         sh 'chmod +x prep_clone.sh scp_script.sh verify_script.sh'
                         
-                        withEnv(['SSH_KEY=' + env.SSH_KEY, 'SSH_USER=' + env.SSH_USER]) {
-                            sh './prep_clone.sh'
-                            
-                            // Retry логика
-                            def maxRetries = 3
-                            def retryDelay = 10
-                            def lastError = null
-                            
-                            for (def attempt = 1; attempt <= maxRetries; attempt++) {
-                                try {
-                                    if (attempt > 1) echo "[INFO] Попытка $attempt из $maxRetries..."
-                                    sh './scp_script.sh'
-                                    lastError = null
-                                    break
-                                } catch (Exception e) {
-                                    lastError = e
-                                    if (attempt < maxRetries) {
-                                        echo "[WARNING] Попытка не удалась, повтор через $retryDelay сек..."
-                                        sleep(time: retryDelay, unit: 'SECONDS')
-                                    }
+                        sh './prep_clone.sh'
+                        
+                        // Retry логика
+                        def maxRetries = 3
+                        def retryDelay = 10
+                        def lastError = null
+                        
+                        for (def attempt = 1; attempt <= maxRetries; attempt++) {
+                            try {
+                                if (attempt > 1) echo "[INFO] Попытка $attempt из $maxRetries..."
+                                sh './scp_script.sh'
+                                lastError = null
+                                break
+                            } catch (Exception e) {
+                                lastError = e
+                                if (attempt < maxRetries) {
+                                    echo "[WARNING] Попытка не удалась, повтор через $retryDelay сек..."
+                                    sleep(time: retryDelay, unit: 'SECONDS')
                                 }
                             }
-                            
-                            if (lastError) {
-                                error("Ошибка копирования после $maxRetries попыток: ${lastError.message}")
-                            }
-                            
-                            sh './verify_script.sh'
                         }
+                        
+                        if (lastError) {
+                            error("Ошибка копирования после $maxRetries попыток: ${lastError.message}")
+                        }
+                        
+                        sh './verify_script.sh'
                         
                         sh 'rm -f prep_clone.sh scp_script.sh verify_script.sh'
                     }
@@ -561,9 +628,9 @@ REMOTE_EOF
                     unstash 'vault-credentials'
                     
                     withCredentials([
-                        sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
                         string(credentialsId: 'rlm-token', variable: 'RLM_TOKEN')
                     ]) {
+                        withVaultSshCredentials(this) {
                         def scriptTpl = '''#!/bin/bash
 ssh -i "$SSH_KEY" -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "$SSH_USER"@__SERVER_ADDRESS__ RLM_TOKEN="$RLM_TOKEN" /bin/bash -s 2>/dev/null <<'REMOTE_EOF'
 set -e
@@ -655,10 +722,9 @@ REMOTE_EOF
                             .replace('__DEPLOY_BUILD_DATE__',  env.VERSION_BUILD_DATE    ?: 'unknown')
                         writeFile file: 'deploy_script.sh', text: finalScript
                         sh 'chmod +x deploy_script.sh'
-                        withEnv(['SSH_KEY=' + env.SSH_KEY, 'SSH_USER=' + env.SSH_USER]) {
-                            sh './deploy_script.sh'
-                        }
+                        sh './deploy_script.sh'
                         sh 'rm -f deploy_script.sh'
+                        }
                     }
                 }
             }
@@ -674,7 +740,7 @@ REMOTE_EOF
                     computeEnvironmentVariables()
                     
                     echo "[STEP] Проверка результатов развертывания (User Units)..."
-                    withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    withVaultSshCredentials(this) {
                         writeFile file: 'check_results.sh', text: '''#!/bin/bash
 ssh -i "$SSH_KEY" -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' 2>/dev/null << 'ENDSSH'
@@ -718,9 +784,7 @@ ENDSSH
 '''
                         sh 'chmod +x check_results.sh'
                         def result
-                        withEnv(['SSH_KEY=' + env.SSH_KEY, 'SSH_USER=' + env.SSH_USER]) {
-                            result = sh(script: './check_results.sh', returnStdout: true).trim()
-                        }
+                        result = sh(script: './check_results.sh', returnStdout: true).trim()
                         sh 'rm -f check_results.sh'
                         echo result
                     }
@@ -739,16 +803,14 @@ ENDSSH
                     
                     echo "[STEP] Очистка временных файлов..."
                     sh "rm -rf temp_data_cred.json"
-                    withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    withVaultSshCredentials(this) {
                         writeFile file: 'cleanup_script.sh', text: '''#!/bin/bash
 ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
     "rm -rf ''' + env.DEPLOY_PATH + '''/temp_data_cred.json" 2>/dev/null || true
 '''
                         sh 'chmod +x cleanup_script.sh'
-                        withEnv(['SSH_KEY=' + env.SSH_KEY, 'SSH_USER=' + env.SSH_USER]) {
-                            sh './cleanup_script.sh'
-                        }
+                        sh './cleanup_script.sh'
                         sh 'rm -f cleanup_script.sh'
                     }
                     echo "[SUCCESS] Очистка завершена"
@@ -766,32 +828,28 @@ ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     computeEnvironmentVariables()
                     
                     def domainName = ''
-                    withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    withVaultSshCredentials(this) {
                         writeFile file: 'get_domain.sh', text: '''#!/bin/bash
 ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
     "nslookup ''' + params.SERVER_ADDRESS + ''' 2>/dev/null | grep 'name =' | awk '{print \\$4}' | sed 's/\\.$//' || echo ''" 2>/dev/null
 '''
                         sh 'chmod +x get_domain.sh'
-                        withEnv(['SSH_KEY=' + env.SSH_KEY, 'SSH_USER=' + env.SSH_USER]) {
-                            domainName = sh(script: './get_domain.sh', returnStdout: true).trim()
-                        }
+                        domainName = sh(script: './get_domain.sh', returnStdout: true).trim()
                         sh 'rm -f get_domain.sh'
                     }
                     if (domainName == '') {
                         domainName = params.SERVER_ADDRESS
                     }
                     def serverIp = ''
-                    withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    withVaultSshCredentials(this) {
                         writeFile file: 'get_ip.sh', text: '''#!/bin/bash
 ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
     "hostname -I | awk '{print \\$1}' || echo ''' + (params.SERVER_ADDRESS ?: '') + '''" 2>/dev/null
 '''
                         sh 'chmod +x get_ip.sh'
-                        withEnv(['SSH_KEY=' + env.SSH_KEY, 'SSH_USER=' + env.SSH_USER]) {
-                            serverIp = sh(script: './get_ip.sh', returnStdout: true).trim()
-                        }
+                        serverIp = sh(script: './get_ip.sh', returnStdout: true).trim()
                         sh 'rm -f get_ip.sh'
                     }
                     echo "================================================"
