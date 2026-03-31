@@ -2482,24 +2482,53 @@ SYS_EOF
        log_debug "Copying agent.hcl from $VAULT_AGENT_HCL to /opt/vault/conf/"
         
        if [[ -f "$VAULT_AGENT_HCL" ]]; then
-           if sudo -n /usr/bin/cp "$VAULT_AGENT_HCL" /opt/vault/conf/agent.hcl 2>/dev/null; then
-               echo "[VAULT-CONFIG] ✅ agent.hcl скопирован" | tee /dev/stderr
-               log_debug "✅ agent.hcl copied"
-                
-                # Установка владельца
-               if sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/conf/agent.hcl 2>/dev/null; then
-                   log_debug "✅ agent.hcl chown successful"
-               fi
-                
-                # Установка прав
-               if sudo -n /usr/bin/chmod 640 /opt/vault/conf/agent.hcl 2>/dev/null; then
-                   echo "[VAULT-CONFIG] ✅ agent.hcl права установлены (640)" | tee /dev/stderr
-                   log_debug "✅ agent.hcl chmod 640 successful"
+           local copied_agent_hcl=false
+           local target_agent_hcl="/opt/vault/conf/agent.hcl"
+           
+            # Сначала пробуем без sudo (если уже есть доступ через группу va-start).
+           if [[ -w "/opt/vault/conf/" ]]; then
+               if cp "$VAULT_AGENT_HCL" "$target_agent_hcl" 2>/dev/null; then
+                   copied_agent_hcl=true
+                   echo "[VAULT-CONFIG] ✅ agent.hcl скопирован без sudo (через права директории)" | tee /dev/stderr
+                   log_debug "✅ agent.hcl copied without sudo"
+                   chmod 640 "$target_agent_hcl" 2>/dev/null || true
+               else
+                   echo "[VAULT-CONFIG] ⚠️  Копирование без sudo не удалось, пробуем через sudo..." | tee /dev/stderr
+                   log_debug "⚠️  Non-sudo copy failed, will try sudo fallback"
                fi
            else
-               echo "[VAULT-CONFIG] ❌ Не удалось скопировать agent.hcl (требуется sudo)" | tee /dev/stderr
-               log_debug "❌ Failed to copy agent.hcl (sudo required)"
-               print_error "Не удалось скопировать agent.hcl - добавьте sudo-права"
+               echo "[VAULT-CONFIG] ⚠️  Нет прав записи в /opt/vault/conf/, пробуем через sudo..." | tee /dev/stderr
+               log_debug "⚠️  No write access to /opt/vault/conf/, will try sudo fallback"
+           fi
+           
+            # Fallback через sudo (для сред, где доступ в /opt/vault/conf только через sudo).
+           if [[ "$copied_agent_hcl" != "true" ]]; then
+               if sudo -n /usr/bin/cp "$VAULT_AGENT_HCL" "$target_agent_hcl" 2>/dev/null; then
+                   copied_agent_hcl=true
+                   echo "[VAULT-CONFIG] ✅ agent.hcl скопирован через sudo" | tee /dev/stderr
+                   log_debug "✅ agent.hcl copied with sudo"
+                   
+                    # Установка владельца/прав как best-effort: может быть ограничено политикой IDM.
+                   sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" "$target_agent_hcl" 2>/dev/null || true
+                   if sudo -n /usr/bin/chmod 640 "$target_agent_hcl" 2>/dev/null; then
+                       echo "[VAULT-CONFIG] ✅ agent.hcl права установлены (640)" | tee /dev/stderr
+                       log_debug "✅ agent.hcl chmod 640 successful (sudo)"
+                   fi
+               else
+                   echo "[VAULT-CONFIG] ❌ Не удалось скопировать agent.hcl ни без sudo, ни через sudo" | tee /dev/stderr
+                   echo "[VAULT-CONFIG] EXPECTED sudo rule: ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl" | tee /dev/stderr
+                   log_debug "❌ agent.hcl copy failed in both modes"
+                   print_error "Не удалось скопировать agent.hcl - проверьте права va-start или sudo rule для cp"
+               fi
+           fi
+           
+            # Финальная проверка результата.
+           if [[ -f "$target_agent_hcl" && -s "$target_agent_hcl" ]]; then
+               echo "[VAULT-CONFIG] ✅ agent.hcl присутствует в /opt/vault/conf/" | tee /dev/stderr
+               log_debug "✅ agent.hcl final check passed"
+           else
+               echo "[VAULT-CONFIG] ❌ agent.hcl отсутствует в /opt/vault/conf/ после попыток копирования" | tee /dev/stderr
+               log_debug "❌ agent.hcl missing after copy attempts"
            fi
        else
            echo "[VAULT-CONFIG] ⚠️  agent.hcl не найден в: $VAULT_AGENT_HCL" | tee /dev/stderr
