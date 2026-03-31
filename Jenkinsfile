@@ -71,6 +71,7 @@ pipeline {
         string(name: 'GRAFANA_PORT',       defaultValue: params.GRAFANA_PORT ?: '3000',   description: 'Порт Grafana')
         string(name: 'PROMETHEUS_PORT',    defaultValue: params.PROMETHEUS_PORT ?: '9090',description: 'Порт Prometheus')
         string(name: 'RLM_API_URL',        defaultValue: params.RLM_API_URL ?: '',        description: 'Базовый URL RLM API')
+        string(name: 'RLM_TOKEN_CREDENTIAL_ID', defaultValue: params.RLM_TOKEN_CREDENTIAL_ID ?: 'rlm-token', description: 'Jenkins Credential ID для RLM API токена')
         string(name: 'VAULT_CREDENTIAL_ID', defaultValue: params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev', description: 'Jenkins Credential ID для Vault')
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов')
@@ -183,6 +184,9 @@ pipeline {
                     }
                     if (!params.SSH_LOGIN?.trim()) {
                         error("❌ Не указан SSH_LOGIN")
+                    }
+                    if (!params.RLM_TOKEN_CREDENTIAL_ID?.trim()) {
+                        error("❌ Не указан RLM_TOKEN_CREDENTIAL_ID")
                     }
                     if (!params.NAMESPACE_CI?.trim()) {
                         error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)")
@@ -586,7 +590,7 @@ REMOTE_EOF
                     unstash 'vault-credentials'
                     
                     withCredentials([
-                        string(credentialsId: 'rlm-token', variable: 'RLM_TOKEN')
+                        string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
                     ]) {
                         withVaultSshCredentials(this) {
                         def scriptTpl = '''#!/bin/bash
