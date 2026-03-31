@@ -14,26 +14,76 @@ def computeEnvironmentVariables() {
 }
 
 def withVaultSshCredentials(scriptContext, Closure body) {
-    def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
-    if (!sshCredentialsId) {
-        scriptContext.error("❌ Не указан SSH_CREDENTIALS_ID (Jenkins credentials для SSH)")
+    def vaultCredId = scriptContext.params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
+    def sshKvPath = scriptContext.params.SSH_KV_PATH?.trim()
+    if (!sshKvPath) {
+        scriptContext.error("❌ Не указан SSH_KV_PATH (путь к SSH ключу в Vault)")
     }
 
     def sshLogin = scriptContext.params.SSH_LOGIN?.trim()
+    if (!sshLogin) {
+        sshLogin = scriptContext.env.DEPLOY_USER
+    }
 
-    scriptContext.withCredentials([
-        scriptContext.sshUserPrivateKey(
-            credentialsId: sshCredentialsId,
-            keyFileVariable: 'SSH_KEY',
-            usernameVariable: 'SSH_USER'
-        )
+    scriptContext.withVault([
+        configuration: [
+            vaultUrl: "https://${scriptContext.params.SEC_MAN_ADDR}",
+            engineVersion: 1,
+            skipSslVerification: false,
+            vaultCredentialId: vaultCredId
+        ],
+        vaultSecrets: [[
+            path: sshKvPath,
+            secretValues: [
+                [envVar: 'VA_SSH_PRIVATE_KEY', vaultKey: 'private_key']
+            ]
+        ]]
     ]) {
-        if (sshLogin) {
-            scriptContext.withEnv(["SSH_USER=${sshLogin}"]) {
+        def privateKey = scriptContext.env.VA_SSH_PRIVATE_KEY ?: ''
+        if (!privateKey.trim()) {
+            scriptContext.error("❌ В Vault не найден private_key по пути ${sshKvPath}")
+        }
+
+        def keyFileName = ".vault_ssh_key_${java.util.UUID.randomUUID().toString().replace('-', '')}.pem"
+        scriptContext.writeFile(file: keyFileName, text: privateKey.endsWith('\n') ? privateKey : privateKey + '\n')
+        scriptContext.sh "chmod 600 '${keyFileName}'"
+
+        // Безопасная валидация SSH private key (без вывода содержимого ключа в логи)
+        def keyValidationStatus = scriptContext.sh(
+            script: """#!/bin/bash
+set +x
+set -e
+KEY_FILE='${keyFileName}'
+
+# Базовая структурная проверка PEM заголовков
+grep -Eq '^-----BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----\$' "\$KEY_FILE"
+grep -Eq '^-----END (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----\$' "\$KEY_FILE"
+
+# Криптографическая проверка читаемости ключа (без вывода)
+if command -v ssh-keygen >/dev/null 2>&1; then
+  ssh-keygen -y -f "\$KEY_FILE" >/dev/null 2>&1
+elif command -v openssl >/dev/null 2>&1; then
+  openssl pkey -in "\$KEY_FILE" -noout >/dev/null 2>&1
+else
+  exit 7
+fi
+""",
+            returnStatus: true
+        )
+        if (keyValidationStatus != 0) {
+            scriptContext.error("❌ Некорректный SSH private key из Vault (формат/читаемость не прошли проверку)")
+        }
+
+        try {
+            scriptContext.withEnv([
+                "SSH_KEY=${scriptContext.pwd()}/${keyFileName}",
+                "SSH_USER=${sshLogin}"
+            ]) {
                 body()
             }
-        } else {
-            body()
+        } finally {
+            scriptContext.sh "rm -f '${keyFileName}'"
+            scriptContext.env.VA_SSH_PRIVATE_KEY = ''
         }
     }
 }
@@ -43,8 +93,8 @@ pipeline {
 
     parameters {
         string(name: 'SERVER_ADDRESS',     defaultValue: params.SERVER_ADDRESS ?: '',     description: 'Адрес сервера для подключения по SSH')
-        string(name: 'SSH_CREDENTIALS_ID', defaultValue: params.SSH_CREDENTIALS_ID ?: '', description: 'Jenkins Credential ID для SSH (Vault SSH private key with signed public key Credential)')
-        string(name: 'SSH_LOGIN',         defaultValue: params.SSH_LOGIN ?: '',             description: 'Логин для SSH (если пусто, используется username из SSH credentials)')
+        string(name: 'SSH_KV_PATH',       defaultValue: params.SSH_KV_PATH ?: 'A/INFRANAS/GLOB/IFT/SSH/CI10742294-sshkey-ift-ci', description: 'Путь KV в Vault для SSH private key')
+        string(name: 'SSH_LOGIN',         defaultValue: params.SSH_LOGIN ?: '',             description: 'Логин для SSH (если пусто, используется <KAE>-lnx-mon_ci)')
         string(name: 'SEC_MAN_ADDR',       defaultValue: params.SEC_MAN_ADDR ?: '',       description: 'Адрес Vault для SecMan')
         string(name: 'NAMESPACE_CI',       defaultValue: params.NAMESPACE_CI ?: '',       description: 'Namespace для CI в Vault')
         string(name: 'NETAPP_API_ADDR',    defaultValue: params.NETAPP_API_ADDR ?: '',    description: 'FQDN/IP NetApp API')
@@ -164,8 +214,8 @@ pipeline {
                     if (!params.SERVER_ADDRESS?.trim()) {
                         error("❌ Не указан SERVER_ADDRESS")
                     }
-                    if (!params.SSH_CREDENTIALS_ID?.trim()) {
-                        error("❌ Не указан SSH_CREDENTIALS_ID")
+                    if (!params.SSH_KV_PATH?.trim()) {
+                        error("❌ Не указан SSH_KV_PATH")
                     }
                     if (!params.NAMESPACE_CI?.trim()) {
                         error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)")
@@ -387,12 +437,8 @@ pipeline {
                     '''
                     
                     withVaultSshCredentials(this) {
-                        def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.SSH_USER
+                        def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
                         echo "[INFO] Подключение под пользователем: ${env.SSH_USER} (ожидается: ${expectedSshUser})"
-                        if (!params.SSH_LOGIN?.trim() && env.SSH_USER != env.DEPLOY_USER) {
-                            echo "[WARNING] SSH_USER (${env.SSH_USER}) не совпадает с DEPLOY_USER (${env.DEPLOY_USER})"
-                            echo "[WARNING] Убедитесь, что SSH credentials настроены для CI-пользователя!"
-                        }
                         
                         // Генерируем лаунчеры
                         writeFile file: 'prep_clone.sh', text: '''#!/bin/bash
