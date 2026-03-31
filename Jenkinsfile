@@ -20,19 +20,12 @@ def withVaultSshCredentials(scriptContext, Closure body) {
     }
 
     def sshLogin = scriptContext.params.SSH_LOGIN?.trim()
+    if (!sshLogin) {
+        scriptContext.error("❌ Не указан SSH_LOGIN (обязателен для Vault SSH credentials)")
+    }
 
-    scriptContext.withCredentials([
-        scriptContext.sshUserPrivateKey(
-            credentialsId: sshCredentialsId,
-            keyFileVariable: 'SSH_KEY',
-            usernameVariable: 'SSH_USER'
-        )
-    ]) {
-        if (sshLogin) {
-            scriptContext.withEnv(["SSH_USER=${sshLogin}"]) {
-                body()
-            }
-        } else {
+    scriptContext.sshagent(credentials: [sshCredentialsId]) {
+        scriptContext.withEnv(["SSH_USER=${sshLogin}"]) {
             body()
         }
     }
@@ -44,7 +37,7 @@ pipeline {
     parameters {
         string(name: 'SERVER_ADDRESS',     defaultValue: params.SERVER_ADDRESS ?: '',     description: 'Адрес сервера для подключения по SSH')
         string(name: 'SSH_CREDENTIALS_ID', defaultValue: params.SSH_CREDENTIALS_ID ?: '', description: 'Jenkins Credential ID для SSH (Vault SSH private key with signed public key Credential)')
-        string(name: 'SSH_LOGIN',         defaultValue: params.SSH_LOGIN ?: '',             description: 'Логин для SSH (если пусто, используется username из SSH credentials)')
+        string(name: 'SSH_LOGIN',         defaultValue: params.SSH_LOGIN ?: '',             description: 'Логин для SSH (обязательно для Vault SSH credentials)')
         string(name: 'SEC_MAN_ADDR',       defaultValue: params.SEC_MAN_ADDR ?: '',       description: 'Адрес Vault для SecMan')
         string(name: 'NAMESPACE_CI',       defaultValue: params.NAMESPACE_CI ?: '',       description: 'Namespace для CI в Vault')
         string(name: 'NETAPP_API_ADDR',    defaultValue: params.NETAPP_API_ADDR ?: '',    description: 'FQDN/IP NetApp API')
@@ -166,6 +159,9 @@ pipeline {
                     }
                     if (!params.SSH_CREDENTIALS_ID?.trim()) {
                         error("❌ Не указан SSH_CREDENTIALS_ID")
+                    }
+                    if (!params.SSH_LOGIN?.trim()) {
+                        error("❌ Не указан SSH_LOGIN")
                     }
                     if (!params.NAMESPACE_CI?.trim()) {
                         error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)")
@@ -387,12 +383,8 @@ pipeline {
                     '''
                     
                     withVaultSshCredentials(this) {
-                        def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.SSH_USER
+                        def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
                         echo "[INFO] Подключение под пользователем: ${env.SSH_USER} (ожидается: ${expectedSshUser})"
-                        if (!params.SSH_LOGIN?.trim() && env.SSH_USER != env.DEPLOY_USER) {
-                            echo "[WARNING] SSH_USER (${env.SSH_USER}) не совпадает с DEPLOY_USER (${env.DEPLOY_USER})"
-                            echo "[WARNING] Убедитесь, что SSH credentials настроены для CI-пользователя!"
-                        }
                         
                         // Генерируем лаунчеры
                         writeFile file: 'prep_clone.sh', text: '''#!/bin/bash
@@ -408,22 +400,13 @@ fi
                         writeFile file: 'scp_script.sh', text: '''#!/bin/bash
 set -e
 
-# Проверяем наличие SSH ключа
-if [ ! -f "''' + env.SSH_KEY + '''" ]; then
-    echo "[ERROR] SSH ключ не найден"
-    exit 1
-fi
-
-# Устанавливаем права на ключ
-chmod 600 "''' + env.SSH_KEY + '''" 2>/dev/null || true
-
 # 1. ТЕСТИРУЕМ SSH ПОДКЛЮЧЕНИЕ
 echo ""
 echo "[INFO] Тестируем SSH подключение к серверу..."
 
 SSH_OPTS="-q -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o TCPKeepAlive=yes -o LogLevel=ERROR"
 
-if ssh -i "''' + env.SSH_KEY + '''" $SSH_OPTS \
+if ssh $SSH_OPTS \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' \
     "echo '[OK] SSH подключение успешно'" 2>/dev/null; then
     echo "[OK] SSH подключение работает"
@@ -438,7 +421,7 @@ echo ""
 echo "[INFO] Проверка home директории пользователя..."
 
 # Проверяем существование home директории
-ssh -i "''' + env.SSH_KEY + '''" $SSH_OPTS \
+ssh $SSH_OPTS \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' << 'DIAG_EOF'
 set -e
 
@@ -469,7 +452,7 @@ DIAG_EOF
 echo ""
 echo "[INFO] Создание рабочей директории: ''' + env.DEPLOY_PATH + '''..."
 
-if ssh -i "''' + env.SSH_KEY + '''" $SSH_OPTS \
+if ssh $SSH_OPTS \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' \
     "mkdir -p ''' + env.DEPLOY_PATH + '''" 2>/dev/null; then
     echo "[OK] Директория создана"
@@ -482,7 +465,7 @@ fi
 echo ""
 echo "[INFO] Копирование файлов на сервер..."
 
-if scp -q -i "''' + env.SSH_KEY + '''" -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     install-monitoring-stack.sh \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh 2>/dev/null; then
     echo "[OK] Скрипт скопирован"
@@ -491,7 +474,7 @@ else
     exit 1
 fi
 
-if scp -q -i "''' + env.SSH_KEY + '''" -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
+if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
     wrappers \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/ 2>/dev/null; then
     echo "[OK] Wrappers скопированы"
@@ -500,7 +483,7 @@ else
     exit 1
 fi
 
-if scp -q -i "''' + env.SSH_KEY + '''" -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     temp_data_cred.json \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/temp_data_cred.json 2>/dev/null; then
     echo "[OK] Credentials скопированы"
@@ -519,7 +502,7 @@ set -e
 
 echo "[INFO] Проверка скопированных файлов..."
 
-ssh -i "''' + env.SSH_KEY + '''" -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' 2>/dev/null << 'REMOTE_EOF'
 
 [ ! -f "''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh" ] && echo "[ERROR] Скрипт не найден!" && exit 1
@@ -586,7 +569,7 @@ REMOTE_EOF
                     ]) {
                         withVaultSshCredentials(this) {
                         def scriptTpl = '''#!/bin/bash
-ssh -i "$SSH_KEY" -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "$SSH_USER"@__SERVER_ADDRESS__ RLM_TOKEN="$RLM_TOKEN" /bin/bash -s 2>/dev/null <<'REMOTE_EOF'
+ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "$SSH_USER"@__SERVER_ADDRESS__ RLM_TOKEN="$RLM_TOKEN" /bin/bash -s 2>/dev/null <<'REMOTE_EOF'
 set -e
 USERNAME=$(whoami)
 DEPLOY_DIR="__DEPLOY_PATH__"
@@ -696,7 +679,7 @@ REMOTE_EOF
                     echo "[STEP] Проверка результатов развертывания (User Units)..."
                     withVaultSshCredentials(this) {
                         writeFile file: 'check_results.sh', text: '''#!/bin/bash
-ssh -i "$SSH_KEY" -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' 2>/dev/null << 'ENDSSH'
 echo "================================================"
 echo "ПРОВЕРКА СЕРВИСОВ (USER UNITS):"
@@ -759,7 +742,7 @@ ENDSSH
                     sh "rm -rf temp_data_cred.json"
                     withVaultSshCredentials(this) {
                         writeFile file: 'cleanup_script.sh', text: '''#!/bin/bash
-ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
     "rm -rf ''' + env.DEPLOY_PATH + '''/temp_data_cred.json" 2>/dev/null || true
 '''
@@ -784,7 +767,7 @@ ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     def domainName = ''
                     withVaultSshCredentials(this) {
                         writeFile file: 'get_domain.sh', text: '''#!/bin/bash
-ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
     "nslookup ''' + params.SERVER_ADDRESS + ''' 2>/dev/null | grep 'name =' | awk '{print \\$4}' | sed 's/\\.$//' || echo ''" 2>/dev/null
 '''
@@ -798,7 +781,7 @@ ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     def serverIp = ''
                     withVaultSshCredentials(this) {
                         writeFile file: 'get_ip.sh', text: '''#!/bin/bash
-ssh -i "$SSH_KEY" -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
     "hostname -I | awk '{print \\$1}' || echo ''' + (params.SERVER_ADDRESS ?: '') + '''" 2>/dev/null
 '''
