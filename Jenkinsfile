@@ -24,9 +24,30 @@ def withVaultSshCredentials(scriptContext, Closure body) {
         scriptContext.error("❌ Не указан SSH_LOGIN (обязателен для Vault SSH credentials)")
     }
 
-    scriptContext.sshagent(credentials: [sshCredentialsId]) {
-        scriptContext.withEnv(["SSH_USER=${sshLogin}"]) {
-            body()
+    scriptContext.withCredentials([[
+        $class: 'VaultSignedSSHKeyCredentialBinding',
+        credentialsId: sshCredentialsId,
+        privateKeyVar: 'SSH_PRIVATE_KEY',
+        passphraseVar: 'SSH_PRIVATE_KEY_PASS'
+    ]]) {
+        scriptContext.sshagent([]) {
+            scriptContext.sh '''#!/bin/bash
+set +x
+set -e
+
+ASKPASS_SCRIPT=".send_ps.sh"
+cat > "$ASKPASS_SCRIPT" <<'EOF'
+#!/bin/sh
+echo "$SSH_PRIVATE_KEY_PASS"
+EOF
+chmod 700 "$ASKPASS_SCRIPT"
+
+DISPLAY=1 SSH_ASKPASS="$PWD/$ASKPASS_SCRIPT" ssh-add "$SSH_PRIVATE_KEY" < /dev/null
+rm -f "$ASKPASS_SCRIPT"
+'''
+            scriptContext.withEnv(["SSH_USER=${sshLogin}"]) {
+                body()
+            }
         }
     }
 }
