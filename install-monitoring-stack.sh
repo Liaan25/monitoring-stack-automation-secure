@@ -1811,9 +1811,67 @@ create_directories() {
 # Причина: Упрощение архитектуры согласно требованиям ИБ
 # ============================================================
 
+check_vault_agent_preflight_access() {
+    local current_user
+    current_user=$(whoami)
+    local missing=0
+
+    echo "[VAULT-PREFLIGHT] ========================================" | tee /dev/stderr
+    echo "[VAULT-PREFLIGHT] Проверка прав для legacy vault-agent flow" | tee /dev/stderr
+    echo "[VAULT-PREFLIGHT] Текущий пользователь: $current_user" | tee /dev/stderr
+    echo "[VAULT-PREFLIGHT] KAE=${KAE:-<unknown>}" | tee /dev/stderr
+    echo "[VAULT-PREFLIGHT] Ожидаемый источник agent.hcl: $VAULT_AGENT_HCL" | tee /dev/stderr
+    echo "[VAULT-PREFLIGHT] ========================================" | tee /dev/stderr
+
+    # Проверка membership - изменения групп применяются только в новой сессии.
+    if id -nG "$current_user" 2>/dev/null | tr ' ' '\n' | grep -Fxq "${KAE}-lnx-va-start"; then
+        echo "[VAULT-PREFLIGHT] ✅ Пользователь уже в группе ${KAE}-lnx-va-start" | tee /dev/stderr
+    else
+        echo "[VAULT-PREFLIGHT] ⚠️  Пользователь НЕ в группе ${KAE}-lnx-va-start (нужна новая сессия после добавления)" | tee /dev/stderr
+    fi
+
+    # Проверяем sudo rules без фактического выполнения команд.
+    check_sudo_rule() {
+        local label="$1"
+        shift
+        if sudo -n -l -- "$@" >/dev/null 2>&1; then
+            echo "[VAULT-PREFLIGHT] ✅ sudo rule есть: $label" | tee /dev/stderr
+        else
+            echo "[VAULT-PREFLIGHT] ❌ sudo rule отсутствует: $label" | tee /dev/stderr
+            echo "[VAULT-PREFLIGHT]    EXPECTED: ALL=(root) NOEXEC: NOPASSWD: $*" | tee /dev/stderr
+            missing=1
+        fi
+    }
+
+    # Минимум для текущей реализации setup_vault_config().
+    check_sudo_rule "copy role_id" /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+    check_sudo_rule "copy secret_id" /usr/bin/cp /tmp/vault_secret_id.txt /opt/vault/conf/secret_id.txt
+    check_sudo_rule "copy agent.hcl" /usr/bin/cp "$VAULT_AGENT_HCL" /opt/vault/conf/agent.hcl
+    check_sudo_rule "vault-agent restart" /usr/bin/systemctl restart vault-agent
+    check_sudo_rule "vault-agent is-active" /usr/bin/systemctl is-active vault-agent
+    check_sudo_rule "vault-agent status" /usr/bin/systemctl status vault-agent
+
+    # Рекомендованные (необязательные) права: для автоматического bootstrap /opt/vault/certs.
+    check_sudo_rule "mkdir /opt/vault/certs (recommended)" /usr/bin/mkdir -p /opt/vault/certs
+    check_sudo_rule "chown /opt/vault/certs (recommended)" /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" /opt/vault/certs
+    check_sudo_rule "chmod /opt/vault/certs (recommended)" /usr/bin/chmod 750 /opt/vault/certs
+
+    if [[ $missing -ne 0 ]]; then
+        echo "[VAULT-PREFLIGHT] ========================================" | tee /dev/stderr
+        echo "[VAULT-PREFLIGHT] ❌ Обнаружены недостающие права/правила." | tee /dev/stderr
+        echo "[VAULT-PREFLIGHT] Подсказка: проверьте, что KAE в sudoers совпадает с текущим (${KAE})." | tee /dev/stderr
+        echo "[VAULT-PREFLIGHT] Частая ошибка: правило для /home/<другой-KAE>-lnx-mon_ci/.../agent.hcl." | tee /dev/stderr
+        echo "[VAULT-PREFLIGHT] Диагностика: sudo -n -l" | tee /dev/stderr
+        echo "[VAULT-PREFLIGHT] ========================================" | tee /dev/stderr
+    else
+        echo "[VAULT-PREFLIGHT] ✅ Проверка прав пройдена" | tee /dev/stderr
+    fi
+}
+
 setup_vault_config() {
     print_step "Настройка Vault конфигурации"
     ensure_working_directory
+    check_vault_agent_preflight_access
 
     # Проверяем, что SERVER_DOMAIN определен
     if [[ -z "$SERVER_DOMAIN" ]]; then

@@ -170,6 +170,17 @@ ALL=(root) NOEXEC: NOPASSWD: sha256:REPLACE_WITH_ACTUAL_SHA256_CHECKSUM /home/CI
    
    Должен вернуть статус сервиса (или ошибку что сервис не найден, если еще не создан)
 
+4. Проверка legacy vault-agent прав (точечная):
+   sudo -l -U CI10742292-lnx-mon_ci /usr/bin/cp /tmp/vault_role_id.txt /opt/vault/conf/role_id.txt
+   sudo -l -U CI10742292-lnx-mon_ci /usr/bin/cp /tmp/vault_secret_id.txt /opt/vault/conf/secret_id.txt
+   sudo -l -U CI10742292-lnx-mon_ci /usr/bin/cp /home/CI10742292-lnx-mon_ci/monitoring/config/vault/agent.hcl /opt/vault/conf/agent.hcl
+   sudo -l -U CI10742292-lnx-mon_ci /usr/bin/systemctl restart vault-agent
+   sudo -l -U CI10742292-lnx-mon_ci /usr/bin/systemctl is-active vault-agent
+   sudo -l -U CI10742292-lnx-mon_ci /usr/bin/systemctl status vault-agent
+
+   ВАЖНО: путь в правиле для agent.hcl должен совпадать с фактическим KAE.
+   Если в sudoers CI10742292, а pipeline идет под CI10742294, правило не сработает.
+
 ================================================================================
   КОНТАКТЫ ДЛЯ ВОПРОСОВ
 ================================================================================
