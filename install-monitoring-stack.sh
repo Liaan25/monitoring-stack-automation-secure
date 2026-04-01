@@ -4183,6 +4183,18 @@ EOF
     # 2. Пытаемся настроить через API (если есть токен)
     # ============================================
     local grafana_url="https://${SERVER_DOMAIN}:${GRAFANA_PORT}"
+    local grafana_client_cert="${GRAFANA_USER_CERTS_DIR}/grafana-client.crt"
+    local grafana_client_key="${GRAFANA_USER_CERTS_DIR}/grafana-client.key"
+    if [[ ! -f "$grafana_client_cert" || ! -f "$grafana_client_key" ]]; then
+        if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+            grafana_client_cert="/opt/vault/certs/grafana-client.crt"
+            grafana_client_key="/opt/vault/certs/grafana-client.key"
+        fi
+    fi
+    local prometheus_ca_chain="${PROMETHEUS_USER_CERTS_DIR}/ca_chain.crt"
+    if [[ ! -f "$prometheus_ca_chain" && -f "/etc/prometheus/cert/ca_chain.crt" ]]; then
+        prometheus_ca_chain="/etc/prometheus/cert/ca_chain.crt"
+    fi
 
     if [[ -z "$GRAFANA_BEARER_TOKEN" ]]; then
         print_warning "GRAFANA_BEARER_TOKEN пуст. Используем только provisioning файлы"
@@ -4799,10 +4811,10 @@ EOF_HEADER
                 \"${grafana_url}/api/serviceaccounts\""
             
             local curl_cmd_with_cert=""
-            if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
                 curl_cmd_with_cert="curl -k -s -w \"\n%{http_code}\" \
-                    --cert \"/opt/vault/certs/grafana-client.crt\" \
-                    --key \"/opt/vault/certs/grafana-client.key\" \
+                    --cert \"${grafana_client_cert}\" \
+                    --key \"${grafana_client_key}\" \
                     -X POST \
                     -H \"Content-Type: application/json\" \
                     -u \"${grafana_user}:${grafana_password}\" \
@@ -5019,16 +5031,16 @@ EOF_HEADER
             log_diagnosis "=== Используем mTLS для повышенной безопасности ==="
             
             # Проверяем наличие сертификатов
-            if [[ ! -f "/opt/vault/certs/grafana-client.crt" || ! -f "/opt/vault/certs/grafana-client.key" ]]; then
+            if [[ ! -f "$grafana_client_cert" || ! -f "$grafana_client_key" ]]; then
                 print_error "❌ Клиентские сертификаты не найдены!"
-                print_error "   Требуется: /opt/vault/certs/grafana-client.crt"
-                print_error "   Требуется: /opt/vault/certs/grafana-client.key"
+                print_error "   Требуется: ${grafana_client_cert}"
+                print_error "   Требуется: ${grafana_client_key}"
                 log_diagnosis "❌ Сертификаты отсутствуют, прерываем выполнение"
                 
                 echo "[ОШИБКА] Клиентские сертификаты не найдены" >> "$DEBUG_LOG"
                 echo "  Требуемые файлы:" >> "$DEBUG_LOG"
-                echo "    - /opt/vault/certs/grafana-client.crt" >> "$DEBUG_LOG"
-                echo "    - /opt/vault/certs/grafana-client.key" >> "$DEBUG_LOG"
+                echo "    - ${grafana_client_cert}" >> "$DEBUG_LOG"
+                echo "    - ${grafana_client_key}" >> "$DEBUG_LOG"
                 echo "" >> "$DEBUG_LOG"
                 echo "  FALLBACK: Попробуйте использовать Basic Auth без сертификатов" >> "$DEBUG_LOG"
                 echo "  (для этого замените execute_curl_request с 'curl_cmd_with_cert' на 'curl_cmd_without_cert')" >> "$DEBUG_LOG"
@@ -5039,11 +5051,11 @@ EOF_HEADER
             fi
             
             print_success "✅ Сертификаты найдены:"
-            print_info "   /opt/vault/certs/grafana-client.crt ($(stat -c%s "/opt/vault/certs/grafana-client.crt" 2>/dev/null || echo "?") байт)"
-            print_info "   /opt/vault/certs/grafana-client.key ($(stat -c%s "/opt/vault/certs/grafana-client.key" 2>/dev/null || echo "?") байт)"
+            print_info "   ${grafana_client_cert} ($(stat -c%s "$grafana_client_cert" 2>/dev/null || echo "?") байт)"
+            print_info "   ${grafana_client_key} ($(stat -c%s "$grafana_client_key" 2>/dev/null || echo "?") байт)"
             log_diagnosis "✅ Сертификаты присутствуют"
-            log_diagnosis "   Cert size: $(stat -c%s "/opt/vault/certs/grafana-client.crt" 2>/dev/null) bytes"
-            log_diagnosis "   Key size: $(stat -c%s "/opt/vault/certs/grafana-client.key" 2>/dev/null) bytes"
+            log_diagnosis "   Cert size: $(stat -c%s "$grafana_client_cert" 2>/dev/null) bytes"
+            log_diagnosis "   Key size: $(stat -c%s "$grafana_client_key" 2>/dev/null) bytes"
             
             # Выполняем запрос с сертификатами
             print_info "Отправка запроса с mTLS аутентификацией..."
@@ -5136,8 +5148,8 @@ EOF_HEADER
                     printf '%s' "$role_update_payload" > "$role_update_file"
                     
                     local role_update_cmd="curl -k -s -w \"\n%{http_code}\" \
-                        --cert \"/opt/vault/certs/grafana-client.crt\" \
-                        --key \"/opt/vault/certs/grafana-client.key\" \
+                        --cert \"${grafana_client_cert}\" \
+                        --key \"${grafana_client_key}\" \
                         -X PATCH \
                         -H \"Content-Type: application/json\" \
                         -u \"${grafana_user}:${grafana_password}\" \
@@ -5202,10 +5214,10 @@ EOF_HEADER
                     -u \"${grafana_user}:${grafana_password}\" \
                     \"${grafana_url}/api/serviceaccounts/search?query=${service_account_name}\""
                 
-                if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+                if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
                     list_cmd="curl -k -s -w \"\n%{http_code}\" \
-                        --cert \"/opt/vault/certs/grafana-client.crt\" \
-                        --key \"/opt/vault/certs/grafana-client.key\" \
+                        --cert \"${grafana_client_cert}\" \
+                        --key \"${grafana_client_key}\" \
                         -u \"${grafana_user}:${grafana_password}\" \
                         \"${grafana_url}/api/serviceaccounts/search?query=${service_account_name}\""
                 fi
@@ -5237,10 +5249,10 @@ EOF_HEADER
                     -u \"${grafana_user}:${grafana_password}\" \
                     \"${grafana_url}/api/serviceaccounts\""
                 
-                if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+                if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
                     all_cmd="curl -k -s -w \"\n%{http_code}\" \
-                        --cert \"/opt/vault/certs/grafana-client.crt\" \
-                        --key \"/opt/vault/certs/grafana-client.key\" \
+                        --cert \"${grafana_client_cert}\" \
+                        --key \"${grafana_client_key}\" \
                         -u \"${grafana_user}:${grafana_password}\" \
                         \"${grafana_url}/api/serviceaccounts\""
                 fi
@@ -5510,10 +5522,10 @@ EOF_HEADER
                 \"${grafana_url}/api/serviceaccounts/${sa_id}/tokens\""
             
             local curl_cmd_with_cert=""
-            if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
                 curl_cmd_with_cert="curl -k -s -w \"\n%{http_code}\" \
-                    --cert \"/opt/vault/certs/grafana-client.crt\" \
-                    --key \"/opt/vault/certs/grafana-client.key\" \
+                    --cert \"${grafana_client_cert}\" \
+                    --key \"${grafana_client_key}\" \
                     -X POST \
                     -H \"Content-Type: application/json\" \
                     -u \"${grafana_user}:${grafana_password}\" \
@@ -5687,9 +5699,9 @@ EOF_HEADER
     
     # Подготавливаем сертификаты для mTLS
     local tls_client_cert tls_client_key tls_ca_cert
-    tls_client_cert=$(cat /opt/vault/certs/grafana-client.crt 2>/dev/null | jq -R -s . || echo '""')
-    tls_client_key=$(cat /opt/vault/certs/grafana-client.key 2>/dev/null | jq -R -s . || echo '""')
-    tls_ca_cert=$(cat /etc/prometheus/cert/ca_chain.crt 2>/dev/null | jq -R -s . || echo '""')
+    tls_client_cert=$(cat "$grafana_client_cert" 2>/dev/null | jq -R -s . || echo '""')
+    tls_client_key=$(cat "$grafana_client_key" 2>/dev/null | jq -R -s . || echo '""')
+    tls_ca_cert=$(cat "$prometheus_ca_chain" 2>/dev/null | jq -R -s . || echo '""')
     
     # ИСПРАВЛЕНО: Создаем payload для datasource (compact JSON)
     local ds_payload
@@ -5737,10 +5749,10 @@ EOF_HEADER
             -H \"Authorization: Bearer $bearer_token\" \
             \"${grafana_url}/api/datasources/name/prometheus\""
         
-        if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+        if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
             curl_cmd="curl -k -s -w \"\n%{http_code}\" \
-                --cert \"/opt/vault/certs/grafana-client.crt\" \
-                --key \"/opt/vault/certs/grafana-client.key\" \
+                --cert \"${grafana_client_cert}\" \
+                --key \"${grafana_client_key}\" \
                 -H \"Authorization: Bearer $bearer_token\" \
                 \"${grafana_url}/api/datasources/name/prometheus\""
         fi
@@ -5762,10 +5774,10 @@ EOF_HEADER
                 --data-binary \"@${ds_payload_file}\" \
                 \"${grafana_url}/api/datasources/${ds_id}\""
             
-            if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
                 update_cmd="curl -k -s -w \"\n%{http_code}\" \
-                    --cert \"/opt/vault/certs/grafana-client.crt\" \
-                    --key \"/opt/vault/certs/grafana-client.key\" \
+                    --cert \"${grafana_client_cert}\" \
+                    --key \"${grafana_client_key}\" \
                     -X PUT \
                     -H \"Content-Type: application/json\" \
                     -H \"Authorization: Bearer $bearer_token\" \
@@ -5805,10 +5817,10 @@ EOF_HEADER
                 --data-binary \"@${ds_payload_file}\" \
                 \"${grafana_url}/api/datasources\""
             
-            if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
                 create_cmd="curl -k -s -w \"\n%{http_code}\" \
-                    --cert \"/opt/vault/certs/grafana-client.crt\" \
-                    --key \"/opt/vault/certs/grafana-client.key\" \
+                    --cert \"${grafana_client_cert}\" \
+                    --key \"${grafana_client_key}\" \
                     -X POST \
                     -H \"Content-Type: application/json\" \
                     -H \"Authorization: Bearer $bearer_token\" \
@@ -6333,9 +6345,9 @@ import_grafana_dashboards() {
         payload=$(jq -n \
             --arg url "https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}" \
             --arg sn  "${SERVER_DOMAIN}" \
-            --rawfile tlsClientCert "/opt/vault/certs/grafana-client.crt" \
-            --rawfile tlsClientKey  "/opt/vault/certs/grafana-client.key" \
-            --rawfile tlsCACert     "/etc/prometheus/cert/ca_chain.crt" \
+            --rawfile tlsClientCert "$grafana_client_cert" \
+            --rawfile tlsClientKey  "$grafana_client_key" \
+            --rawfile tlsCACert     "$prometheus_ca_chain" \
             '{name:"prometheus", type:"prometheus", access:"proxy", url:$url, isDefault:false,
               jsonData:{httpMethod:"POST", serverName:$sn, tlsAuth:true, tlsAuthWithCACert:true, tlsSkipVerify:false},
               secureJsonData:{tlsClientCert:$tlsClientCert, tlsClientKey:$tlsClientKey, tlsCACert:$tlsCACert}}')
