@@ -4313,12 +4313,26 @@ ensure_grafana_token() {
         return 0
     fi
 
-    # Читаем учётные данные Grafana из файла, сформированного vault-agent (без использования env)
-    local cred_json="/opt/vault/conf/data_sec.json"
+    # Читаем учетные данные Grafana. В simplified режиме источник - temp_data_cred.json,
+    # в legacy режиме - /opt/vault/conf/data_sec.json.
+    local cred_json=""
+    for candidate in \
+        "${CRED_JSON_PATH:-}" \
+        "$PWD/temp_data_cred.json" \
+        "$(dirname "$0")/temp_data_cred.json" \
+        "$HOME/monitoring-deployment/temp_data_cred.json" \
+        "/tmp/temp_data_cred.json" \
+        "/opt/vault/conf/data_sec.json"; do
+        if [[ -n "$candidate" && -f "$candidate" ]]; then
+            cred_json="$candidate"
+            break
+        fi
+    done
     if [[ ! -f "$cred_json" ]]; then
-        print_error "Файл с секретами Vault ($cred_json) не найден"
+        print_error "Файл с учетными данными Grafana не найден (проверены temp_data_cred.json и legacy data_sec.json)"
         return 1
     fi
+    print_info "Используется файл учетных данных: $cred_json"
 
     # SECURITY: Используем secrets-manager-wrapper для безопасного извлечения секретов
     if [[ ! -x "$WRAPPERS_DIR/secrets-manager-wrapper_launcher.sh" ]]; then
@@ -4483,7 +4497,19 @@ setup_grafana_datasource_and_dashboards() {
     
     # Получаем учетные данные
     print_info "Получение учетных данных Grafana из Vault..."
-    local cred_json="/opt/vault/conf/data_sec.json"
+    local cred_json=""
+    for candidate in \
+        "${CRED_JSON_PATH:-}" \
+        "$PWD/temp_data_cred.json" \
+        "$(dirname "$0")/temp_data_cred.json" \
+        "$HOME/monitoring-deployment/temp_data_cred.json" \
+        "/tmp/temp_data_cred.json" \
+        "/opt/vault/conf/data_sec.json"; do
+        if [[ -n "$candidate" && -f "$candidate" ]]; then
+            cred_json="$candidate"
+            break
+        fi
+    done
     
     # Диагностика файла с учетными данными
     print_info "Проверка файла с учетными данными: $cred_json"
@@ -4529,9 +4555,9 @@ setup_grafana_datasource_and_dashboards() {
         jq 'keys' "$cred_json" 2>/dev/null || echo "Не удалось прочитать структуру"
         
     else
-        print_error "Файл с учетными данными не найден: $cred_json"
+        print_error "Файл с учетными данными не найден (проверены temp_data_cred.json и legacy data_sec.json)"
         print_info "Поиск альтернативных файлов..."
-        find /opt/vault -name "*data*sec*" -type f 2>/dev/null | head -5
+        find /opt/vault "$HOME" /tmp -maxdepth 4 -type f \( -name "data_sec.json" -o -name "temp_data_cred.json" \) 2>/dev/null | head -10
         return 1
     fi
     
