@@ -45,7 +45,7 @@ chmod 700 "$ASKPASS_SCRIPT"
 DISPLAY=1 SSH_ASKPASS="$PWD/$ASKPASS_SCRIPT" ssh-add "$SSH_PRIVATE_KEY" < /dev/null
 rm -f "$ASKPASS_SCRIPT"
 '''
-            scriptContext.withEnv(["SSH_USER=${sshLogin}"]) {
+            scriptContext.withEnv(["SSH_USER=" + sshLogin]) {
                 body()
             }
         }
@@ -76,6 +76,7 @@ pipeline {
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
         booleanParam(name: 'USE_SIMPLIFIED_CERT_FLOW', defaultValue: true, description: '✅ Использовать non-root/simplified certificate flow (без /opt/vault/*). Отключите только для legacy rollback.')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов')
+        booleanParam(name: 'SKIP_IPTABLES', defaultValue: true, description: '✅ Пропустить настройку iptables (для non-root/ограниченных sudo)')
         booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: true, description: '⚡ Пропустить CI диагностику')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить CDL этап')
     }
@@ -561,7 +562,7 @@ rm -f "${FETCH_RESP_FILE}"
                     
                     withVaultSshCredentials(this) {
                         def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
-                        echo "[INFO] Подключение под пользователем: ${env.SSH_USER} (ожидается: ${expectedSshUser})"
+                        echo "[INFO] Подключение под пользователем настроено (ожидается: ${expectedSshUser})"
                         
                         // Генерируем лаунчеры
                         writeFile file: 'prep_clone.sh', text: '''#!/bin/bash
@@ -804,6 +805,7 @@ env \
   RENEW_CERTIFICATES_ONLY="__RENEW_CERTIFICATES_ONLY__" \
   USE_SIMPLIFIED_CERT_FLOW="__USE_SIMPLIFIED_CERT_FLOW__" \
   SKIP_RPM_INSTALL="__SKIP_RPM_INSTALL__" \
+  SKIP_IPTABLES="__SKIP_IPTABLES__" \
   GRAFANA_URL="$RPM_GRAFANA" \
   PROMETHEUS_URL="$RPM_PROMETHEUS" \
   HARVEST_URL="$RPM_HARVEST" \
@@ -833,6 +835,7 @@ REMOTE_EOF
                             .replace('__RENEW_CERTIFICATES_ONLY__',  params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')
                             .replace('__USE_SIMPLIFIED_CERT_FLOW__', params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')
                             .replace('__SKIP_RPM_INSTALL__',         params.SKIP_RPM_INSTALL        ? 'true' : 'false')
+                            .replace('__SKIP_IPTABLES__',            params.SKIP_IPTABLES           ? 'true' : 'false')
                             .replace('__DEPLOY_VERSION__',     env.VERSION_SHORT         ?: 'unknown')
                             .replace('__DEPLOY_GIT_COMMIT__',  env.VERSION_GIT_COMMIT    ?: 'unknown')
                             .replace('__DEPLOY_BUILD_DATE__',  env.VERSION_BUILD_DATE    ?: 'unknown')

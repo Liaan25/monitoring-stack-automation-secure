@@ -141,7 +141,7 @@ EOF
 ╔════════════════════════════════════════════════════════════════╗
 ║          MONITORING STACK AUTOMATION - VERSION INFO           ║
 ╠════════════════════════════════════════════════════════════════╣
-║  Version:        ${base_version}
+║  Version:        ${base_version}-${git_commit}
 ║  Git Commit:     ${git_commit} (${git_branch})
 ║  Full Hash:      ${git_commit_full}
 ║  Build Date:     ${build_date}

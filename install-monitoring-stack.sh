@@ -37,6 +37,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${PROMETHEUS_PORT:=}"
 : "${NETAPP_POLLER_NAME:=}"
 : "${USE_SIMPLIFIED_CERT_FLOW:=true}"
+: "${SKIP_IPTABLES:=true}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -2663,18 +2664,18 @@ load_config_from_json() {
     print_step "Загрузка конфигурации из параметров Jenkins"
     ensure_working_directory
     
-    echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
-    echo "[DEBUG-CONFIG] Диагностика load_config_from_json" | tee /dev/stderr
-    echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] ========================================" >&2
+    echo "[DEBUG-CONFIG] Диагностика load_config_from_json" >&2
+    echo "[DEBUG-CONFIG] ========================================" >&2
     log_debug "========================================"
     log_debug "ДИАГНОСТИКА: load_config_from_json"
     log_debug "========================================"
     
-    echo "[DEBUG-CONFIG] Проверка обязательных параметров:" | tee /dev/stderr
-    echo "[DEBUG-CONFIG] NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}" | tee /dev/stderr
-    echo "[DEBUG-CONFIG] GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}" | tee /dev/stderr
-    echo "[DEBUG-CONFIG] PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}" | tee /dev/stderr
-    echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] Проверка обязательных параметров:" >&2
+    echo "[DEBUG-CONFIG] NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" >&2
     log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
     log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
@@ -2687,28 +2688,28 @@ load_config_from_json() {
     [[ -z "$HARVEST_URL" ]] && missing+=("HARVEST_URL")
 
     if (( ${#missing[@]} > 0 )); then
-        echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" | tee /dev/stderr
+        echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" >&2
         log_debug "❌ Missing parameters: ${missing[*]}"
         print_error "Не заданы обязательные параметры Jenkins: ${missing[*]}"
         print_error "Эти переменные должны быть переданы через 'sudo -n env' из Jenkinsfile"
         write_diagnostic "ERROR: Не заданы параметры: ${missing[*]}"
         
-        echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
-        echo "[DEBUG-CONFIG] DUMP всех ENV переменных:" | tee /dev/stderr
-        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NAMESPACE|KAE)" | sort | tee /dev/stderr
-        echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
+        echo "[DEBUG-CONFIG] ========================================" >&2
+        echo "[DEBUG-CONFIG] DUMP всех ENV переменных:" >&2
+        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NAMESPACE|KAE)" | sort >&2
+        echo "[DEBUG-CONFIG] ========================================" >&2
         
         exit 1
     fi
     
-    echo "[DEBUG-CONFIG] ✅ Все обязательные параметры заданы" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] ✅ Все обязательные параметры заданы" >&2
     log_debug "✅ All required parameters are set"
 
     NETAPP_POLLER_NAME=$(echo "$NETAPP_API_ADDR" | awk -F'.' '{print toupper(substr($1,1,1)) tolower(substr($1,2))}')
     
-    echo "[DEBUG-CONFIG] Вычислен NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] Вычислен NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME" >&2
     log_debug "NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME"
-    echo "[DEBUG-CONFIG] ========================================" | tee /dev/stderr
+    echo "[DEBUG-CONFIG] ========================================" >&2
     
     print_success "Конфигурация загружена из параметров Jenkins"
     print_info "NETAPP_API_ADDR=$NETAPP_API_ADDR, NETAPP_POLLER_NAME=$NETAPP_POLLER_NAME"
@@ -3889,9 +3890,10 @@ configure_harvest() {
     mkdir -p "$HARVEST_USER_CONFIG_DIR" "$HARVEST_USER_CERTS_DIR"
     
     # Проверяем, есть ли сертификаты
-    if [[ ! -f "$HARVEST_USER_CERTS_DIR/harvest.crt" || ! -f "$HARVEST_USER_CERTS_DIR/harvest.key" ]]; then
-        print_warning "Сертификаты Harvest не найдены в $HARVEST_USER_CERTS_DIR/"
-        print_info "Ожидаем что copy_certs_to_user_dirs() скопирует их из /opt/vault/certs/"
+    local HARVEST_RUNTIME_CERT_DIR="$HOME/monitoring/config/harvest/cert"
+    if [[ ! -f "$HARVEST_RUNTIME_CERT_DIR/harvest.crt" || ! -f "$HARVEST_RUNTIME_CERT_DIR/harvest.key" ]]; then
+        print_warning "Сертификаты Harvest пока не найдены в $HARVEST_RUNTIME_CERT_DIR/"
+        print_info "Ожидаем, что copy_certs_to_user_dirs() разложит их из user-space bundle"
     fi
     
     # Создаем harvest.yml
@@ -6909,7 +6911,11 @@ main() {
     log_debug "Calling: configure_harvest"
     configure_harvest
     configure_prometheus
-    configure_iptables
+    if [[ "${SKIP_IPTABLES:-true}" == "true" ]]; then
+        print_warning "SKIP_IPTABLES=true: пропускаем configure_iptables"
+    else
+        configure_iptables
+    fi
     setup_monitoring_user_units
     configure_services
     
