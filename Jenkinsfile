@@ -315,7 +315,8 @@ pipeline {
                                     vaultUrl: "https://${params.SEC_MAN_ADDR}",
                                     engineVersion: 1,
                                     skipSslVerification: false,
-                                    vaultCredentialId: vaultCredId
+                                    vaultCredentialId: vaultCredId,
+                                    vaultNamespace: params.NAMESPACE_CI?.trim()
                                 ],
                                 vaultSecrets: vaultSecrets
                             ]) {
