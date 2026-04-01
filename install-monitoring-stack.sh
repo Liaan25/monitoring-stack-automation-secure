@@ -36,7 +36,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${GRAFANA_PORT:=}"
 : "${PROMETHEUS_PORT:=}"
 : "${NETAPP_POLLER_NAME:=}"
-: "${USE_SIMPLIFIED_CERT_FLOW:=false}"
+: "${USE_SIMPLIFIED_CERT_FLOW:=true}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
