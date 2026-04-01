@@ -5902,13 +5902,44 @@ configure_services() {
     print_step "Настройка и запуск сервисов мониторинга"
     ensure_working_directory
 
-    print_info "Проверка наличия сертификатов от Vault (обязательно для TLS)"
-    if { [[ -f "$VAULT_CRT_FILE" && -f "$VAULT_KEY_FILE" ]] || [[ -f "/opt/vault/certs/server_bundle.pem" ]]; } && { [[ -f "/opt/vault/certs/ca_chain.crt" ]] || [[ -f "/opt/vault/certs/ca_chain" ]]; }; then
-        print_success "Найдены сертификаты и CA chain"
+    print_info "Проверка наличия сертификатов (обязательно для TLS)"
+    local userspace_bundle="${VAULT_CERTS_DIR}/server_bundle.pem"
+    local userspace_ca_chain="${VAULT_CERTS_DIR}/ca_chain.crt"
+    local system_bundle="/opt/vault/certs/server_bundle.pem"
+    local system_ca_chain="/opt/vault/certs/ca_chain.crt"
+    local system_ca_chain_alt="/opt/vault/certs/ca_chain"
+    local userspace_pair_ok=false
+    local userspace_bundle_ok=false
+    local userspace_ca_ok=false
+    local system_bundle_ok=false
+    local system_ca_ok=false
+
+    [[ -f "$VAULT_CRT_FILE" && -f "$VAULT_KEY_FILE" ]] && userspace_pair_ok=true
+    [[ -f "$userspace_bundle" ]] && userspace_bundle_ok=true
+    [[ -f "$userspace_ca_chain" ]] && userspace_ca_ok=true
+    [[ -f "$system_bundle" ]] && system_bundle_ok=true
+    [[ -f "$system_ca_chain" || -f "$system_ca_chain_alt" ]] && system_ca_ok=true
+
+    # Подробная диагностика: помогает быстро понять, где именно разрыв в цепочке.
+    echo "[CERTS-SVC-DIAG] userspace_pair: $userspace_pair_ok (crt=$VAULT_CRT_FILE, key=$VAULT_KEY_FILE)" | tee /dev/stderr
+    echo "[CERTS-SVC-DIAG] userspace_bundle: $userspace_bundle_ok ($userspace_bundle)" | tee /dev/stderr
+    echo "[CERTS-SVC-DIAG] userspace_ca_chain: $userspace_ca_ok ($userspace_ca_chain)" | tee /dev/stderr
+    echo "[CERTS-SVC-DIAG] system_bundle: $system_bundle_ok ($system_bundle)" | tee /dev/stderr
+    echo "[CERTS-SVC-DIAG] system_ca_chain: $system_ca_ok ($system_ca_chain or $system_ca_chain_alt)" | tee /dev/stderr
+
+    if { [[ "$userspace_pair_ok" == true ]] || [[ "$userspace_bundle_ok" == true ]] || [[ "$system_bundle_ok" == true ]]; } && \
+       { [[ "$userspace_ca_ok" == true ]] || [[ "$system_ca_ok" == true ]]; }; then
+        print_success "Найдены сертификаты и CA chain (userspace/system)"
         configure_grafana_ini
         configure_prometheus_files
     else
         print_error "Сертификаты не найдены. TLS обязателен согласно требованиям. Останавливаемся."
+        print_error "Ожидались файлы (любой валидный набор):"
+        print_error "  userspace bundle: $userspace_bundle"
+        print_error "  userspace CA:     $userspace_ca_chain"
+        print_error "  userspace pair:   $VAULT_CRT_FILE + $VAULT_KEY_FILE"
+        print_error "  system bundle:    $system_bundle"
+        print_error "  system CA:        $system_ca_chain (или $system_ca_chain_alt)"
         exit 1
     fi
 
