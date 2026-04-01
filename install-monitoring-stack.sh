@@ -89,7 +89,7 @@ GRAFANA_BEARER_TOKEN=""
 
 # Порты сервисов
 PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
-GRAFANA_PORT="${GRAFANA_PORT:-3000}"
+GRAFANA_PORT="${GRAFANA_PORT:-3300}"
 HARVEST_UNIX_PORT=12991
 HARVEST_NETAPP_PORT=12990
 
@@ -5989,6 +5989,24 @@ configure_services() {
             fi
         }
 
+        port_in_use() {
+            local port="$1"
+            # Предпочитаем фильтр ss по порту; fallback на grep для старых версий ss.
+            if ss -H -tln "( sport = :${port} )" 2>/dev/null | grep -q .; then
+                return 0
+            fi
+            ss -tln 2>/dev/null | grep -Eq "(^|[[:space:]])[^[:space:]]*:${port}([[:space:]]|$)"
+        }
+
+        print_port_owner_diag() {
+            local port="$1"
+            print_info "Диагностика порта ${port}:"
+            ss -tlnp 2>/dev/null | grep ":${port} " | while IFS= read -r line; do
+                print_info "  $line"
+                log_message "[PORT ${port} OWNER] $line"
+            done
+        }
+
         # Перед запуском Prometheus настраиваем права на его файлы/директории
         if [[ "$run_as_current_user" != "true" && "${SKIP_PROMETHEUS_PERMISSIONS_ADJUST:-false}" != "true" ]]; then
             adjust_prometheus_permissions_for_mon_sys
@@ -6029,76 +6047,105 @@ configure_services() {
         echo
 
         # Включаем и перезапускаем Grafana
-        run_user_systemctl enable monitoring-grafana.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-grafana.service"
-        run_user_systemctl restart monitoring-grafana.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-grafana.service"
-        sleep 2
-        if run_user_systemctl is-active --quiet monitoring-grafana.service; then
-            print_success "monitoring-grafana.service успешно запущен (user-юнит)"
+        local grafana_started=false
+        if port_in_use "$GRAFANA_PORT"; then
+            print_warning "Порт Grafana ${GRAFANA_PORT} уже занят. Пропускаем запуск monitoring-grafana.service"
+            print_port_owner_diag "$GRAFANA_PORT"
+            grafana_started=true
         else
-            print_error "monitoring-grafana.service не удалось запустить"
-            print_info "Диагностика Grafana user-юнита:"
-            print_info "  Конфиг: $HOME/monitoring/config/grafana/grafana.ini"
-            print_info "  Лог:    $HOME/monitoring/logs/grafana/grafana.log"
-            if [[ -f "$HOME/monitoring/config/grafana/grafana.ini" ]]; then
-                print_info "  ✅ grafana.ini найден"
+            run_user_systemctl enable monitoring-grafana.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-grafana.service"
+            run_user_systemctl restart monitoring-grafana.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-grafana.service"
+            sleep 2
+            if run_user_systemctl is-active --quiet monitoring-grafana.service; then
+                print_success "monitoring-grafana.service успешно запущен (user-юнит)"
+                grafana_started=true
             else
-                print_info "  ❌ grafana.ini отсутствует"
-            fi
-            run_user_systemctl status monitoring-grafana.service --no-pager | while IFS= read -r line; do
-                print_info "$line"
-                log_message "[GRAFANA USER SYSTEMD STATUS] $line"
-            done
-            run_user_systemctl show monitoring-grafana.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
-                print_info "$line"
-                log_message "[GRAFANA USER SYSTEMD SHOW] $line"
-            done
-            if [[ -f "$HOME/monitoring/logs/grafana/grafana.log" ]]; then
-                print_info "Последние строки grafana.log:"
-                tail -n 80 "$HOME/monitoring/logs/grafana/grafana.log" | while IFS= read -r line; do
+                print_error "monitoring-grafana.service не удалось запустить"
+                print_info "Диагностика Grafana user-юнита:"
+                print_info "  Конфиг: $HOME/monitoring/config/grafana/grafana.ini"
+                print_info "  Лог:    $HOME/monitoring/logs/grafana/grafana.log"
+                if [[ -f "$HOME/monitoring/config/grafana/grafana.ini" ]]; then
+                    print_info "  ✅ grafana.ini найден"
+                else
+                    print_info "  ❌ grafana.ini отсутствует"
+                fi
+                run_user_systemctl status monitoring-grafana.service --no-pager | while IFS= read -r line; do
                     print_info "$line"
-                    log_message "[GRAFANA USER LOG] $line"
+                    log_message "[GRAFANA USER SYSTEMD STATUS] $line"
                 done
+                print_port_owner_diag "$GRAFANA_PORT"
+                run_user_systemctl show monitoring-grafana.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
+                    print_info "$line"
+                    log_message "[GRAFANA USER SYSTEMD SHOW] $line"
+                done
+                if [[ -f "$HOME/monitoring/logs/grafana/grafana.log" ]]; then
+                    print_info "Последние строки grafana.log:"
+                    tail -n 80 "$HOME/monitoring/logs/grafana/grafana.log" | while IFS= read -r line; do
+                        print_info "$line"
+                        log_message "[GRAFANA USER LOG] $line"
+                    done
+                fi
             fi
         fi
         echo
 
         # Включаем и запускаем Harvest user-юнит
-        run_user_systemctl enable monitoring-harvest.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-harvest.service"
-        run_user_systemctl restart monitoring-harvest.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-harvest.service"
-        sleep 3
-        if run_user_systemctl is-active --quiet monitoring-harvest.service; then
-            print_success "monitoring-harvest.service успешно запущен (user-юнит)"
+        local harvest_started=false
+        if port_in_use "$HARVEST_NETAPP_PORT"; then
+            print_warning "Порт Harvest ${HARVEST_NETAPP_PORT} уже занят. Пропускаем запуск monitoring-harvest.service"
+            print_port_owner_diag "$HARVEST_NETAPP_PORT"
+            harvest_started=true
         else
-            print_error "monitoring-harvest.service не удалось запустить"
-            print_info "Диагностика Harvest user-юнита:"
-            print_info "  Проверка конфига: $HOME/monitoring/config/harvest/harvest.yml"
-            print_info "  Проверка cert dir: $HOME/monitoring/config/harvest/cert"
-            if [[ -f "$HOME/monitoring/config/harvest/harvest.yml" ]]; then
-                print_info "  ✅ harvest.yml найден"
+            run_user_systemctl enable monitoring-harvest.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-harvest.service"
+            run_user_systemctl restart monitoring-harvest.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-harvest.service"
+            sleep 3
+            if run_user_systemctl is-active --quiet monitoring-harvest.service; then
+                print_success "monitoring-harvest.service успешно запущен (user-юнит)"
+                harvest_started=true
             else
-                print_info "  ❌ harvest.yml отсутствует"
+                print_error "monitoring-harvest.service не удалось запустить"
+                print_info "Диагностика Harvest user-юнита:"
+                print_info "  Проверка конфига: $HOME/monitoring/config/harvest/harvest.yml"
+                print_info "  Проверка cert dir: $HOME/monitoring/config/harvest/cert"
+                if [[ -f "$HOME/monitoring/config/harvest/harvest.yml" ]]; then
+                    print_info "  ✅ harvest.yml найден"
+                else
+                    print_info "  ❌ harvest.yml отсутствует"
+                fi
+                if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.crt" ]]; then
+                    print_info "  ✅ harvest.crt найден"
+                else
+                    print_info "  ❌ harvest.crt отсутствует"
+                fi
+                if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.key" ]]; then
+                    print_info "  ✅ harvest.key найден"
+                else
+                    print_info "  ❌ harvest.key отсутствует"
+                fi
+                run_user_systemctl status monitoring-harvest.service --no-pager | while IFS= read -r line; do
+                    print_info "$line"
+                    log_message "[HARVEST USER SYSTEMD STATUS] $line"
+                done
+                run_user_systemctl show monitoring-harvest.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
+                    print_info "$line"
+                    log_message "[HARVEST USER SYSTEMD SHOW] $line"
+                done
+                if [[ -f "$HOME/monitoring/logs/harvest/harvest.log" ]]; then
+                    print_info "Последние строки harvest.log:"
+                    tail -n 80 "$HOME/monitoring/logs/harvest/harvest.log" | while IFS= read -r line; do
+                        print_info "$line"
+                        log_message "[HARVEST USER LOG] $line"
+                    done
+                fi
             fi
-            if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.crt" ]]; then
-                print_info "  ✅ harvest.crt найден"
-            else
-                print_info "  ❌ harvest.crt отсутствует"
-            fi
-            if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.key" ]]; then
-                print_info "  ✅ harvest.key найден"
-            else
-                print_info "  ❌ harvest.key отсутствует"
-            fi
-            run_user_systemctl status monitoring-harvest.service --no-pager | while IFS= read -r line; do
-                print_info "$line"
-                log_message "[HARVEST USER SYSTEMD STATUS] $line"
-            done
-            run_user_systemctl show monitoring-harvest.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
-                print_info "$line"
-                log_message "[HARVEST USER SYSTEMD SHOW] $line"
-            done
-            run_user_systemctl --no-pager --full --lines=80 status monitoring-harvest.service 2>/dev/null | while IFS= read -r line; do
-                log_message "[HARVEST USER SYSTEMD FULL STATUS] $line"
-            done
+        fi
+
+        if [[ "$grafana_started" != true ]]; then
+            print_error "Grafana не удалось запустить и порт ${GRAFANA_PORT} не занят внешним процессом"
+            exit 1
+        fi
+        if [[ "$harvest_started" != true ]]; then
+            print_error "Harvest не удалось запустить и порт ${HARVEST_NETAPP_PORT} не занят внешним процессом"
             exit 1
         fi
         echo

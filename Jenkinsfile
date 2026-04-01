@@ -68,7 +68,7 @@ pipeline {
         string(name: 'GRAFANA_WEB_KV',     defaultValue: params.GRAFANA_WEB_KV ?: '',     description: 'Путь KV в Vault для Grafana Web')
         string(name: 'SBERCA_CERT_KV',     defaultValue: params.SBERCA_CERT_KV ?: '',     description: 'Путь KV в Vault для SberCA Cert')
         string(name: 'ADMIN_EMAIL',        defaultValue: params.ADMIN_EMAIL ?: '',        description: 'Email администратора')
-        string(name: 'GRAFANA_PORT',       defaultValue: params.GRAFANA_PORT ?: '3000',   description: 'Порт Grafana')
+        string(name: 'GRAFANA_PORT',       defaultValue: params.GRAFANA_PORT ?: '3300',   description: 'Порт Grafana')
         string(name: 'PROMETHEUS_PORT',    defaultValue: params.PROMETHEUS_PORT ?: '9090',description: 'Порт Prometheus')
         string(name: 'RLM_API_URL',        defaultValue: params.RLM_API_URL ?: '',        description: 'Базовый URL RLM API')
         string(name: 'RLM_TOKEN_CREDENTIAL_ID', defaultValue: params.RLM_TOKEN_CREDENTIAL_ID ?: 'rlm-token', description: 'Jenkins Credential ID для RLM API токена')
