@@ -1334,6 +1334,17 @@ ensure_monitoring_users_in_as_admin() {
 
     # Затем добавляем mon_ci
     ensure_user_in_as_admin "$mon_ci_user"
+
+    # Для RUN_SERVICES_AS_MON_CI=true user-юниты запускаются от mon_ci:
+    # включаем linger и для него, чтобы сервисы не останавливались после logout.
+    if command -v linuxadm-enable-linger >/dev/null 2>&1 && id "$mon_ci_user" >/dev/null 2>&1; then
+        print_step "Включение linger для ${mon_ci_user} (required for mon_ci user units)"
+        if linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
+            print_success "✅ Linger включен для ${mon_ci_user}"
+        else
+            print_warning "Не удалось включить linger для ${mon_ci_user}. User units могут останавливаться после logout"
+        fi
+    fi
 }
 
 # Добавляет ${KAE}-lnx-mon_sys в группу grafana через RLM (для доступа к /etc/grafana/grafana.ini)
@@ -6472,15 +6483,20 @@ verify_installation() {
     print_info "Проверка статуса сервисов:"
     local failed_services=()
 
-    # Проверяем user-юниты если используется mon_sys пользователь
+    # Проверяем user-юниты под фактическим runtime-пользователем (mon_ci или mon_sys)
     if [[ -n "${KAE:-}" ]]; then
-        local mon_sys_user="${KAE}-lnx-mon_sys"
-        local mon_sys_uid=""
+        local runtime_verify_user=""
+        if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
+            runtime_verify_user="${KAE}-lnx-mon_ci"
+        else
+            runtime_verify_user="${KAE}-lnx-mon_sys"
+        fi
+        local runtime_verify_uid=""
         
-        if id "$mon_sys_user" >/dev/null 2>&1; then
-            mon_sys_uid=$(id -u "$mon_sys_user")
-            local ru_cmd="runuser -u ${mon_sys_user} --"
-            local xdg_env="XDG_RUNTIME_DIR=/run/user/${mon_sys_uid}"
+        if id "$runtime_verify_user" >/dev/null 2>&1; then
+            runtime_verify_uid=$(id -u "$runtime_verify_user")
+            local ru_cmd="runuser -u ${runtime_verify_user} --"
+            local xdg_env="XDG_RUNTIME_DIR=/run/user/${runtime_verify_uid}"
             
             # Проверяем Prometheus user-юнит
             if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-prometheus.service 2>/dev/null; then
@@ -6498,7 +6514,7 @@ verify_installation() {
                 failed_services+=("monitoring-grafana.service")
             fi
         else
-            print_warning "Пользователь ${mon_sys_user} не найден, проверяем системные юниты"
+            print_warning "Пользователь ${runtime_verify_user} не найден, проверяем системные юниты"
             check_system_services "failed_services"
         fi
     else

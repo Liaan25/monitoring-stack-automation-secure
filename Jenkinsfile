@@ -870,27 +870,31 @@ echo "================================================"
 echo "ПРОВЕРКА СЕРВИСОВ (USER UNITS):"
 echo "================================================"
 
-# Получаем MON_SYS_USER из окружения или вычисляем
-MON_SYS_USER="''' + env.MON_SYS_USER + '''"
-MON_SYS_UID=$(id -u "$MON_SYS_USER" 2>/dev/null || echo "")
+# Получаем runtime user для user-юнитов (mon_ci или mon_sys)
+if [ "''' + (params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false') + '''" = "true" ]; then
+    RUNTIME_USER="''' + env.DEPLOY_USER + '''"
+else
+    RUNTIME_USER="''' + env.MON_SYS_USER + '''"
+fi
+RUNTIME_UID=$(id -u "$RUNTIME_USER" 2>/dev/null || echo "")
 
-if [ -n "$MON_SYS_UID" ]; then
-    echo "[INFO] Проверка user-юнитов для $MON_SYS_USER (UID: $MON_SYS_UID)..."
+if [ -n "$RUNTIME_UID" ]; then
+    echo "[INFO] Проверка user-юнитов для $RUNTIME_USER (UID: $RUNTIME_UID)..."
     
     # Проверяем через sudo (разрешено в sudoers)
-    sudo -u "$MON_SYS_USER" env XDG_RUNTIME_DIR="/run/user/$MON_SYS_UID" \
+    sudo -u "$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/$RUNTIME_UID" \
         systemctl --user is-active monitoring-prometheus.service && \
         echo "[OK] Prometheus активен" || echo "[FAIL] Prometheus не активен"
     
-    sudo -u "$MON_SYS_USER" env XDG_RUNTIME_DIR="/run/user/$MON_SYS_UID" \
+    sudo -u "$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/$RUNTIME_UID" \
         systemctl --user is-active monitoring-grafana.service && \
         echo "[OK] Grafana активна" || echo "[FAIL] Grafana не активна"
     
-    sudo -u "$MON_SYS_USER" env XDG_RUNTIME_DIR="/run/user/$MON_SYS_UID" \
+    sudo -u "$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/$RUNTIME_UID" \
         systemctl --user is-active monitoring-harvest.service && \
         echo "[OK] Harvest активен" || echo "[FAIL] Harvest не активен"
 else
-    echo "[ERROR] Не удалось определить UID для $MON_SYS_USER"
+    echo "[ERROR] Не удалось определить UID для $RUNTIME_USER"
 fi
 
 echo ""
