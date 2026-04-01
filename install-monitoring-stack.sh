@@ -3193,11 +3193,11 @@ WantedBy=default.target
 EOF
 
     # User-юнит Harvest (аналогично системному сервису)
-    # SECURE EDITION: WorkingDirectory остается /opt/harvest (RPM бинарники)
-    # но конфиги будут в ${runtime_home}/monitoring/config/harvest/
+    # SECURE EDITION: бинарники в /opt/harvest, конфиги/логи в user-space
     local harvest_unit="${user_systemd_dir}/monitoring-harvest.service"
     
     local runtime_harvest_config="${runtime_home}/monitoring/config/harvest"
+    local runtime_harvest_logs="${runtime_home}/monitoring/logs/harvest"
     
     print_info "Harvest пути (user-space для $runtime_user):"
     print_info "  Config: $runtime_harvest_config"
@@ -3211,14 +3211,16 @@ After=network.target
 
 [Service]
 Type=oneshot
-# Бинарники из RPM остаются в /opt/harvest
-WorkingDirectory=/opt/harvest
+# Бинарники из RPM остаются в /opt/harvest, рабочая директория writable в user-space
+WorkingDirectory=${runtime_harvest_config}
 # Конфиги в user-space: передаются через --config
 ExecStart=/opt/harvest/bin/harvest start --config ${runtime_harvest_config}/harvest.yml
 ExecStop=/opt/harvest/bin/harvest stop --config ${runtime_harvest_config}/harvest.yml
 RemainAfterExit=yes
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/opt/harvest/bin
 Environment=HARVEST_CONF=${runtime_harvest_config}
+StandardOutput=append:${runtime_harvest_logs}/harvest.log
+StandardError=append:${runtime_harvest_logs}/harvest.log
 
 [Install]
 WantedBy=default.target
@@ -6034,10 +6036,29 @@ configure_services() {
             print_success "monitoring-grafana.service успешно запущен (user-юнит)"
         else
             print_error "monitoring-grafana.service не удалось запустить"
+            print_info "Диагностика Grafana user-юнита:"
+            print_info "  Конфиг: $HOME/monitoring/config/grafana/grafana.ini"
+            print_info "  Лог:    $HOME/monitoring/logs/grafana/grafana.log"
+            if [[ -f "$HOME/monitoring/config/grafana/grafana.ini" ]]; then
+                print_info "  ✅ grafana.ini найден"
+            else
+                print_info "  ❌ grafana.ini отсутствует"
+            fi
             run_user_systemctl status monitoring-grafana.service --no-pager | while IFS= read -r line; do
                 print_info "$line"
                 log_message "[GRAFANA USER SYSTEMD STATUS] $line"
             done
+            run_user_systemctl show monitoring-grafana.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
+                print_info "$line"
+                log_message "[GRAFANA USER SYSTEMD SHOW] $line"
+            done
+            if [[ -f "$HOME/monitoring/logs/grafana/grafana.log" ]]; then
+                print_info "Последние строки grafana.log:"
+                tail -n 80 "$HOME/monitoring/logs/grafana/grafana.log" | while IFS= read -r line; do
+                    print_info "$line"
+                    log_message "[GRAFANA USER LOG] $line"
+                done
+            fi
         fi
         echo
 
