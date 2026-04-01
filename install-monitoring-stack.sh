@@ -3895,13 +3895,13 @@ configure_harvest() {
     
     # Определяем user-space пути
     local HARVEST_USER_CONFIG_DIR="$HOME/monitoring/config/harvest"
-    local HARVEST_USER_CERTS_DIR="$HOME/monitoring/certs/harvest"
+    local HARVEST_USER_CERTS_DIR="$HARVEST_USER_CONFIG_DIR/cert"
     
     # Создаем директории
     mkdir -p "$HARVEST_USER_CONFIG_DIR" "$HARVEST_USER_CERTS_DIR"
     
     # Проверяем, есть ли сертификаты
-    local HARVEST_RUNTIME_CERT_DIR="$HOME/monitoring/config/harvest/cert"
+    local HARVEST_RUNTIME_CERT_DIR="$HARVEST_USER_CERTS_DIR"
     if [[ ! -f "$HARVEST_RUNTIME_CERT_DIR/harvest.crt" || ! -f "$HARVEST_RUNTIME_CERT_DIR/harvest.key" ]]; then
         print_warning "Сертификаты Harvest пока не найдены в $HARVEST_RUNTIME_CERT_DIR/"
         print_info "Ожидаем, что copy_certs_to_user_dirs() разложит их из user-space bundle"
@@ -3958,6 +3958,11 @@ EOF
     # Логируем для отладки
     echo "[DEBUG-HARVEST] Конфиг: $HARVEST_USER_CONFIG_DIR/harvest.yml" | tee /dev/stderr
     echo "[DEBUG-HARVEST] Сертификаты: $HARVEST_USER_CERTS_DIR/" | tee /dev/stderr
+    if [[ -f "$HARVEST_USER_CERTS_DIR/harvest.crt" && -f "$HARVEST_USER_CERTS_DIR/harvest.key" ]]; then
+        echo "[DEBUG-HARVEST] ✅ Найдены harvest.crt и harvest.key" | tee /dev/stderr
+    else
+        echo "[DEBUG-HARVEST] ❌ Нет пары harvest.crt/harvest.key в $HARVEST_USER_CERTS_DIR" | tee /dev/stderr
+    fi
 }
 
 configure_prometheus() {
@@ -6044,9 +6049,34 @@ configure_services() {
             print_success "monitoring-harvest.service успешно запущен (user-юнит)"
         else
             print_error "monitoring-harvest.service не удалось запустить"
+            print_info "Диагностика Harvest user-юнита:"
+            print_info "  Проверка конфига: $HOME/monitoring/config/harvest/harvest.yml"
+            print_info "  Проверка cert dir: $HOME/monitoring/config/harvest/cert"
+            if [[ -f "$HOME/monitoring/config/harvest/harvest.yml" ]]; then
+                print_info "  ✅ harvest.yml найден"
+            else
+                print_info "  ❌ harvest.yml отсутствует"
+            fi
+            if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.crt" ]]; then
+                print_info "  ✅ harvest.crt найден"
+            else
+                print_info "  ❌ harvest.crt отсутствует"
+            fi
+            if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.key" ]]; then
+                print_info "  ✅ harvest.key найден"
+            else
+                print_info "  ❌ harvest.key отсутствует"
+            fi
             run_user_systemctl status monitoring-harvest.service --no-pager | while IFS= read -r line; do
                 print_info "$line"
                 log_message "[HARVEST USER SYSTEMD STATUS] $line"
+            done
+            run_user_systemctl show monitoring-harvest.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
+                print_info "$line"
+                log_message "[HARVEST USER SYSTEMD SHOW] $line"
+            done
+            run_user_systemctl --no-pager --full --lines=80 status monitoring-harvest.service 2>/dev/null | while IFS= read -r line; do
+                log_message "[HARVEST USER SYSTEMD FULL STATUS] $line"
             done
             exit 1
         fi
