@@ -319,9 +319,30 @@ pipeline {
                                 if (params.SBERCA_CERT_KV?.trim()) {
                                     def requestedPath = params.SBERCA_CERT_KV.trim()
                                     def vaultNamespace = params.NAMESPACE_CI?.trim()
-                                    def apiPath = requestedPath
-                                    if (vaultNamespace && requestedPath.startsWith("${vaultNamespace}/")) {
-                                        apiPath = requestedPath.substring(vaultNamespace.length() + 1)
+                                    def apiPath = requestedPath.replaceAll('^/+', '')
+                                    if (apiPath.startsWith('v1/')) {
+                                        apiPath = apiPath.substring(3)
+                                    }
+                                    if (vaultNamespace && apiPath.startsWith("${vaultNamespace}/")) {
+                                        apiPath = apiPath.substring(vaultNamespace.length() + 1)
+                                    }
+
+                                    // Поддержка legacy ввода, где mount ошибочно задается как /SBERCA/fetch/<mount>/fetch/<role>.
+                                    // Нормализуем к корректному формату: /SBERCA/<mount>/fetch/<role>.
+                                    apiPath = apiPath.replace('/SBERCA/fetch/', '/SBERCA/')
+
+                                    if (!apiPath.contains('/SBERCA/') || !apiPath.contains('/fetch/')) {
+                                        error("❌ SBERCA_CERT_KV имеет неверный формат. Ожидается: <NAMESPACE>/.../SBERCA/<mount>/fetch/<role>")
+                                    }
+
+                                    if (apiPath.contains('/fetch/') && apiPath.split('/fetch/').size() > 2) {
+                                        error("❌ SBERCA_CERT_KV содержит лишний '/fetch/'. Используйте формат: <NAMESPACE>/.../SBERCA/<mount>/fetch/<role>")
+                                    }
+
+                                    if (requestedPath != apiPath && requestedPath != "${vaultNamespace}/${apiPath}") {
+                                        echo "[SBERCA-DIAG] Нормализация пути SBERCA_CERT_KV"
+                                        echo "[SBERCA-DIAG] requested_path: ${requestedPath}"
+                                        echo "[SBERCA-DIAG] normalized_api_path: ${apiPath}"
                                     }
 
                                     def certRequestPayload = groovy.json.JsonOutput.toJson([
@@ -331,6 +352,9 @@ pipeline {
                                         alt_names: (params.SERVER_ADDRESS ?: '').trim()
                                     ])
                                     writeFile file: 'sberca_request_payload.json', text: certRequestPayload
+                                    writeFile file: 'sberca_api_path.txt', text: apiPath
+                                    writeFile file: 'sberca_namespace.txt', text: (vaultNamespace ?: '')
+                                    writeFile file: 'sberca_url.txt', text: "https://${params.SEC_MAN_ADDR}"
 
                                     try {
                                         withCredentials([[
@@ -339,16 +363,14 @@ pipeline {
                                             vaultNamespace: vaultNamespace,
                                             vaultAddr: "https://${params.SEC_MAN_ADDR}"
                                         ]]) {
-                                            def certResponseRaw = ''
-                                            withEnv([
-                                                "SBERCA_URL=https://${params.SEC_MAN_ADDR}",
-                                                "SBERCA_API_PATH=${apiPath}",
-                                                "SBERCA_NAMESPACE=${vaultNamespace ?: ''}"
-                                            ]) {
-                                                certResponseRaw = sh(
-                                                    script: '''#!/bin/bash
+                                            def certResponseRaw = sh(
+                                                script: '''#!/bin/bash
 set -euo pipefail
 set +x
+
+SBERCA_URL="$(cat sberca_url.txt)"
+SBERCA_API_PATH="$(cat sberca_api_path.txt)"
+SBERCA_NAMESPACE="$(cat sberca_namespace.txt)"
 
 NS_HEADER=()
 if [[ -n "${SBERCA_NAMESPACE}" ]]; then
@@ -401,9 +423,8 @@ fi
 cat "${FETCH_RESP_FILE}"
 rm -f "${FETCH_RESP_FILE}"
 ''',
-                                                    returnStdout: true
-                                                ).trim()
-                                            }
+                                                returnStdout: true
+                                            ).trim()
 
                                             def certResponse = new groovy.json.JsonSlurperClassic().parseText(certResponseRaw)
                                             def cert = (certResponse?.data?.certificate ?: '').toString().trim()
@@ -427,7 +448,7 @@ rm -f "${FETCH_RESP_FILE}"
                                             }
                                         }
                                     } finally {
-                                        sh 'rm -f sberca_request_payload.json'
+                                        sh 'rm -f sberca_request_payload.json sberca_api_path.txt sberca_namespace.txt sberca_url.txt'
                                     }
                                 }
 
