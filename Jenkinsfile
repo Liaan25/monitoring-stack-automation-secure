@@ -285,6 +285,15 @@ pipeline {
                             [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
                         ]]
                     }
+                    if (params.SBERCA_CERT_KV?.trim()) {
+                        // PKI endpoint, expected keys: certificate, private_key, issuing_ca, ca_chain
+                        vaultSecrets << [path: params.SBERCA_CERT_KV, secretValues: [
+                            [envVar: 'VA_CERT_CERTIFICATE', vaultKey: 'certificate'],
+                            [envVar: 'VA_CERT_PRIVATE_KEY', vaultKey: 'private_key'],
+                            [envVar: 'VA_CERT_ISSUING_CA',  vaultKey: 'issuing_ca'],
+                            [envVar: 'VA_CERT_CA_CHAIN',    vaultKey: 'ca_chain']
+                        ]]
+                    }
                     
                     if (vaultSecrets.isEmpty()) {
                         echo "[WARNING] KV пути не заданы"
@@ -293,7 +302,8 @@ pipeline {
                             "vault-agent": [role_id: '', secret_id: ''],
                             "rpm_url": [harvest: '', prometheus: '', grafana: ''],
                             "netapp_ssh": [addr: '', user: '', pass: ''],
-                            "grafana_web": [user: '', pass: '']
+                            "grafana_web": [user: '', pass: ''],
+                            "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
                         ]
                         writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(emptyData)
                     } else {
@@ -310,6 +320,28 @@ pipeline {
                                 vaultSecrets: vaultSecrets
                             ]) {
                                 // Секреты загружены в переменные окружения (VA_ROLE_ID, VA_SECRET_ID и т.д.)
+                                def cert = (env.VA_CERT_CERTIFICATE ?: '').trim()
+                                def pkey = (env.VA_CERT_PRIVATE_KEY ?: '').trim()
+                                def issuingCa = (env.VA_CERT_ISSUING_CA ?: '').trim()
+                                def chainRaw = (env.VA_CERT_CA_CHAIN ?: '').trim()
+                                def chainNormalized = chainRaw
+
+                                // Hashi Vault может вернуть ca_chain как JSON-массив.
+                                if (chainRaw?.startsWith('[') && chainRaw?.endsWith(']')) {
+                                    try {
+                                        def parsed = new groovy.json.JsonSlurperClassic().parseText(chainRaw)
+                                        if (parsed instanceof List) {
+                                            chainNormalized = parsed.findAll { it != null }.collect { it.toString() }.join('\n')
+                                        }
+                                    } catch (ignored) {
+                                        chainNormalized = chainRaw
+                                    }
+                                }
+
+                                def serverBundlePem = [cert, pkey].findAll { it?.trim() }.join('\n')
+                                def caChainCrt = chainNormalized?.trim() ? chainNormalized : issuingCa
+                                def grafanaClientPem = serverBundlePem
+
                                 def data = [
                                     "vault-agent": [
                                         role_id: (env.VA_ROLE_ID ?: ''),
@@ -328,10 +360,19 @@ pipeline {
                                     "grafana_web": [
                                         user: (env.VA_GRAFANA_WEB_USER ?: ''),
                                         pass: (env.VA_GRAFANA_WEB_PASS ?: '')
+                                    ],
+                                    "certificates": [
+                                        server_bundle_pem: serverBundlePem,
+                                        ca_chain_crt: caChainCrt,
+                                        grafana_client_pem: grafanaClientPem
                                     ]
                                 ]
                                 
                                 writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(data)
+                                echo "[INFO] certificates in temp_data_cred.json: " +
+                                     "server_bundle_pem=${serverBundlePem ? 'yes' : 'no'}, " +
+                                     "ca_chain_crt=${caChainCrt ? 'yes' : 'no'}, " +
+                                     "grafana_client_pem=${grafanaClientPem ? 'yes' : 'no'}"
                             }
                         } catch (Exception e) {
                             echo "[ERROR] Ошибка Vault: ${e.message}"
