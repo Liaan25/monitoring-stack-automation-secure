@@ -285,16 +285,6 @@ pipeline {
                             [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
                         ]]
                     }
-                    if (params.SBERCA_CERT_KV?.trim()) {
-                        // PKI endpoint, expected keys: certificate, private_key, issuing_ca, ca_chain
-                        vaultSecrets << [path: params.SBERCA_CERT_KV, secretValues: [
-                            [envVar: 'VA_CERT_CERTIFICATE', vaultKey: 'certificate'],
-                            [envVar: 'VA_CERT_PRIVATE_KEY', vaultKey: 'private_key'],
-                            [envVar: 'VA_CERT_ISSUING_CA',  vaultKey: 'issuing_ca'],
-                            [envVar: 'VA_CERT_CA_CHAIN',    vaultKey: 'ca_chain']
-                        ]]
-                    }
-                    
                     if (vaultSecrets.isEmpty()) {
                         echo "[WARNING] KV пути не заданы"
                         // Создаем пустой JSON
@@ -321,27 +311,74 @@ pipeline {
                                 vaultSecrets: vaultSecrets
                             ]) {
                                 // Секреты загружены в переменные окружения (VA_ROLE_ID, VA_SECRET_ID и т.д.)
-                                def cert = (env.VA_CERT_CERTIFICATE ?: '').trim()
-                                def pkey = (env.VA_CERT_PRIVATE_KEY ?: '').trim()
-                                def issuingCa = (env.VA_CERT_ISSUING_CA ?: '').trim()
-                                def chainRaw = (env.VA_CERT_CA_CHAIN ?: '').trim()
-                                def chainNormalized = chainRaw
+                                def serverBundlePem = ''
+                                def caChainCrt = ''
+                                def grafanaClientPem = ''
 
-                                // Hashi Vault может вернуть ca_chain как JSON-массив.
-                                if (chainRaw?.startsWith('[') && chainRaw?.endsWith(']')) {
+                                // SberCA нужно вызывать через fetch (POST), а не через withVault read.
+                                if (params.SBERCA_CERT_KV?.trim()) {
+                                    def requestedPath = params.SBERCA_CERT_KV.trim()
+                                    def vaultNamespace = params.NAMESPACE_CI?.trim()
+                                    def apiPath = requestedPath
+                                    if (vaultNamespace && requestedPath.startsWith("${vaultNamespace}/")) {
+                                        apiPath = requestedPath.substring(vaultNamespace.length() + 1)
+                                    }
+
+                                    def certRequestPayload = groovy.json.JsonOutput.toJson([
+                                        common_name: (params.SERVER_ADDRESS ?: '').trim(),
+                                        email: (params.ADMIN_EMAIL?.trim() ?: 'noreply@sberbank.ru'),
+                                        format: 'pem',
+                                        alt_names: (params.SERVER_ADDRESS ?: '').trim()
+                                    ])
+                                    writeFile file: 'sberca_request_payload.json', text: certRequestPayload
+
                                     try {
-                                        def parsed = new groovy.json.JsonSlurperClassic().parseText(chainRaw)
-                                        if (parsed instanceof List) {
-                                            chainNormalized = parsed.findAll { it != null }.collect { it.toString() }.join('\n')
+                                        withCredentials([[
+                                            $class: 'VaultTokenCredentialBinding',
+                                            credentialsId: vaultCredId,
+                                            vaultNamespace: vaultNamespace,
+                                            vaultAddr: "https://${params.SEC_MAN_ADDR}"
+                                        ]]) {
+                                            def namespaceHeader = vaultNamespace ? "-H \"X-Vault-Namespace: ${vaultNamespace}\" \\\n" : ""
+                                            def certResponseRaw = sh(
+                                                script: """#!/bin/bash
+set -euo pipefail
+set +x
+curl -sS --fail \\
+  -H "X-Vault-Token: \$VAULT_TOKEN" \\
+  ${namespaceHeader}  -H "Content-Type: application/json" \\
+  --request POST \\
+  --data @sberca_request_payload.json \\
+  "https://${params.SEC_MAN_ADDR}/v1/${apiPath}"
+""",
+                                                returnStdout: true
+                                            ).trim()
+
+                                            def certResponse = new groovy.json.JsonSlurperClassic().parseText(certResponseRaw)
+                                            def cert = (certResponse?.data?.certificate ?: '').toString().trim()
+                                            def pkey = (certResponse?.data?.private_key ?: '').toString().trim()
+                                            def issuingCa = (certResponse?.data?.issuing_ca ?: '').toString().trim()
+
+                                            def chainObj = certResponse?.data?.ca_chain
+                                            def chainText = ''
+                                            if (chainObj instanceof List) {
+                                                chainText = chainObj.findAll { it != null }.collect { it.toString() }.join('\n')
+                                            } else if (chainObj != null) {
+                                                chainText = chainObj.toString().trim()
+                                            }
+
+                                            serverBundlePem = [pkey, cert, issuingCa].findAll { it?.trim() }.join('\n')
+                                            caChainCrt = chainText?.trim() ? chainText : issuingCa
+                                            grafanaClientPem = [pkey, cert, issuingCa].findAll { it?.trim() }.join('\n')
+
+                                            if (!serverBundlePem?.trim()) {
+                                                error("❌ SberCA fetch вернул пустой server_bundle_pem")
+                                            }
                                         }
-                                    } catch (ignored) {
-                                        chainNormalized = chainRaw
+                                    } finally {
+                                        sh 'rm -f sberca_request_payload.json'
                                     }
                                 }
-
-                                def serverBundlePem = [cert, pkey].findAll { it?.trim() }.join('\n')
-                                def caChainCrt = chainNormalized?.trim() ? chainNormalized : issuingCa
-                                def grafanaClientPem = serverBundlePem
 
                                 def data = [
                                     "vault-agent": [
