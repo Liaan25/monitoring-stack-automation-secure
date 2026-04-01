@@ -4183,6 +4183,18 @@ EOF
     # 2. Пытаемся настроить через API (если есть токен)
     # ============================================
     local grafana_url="https://${SERVER_DOMAIN}:${GRAFANA_PORT}"
+    local grafana_client_cert="$HOME/monitoring/certs/grafana/grafana-client.crt"
+    local grafana_client_key="$HOME/monitoring/certs/grafana/grafana-client.key"
+    if [[ ! -f "$grafana_client_cert" || ! -f "$grafana_client_key" ]]; then
+        if [[ -f "/opt/vault/certs/grafana-client.crt" && -f "/opt/vault/certs/grafana-client.key" ]]; then
+            grafana_client_cert="/opt/vault/certs/grafana-client.crt"
+            grafana_client_key="/opt/vault/certs/grafana-client.key"
+        fi
+    fi
+    local prometheus_ca_chain="$HOME/monitoring/certs/prometheus/ca_chain.crt"
+    if [[ ! -f "$prometheus_ca_chain" && -f "/etc/prometheus/cert/ca_chain.crt" ]]; then
+        prometheus_ca_chain="/etc/prometheus/cert/ca_chain.crt"
+    fi
     local grafana_client_cert="${GRAFANA_USER_CERTS_DIR}/grafana-client.crt"
     local grafana_client_key="${GRAFANA_USER_CERTS_DIR}/grafana-client.key"
     if [[ ! -f "$grafana_client_cert" || ! -f "$grafana_client_key" ]]; then
