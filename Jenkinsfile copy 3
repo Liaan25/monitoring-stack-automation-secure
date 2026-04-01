@@ -74,7 +74,6 @@ pipeline {
         string(name: 'RLM_TOKEN_CREDENTIAL_ID', defaultValue: params.RLM_TOKEN_CREDENTIAL_ID ?: 'rlm-token', description: 'Jenkins Credential ID для RLM API токена')
         string(name: 'VAULT_CREDENTIAL_ID', defaultValue: params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev', description: 'Jenkins Credential ID для Vault')
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
-        booleanParam(name: 'USE_SIMPLIFIED_CERT_FLOW', defaultValue: false, description: '🧪 Использовать non-root/simplified certificate flow (без /opt/vault/*)')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов')
         booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: true, description: '⚡ Пропустить CI диагностику')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить CDL этап')
@@ -651,7 +650,6 @@ env \
   SBERCA_CERT_KV="__SBERCA_CERT_KV__" \
   ADMIN_EMAIL="__ADMIN_EMAIL__" \
   RENEW_CERTIFICATES_ONLY="__RENEW_CERTIFICATES_ONLY__" \
-  USE_SIMPLIFIED_CERT_FLOW="__USE_SIMPLIFIED_CERT_FLOW__" \
   SKIP_RPM_INSTALL="__SKIP_RPM_INSTALL__" \
   GRAFANA_URL="$RPM_GRAFANA" \
   PROMETHEUS_URL="$RPM_PROMETHEUS" \
@@ -680,7 +678,6 @@ REMOTE_EOF
                             .replace('__SBERCA_CERT_KV__',     params.SBERCA_CERT_KV     ?: '')
                             .replace('__ADMIN_EMAIL__',               params.ADMIN_EMAIL             ?: '')
                             .replace('__RENEW_CERTIFICATES_ONLY__',  params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')
-                            .replace('__USE_SIMPLIFIED_CERT_FLOW__', params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')
                             .replace('__SKIP_RPM_INSTALL__',         params.SKIP_RPM_INSTALL        ? 'true' : 'false')
                             .replace('__DEPLOY_VERSION__',     env.VERSION_SHORT         ?: 'unknown')
                             .replace('__DEPLOY_GIT_COMMIT__',  env.VERSION_GIT_COMMIT    ?: 'unknown')

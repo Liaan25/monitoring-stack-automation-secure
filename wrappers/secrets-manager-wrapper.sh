@@ -94,8 +94,13 @@ main() {
             validate_json_file "$JSON_FILE"
             validate_field "$FIELD"
             
-            local value
-            value=$(jq -r ".${FIELD} // empty" "$JSON_FILE" 2>/dev/null || echo "")
+            local value jq_path part
+            jq_path='.'
+            IFS='.' read -r -a field_parts <<< "$FIELD"
+            for part in "${field_parts[@]}"; do
+                jq_path="${jq_path}[\"${part}\"]"
+            done
+            value=$(jq -r "${jq_path} // empty" "$JSON_FILE" 2>/dev/null || echo "")
             
             # Выводим значение
             printf '%s' "$value"

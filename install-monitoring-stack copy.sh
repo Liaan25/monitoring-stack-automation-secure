@@ -36,7 +36,6 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${GRAFANA_PORT:=}"
 : "${PROMETHEUS_PORT:=}"
 : "${NETAPP_POLLER_NAME:=}"
-: "${USE_SIMPLIFIED_CERT_FLOW:=false}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -6794,78 +6793,81 @@ main() {
     
     echo "[MAIN] ========================================" | tee /dev/stderr
     write_diagnostic "========================================="
-    write_diagnostic "ПРОВЕРКА: USE_SIMPLIFIED_CERT_FLOW"
+    write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
     write_diagnostic "========================================="
-    write_diagnostic "Значение переменной: '${USE_SIMPLIFIED_CERT_FLOW:-<не задан>}'"
-
-    if [[ "${USE_SIMPLIFIED_CERT_FLOW:-false}" == "true" ]]; then
-        write_diagnostic "Режим: simplified (без /opt/vault/* и без системного vault-agent)"
-        echo "[MAIN] ✅ USE_SIMPLIFIED_CERT_FLOW=true: включен non-root/simplified путь" | tee /dev/stderr
-        log_debug "USE_SIMPLIFIED_CERT_FLOW=true: using simplified certificate flow"
-
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        echo "[MAIN] Вызов get_certificates_from_jenkins..." | tee /dev/stderr
-        log_debug "Calling: get_certificates_from_jenkins"
-
-        get_certificates_from_jenkins
-
-        echo "[MAIN] ✅ get_certificates_from_jenkins завершена успешно" | tee /dev/stderr
-        log_debug "Completed: get_certificates_from_jenkins"
-        write_diagnostic "get_certificates_from_jenkins выполнена"
+    write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
+    
+    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
+        write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
+        write_diagnostic "Действие: используем уже установленный vault-agent"
+        echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
+        print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
     else
-        write_diagnostic "Режим: legacy vault-agent (/opt/vault/*)"
-        echo "[MAIN] ⚠️  USE_SIMPLIFIED_CERT_FLOW=false: используется legacy vault-agent путь" | tee /dev/stderr
-        log_debug "USE_SIMPLIFIED_CERT_FLOW=false: using legacy vault-agent flow"
-
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        write_diagnostic "========================================="
-        write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
-        write_diagnostic "========================================="
-        write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
+        write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
+        echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
+        log_debug "Calling: install_vault_via_rlm"
         
-        if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
-            write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
-            write_diagnostic "Действие: используем уже установленный vault-agent"
-            echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
-            log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
-            print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
-        else
-            write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
-            echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
-            log_debug "Calling: install_vault_via_rlm"
-            
-            install_vault_via_rlm
-            
-            echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
-            log_debug "Completed: install_vault_via_rlm"
-            write_diagnostic "install_vault_via_rlm выполнена"
-        fi
-        write_diagnostic ""
+        install_vault_via_rlm
         
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
-        log_debug "Calling: setup_vault_config"
-        
-        setup_vault_config
-        
-        echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
-        log_debug "Completed: setup_vault_config"
-        write_diagnostic "setup_vault_config выполнена"
-        
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        echo "[MAIN] Вызов copy_certificates_from_vault_agent..." | tee /dev/stderr
-        log_debug "Calling: copy_certificates_from_vault_agent"
-        
-        copy_certificates_from_vault_agent || {
-            echo "[MAIN] ⚠️  copy_certificates_from_vault_agent FAILED" | tee /dev/stderr
-            log_debug "WARNING: copy_certificates_from_vault_agent failed"
-            print_warning "Не удалось скопировать сертификаты. Проверьте vault-agent: sudo systemctl status vault-agent"
-        }
-        
-        echo "[MAIN] ✅ copy_certificates_from_vault_agent завершена" | tee /dev/stderr
-        log_debug "Completed: copy_certificates_from_vault_agent"
-        write_diagnostic "copy_certificates_from_vault_agent выполнена"
+        echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
+        log_debug "Completed: install_vault_via_rlm"
+        write_diagnostic "install_vault_via_rlm выполнена"
     fi
+    write_diagnostic ""
+    
+    # ============================================================
+    # LEGACY: setup_vault_config (закомментирован)
+    # ============================================================
+    # Старый подход с vault-agent и системными путями
+    # Для возврата к этому подходу:
+    # 1. Раскомментируйте вызов setup_vault_config ниже
+    # 2. Раскомментируйте функцию setup_vault_config (строки 1814-2618)
+    # 3. Раскомментируйте System-level sudo-правила в sudoers.example
+    # 4. См. документацию: HOW-TO-REVERT.md
+    # ============================================================
+    
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
+    log_debug "Calling: setup_vault_config"
+    
+    setup_vault_config
+    
+    echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
+    log_debug "Completed: setup_vault_config"
+    write_diagnostic "setup_vault_config выполнена"
+    
+    # ============================================================
+    # КОПИРОВАНИЕ СЕРТИФИКАТОВ ИЗ VAULT-AGENT
+    # ============================================================
+    # После запуска vault-agent (в setup_vault_config), сертификаты
+    # генерируются автоматически в /opt/vault/certs/
+    # Копируем их в user-space для использования сервисами
+    # ============================================================
+    
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов copy_certificates_from_vault_agent..." | tee /dev/stderr
+    log_debug "Calling: copy_certificates_from_vault_agent"
+    
+    copy_certificates_from_vault_agent || {
+        echo "[MAIN] ⚠️  copy_certificates_from_vault_agent FAILED" | tee /dev/stderr
+        log_debug "WARNING: copy_certificates_from_vault_agent failed"
+        print_warning "Не удалось скопировать сертификаты. Проверьте vault-agent: sudo systemctl status vault-agent"
+    }
+    
+    echo "[MAIN] ✅ copy_certificates_from_vault_agent завершена" | tee /dev/stderr
+    log_debug "Completed: copy_certificates_from_vault_agent"
+    write_diagnostic "copy_certificates_from_vault_agent выполнена"
+    
+    # echo "[MAIN] ========================================" | tee /dev/stderr
+    # echo "[MAIN] Вызов get_certificates_from_jenkins..." | tee /dev/stderr
+    # log_debug "Calling: get_certificates_from_jenkins"
+    
+#     # get_certificates_from_jenkins
+    
+#     # echo "[MAIN] ✅ get_certificates_from_jenkins завершена успешно" | tee /dev/stderr
+    # log_debug "Completed: get_certificates_from_jenkins"
+    write_diagnostic "get_certificates_from_jenkins выполнена"
 
     echo "[MAIN] Вызов load_config_from_json..." | tee /dev/stderr
     log_debug "Calling: load_config_from_json"
