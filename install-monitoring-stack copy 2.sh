@@ -38,7 +38,6 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${NETAPP_POLLER_NAME:=}"
 : "${USE_SIMPLIFIED_CERT_FLOW:=true}"
 : "${SKIP_IPTABLES:=true}"
-: "${RUN_SERVICES_AS_MON_CI:=true}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -1663,9 +1662,7 @@ cleanup_all_previous() {
         
         if [[ -d "$dir" ]]; then
             print_info "Удаление директории: $dir"
-            if ! rm -rf "$dir" >/dev/null 2>&1; then
-                print_warning "Не удалось удалить директорию: $dir (недостаточно прав)"
-            fi
+            rm -rf "$dir" || true
         fi
     done
 
@@ -1684,9 +1681,7 @@ cleanup_all_previous() {
     for file in "${files_to_clean[@]}"; do
         if [[ -f "$file" ]]; then
             print_info "Удаление файла: $file"
-            if ! rm -rf "$file" >/dev/null 2>&1; then
-                print_warning "Не удалось удалить файл: $file (недостаточно прав)"
-            fi
+            rm -rf "$file" || true
         fi
     done
 
@@ -3087,7 +3082,7 @@ copy_certs_to_user_dirs() {
     print_success "Сертификаты скопированы и настроены в user-space директориях"
 }
 
-# Создание user-юнитов systemd под runtime-пользователем (mon_ci или mon_sys)
+# Создание user-юнитов systemd под сервисной учётной записью ${KAE}-lnx-mon_sys
 setup_monitoring_user_units() {
     print_step "Создание user-юнитов systemd для мониторинга (Prometheus/Grafana/Harvest)"
     ensure_working_directory
@@ -3097,40 +3092,34 @@ setup_monitoring_user_units() {
         return 0
     fi
 
-    local runtime_user=""
-    local runtime_home=""
-    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
-        runtime_user="$(whoami)"
-        runtime_home="$HOME"
-        print_warning "RUN_SERVICES_AS_MON_CI=true: user-юниты будут созданы под ${runtime_user}"
-    else
-        runtime_user="${KAE}-lnx-mon_sys"
-        if ! id "$runtime_user" >/dev/null 2>&1; then
-            print_warning "Пользователь ${runtime_user} не найден в системе, пропускаем создание user-юнитов"
-            return 0
-        fi
-        runtime_home=$(getent passwd "$runtime_user" | awk -F: '{print $6}')
-        if [[ -z "$runtime_home" ]]; then
-            runtime_home="/home/${runtime_user}"
-        fi
+    local mon_sys_user="${KAE}-lnx-mon_sys"
+    if ! id "$mon_sys_user" >/dev/null 2>&1; then
+        print_warning "Пользователь ${mon_sys_user} не найден в системе, пропускаем создание user-юнитов"
+        return 0
     fi
 
-    local user_systemd_dir="${runtime_home}/.config/systemd/user"
+    local mon_sys_home
+    mon_sys_home=$(getent passwd "$mon_sys_user" | awk -F: '{print $6}')
+    if [[ -z "$mon_sys_home" ]]; then
+        mon_sys_home="/home/${mon_sys_user}"
+    fi
+
+    local user_systemd_dir="${mon_sys_home}/.config/systemd/user"
     mkdir -p "$user_systemd_dir"
 
     # User-юнит Prometheus
     local prom_unit="${user_systemd_dir}/monitoring-prometheus.service"
     
-    # SECURE EDITION: Явные пути runtime-пользователя (требования ИБ)
-    # Все конфиги, данные и логи в ${runtime_home}/monitoring/
-    local runtime_prometheus_config="${runtime_home}/monitoring/config/prometheus"
-    local runtime_prometheus_data="${runtime_home}/monitoring/data/prometheus"
-    local runtime_prometheus_logs="${runtime_home}/monitoring/logs/prometheus"
+    # SECURE EDITION: Явные пути для mon_sys пользователя (требования ИБ)
+    # Все конфиги, данные и логи в ${mon_sys_home}/monitoring/
+    local mon_sys_prometheus_config="${mon_sys_home}/monitoring/config/prometheus"
+    local mon_sys_prometheus_data="${mon_sys_home}/monitoring/data/prometheus"
+    local mon_sys_prometheus_logs="${mon_sys_home}/monitoring/logs/prometheus"
     
-    print_info "Prometheus пути (user-space для $runtime_user):"
-    print_info "  Config: $runtime_prometheus_config"
-    print_info "  Data:   $runtime_prometheus_data"
-    print_info "  Logs:   $runtime_prometheus_logs"
+    print_info "Prometheus пути (user-space для $mon_sys_user):"
+    print_info "  Config: $mon_sys_prometheus_config"
+    print_info "  Data:   $mon_sys_prometheus_data"
+    print_info "  Logs:   $mon_sys_prometheus_logs"
     
     # Удаляем старый unit файл, чтобы гарантировать создание нового
     if [[ -f "$prom_unit" ]]; then
@@ -3148,12 +3137,12 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/prometheus --config.file=${runtime_prometheus_config}/prometheus.yml --storage.tsdb.path=${runtime_prometheus_data} --web.console.templates=${runtime_prometheus_config}/consoles --web.console.libraries=${runtime_prometheus_config}/console_libraries --web.config.file=${runtime_prometheus_config}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}
-WorkingDirectory=${runtime_prometheus_data}
+ExecStart=/usr/bin/prometheus --config.file=${mon_sys_prometheus_config}/prometheus.yml --storage.tsdb.path=${mon_sys_prometheus_data} --web.console.templates=${mon_sys_prometheus_config}/consoles --web.console.libraries=${mon_sys_prometheus_config}/console_libraries --web.config.file=${mon_sys_prometheus_config}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}
+WorkingDirectory=${mon_sys_prometheus_data}
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:${runtime_prometheus_logs}/prometheus.log
-StandardError=append:${runtime_prometheus_logs}/prometheus.log
+StandardOutput=append:${mon_sys_prometheus_logs}/prometheus.log
+StandardError=append:${mon_sys_prometheus_logs}/prometheus.log
 
 [Install]
 WantedBy=default.target
@@ -3162,15 +3151,15 @@ EOF
     # User-юнит Grafana
     local graf_unit="${user_systemd_dir}/monitoring-grafana.service"
     
-    # SECURE EDITION: Явные пути для runtime-пользователя
-    local runtime_grafana_config="${runtime_home}/monitoring/config/grafana"
-    local runtime_grafana_data="${runtime_home}/monitoring/data/grafana"
-    local runtime_grafana_logs="${runtime_home}/monitoring/logs/grafana"
+    # SECURE EDITION: Явные пути для mon_sys пользователя
+    local mon_sys_grafana_config="${mon_sys_home}/monitoring/config/grafana"
+    local mon_sys_grafana_data="${mon_sys_home}/monitoring/data/grafana"
+    local mon_sys_grafana_logs="${mon_sys_home}/monitoring/logs/grafana"
     
-    print_info "Grafana пути (user-space для $runtime_user):"
-    print_info "  Config: $runtime_grafana_config"
-    print_info "  Data:   $runtime_grafana_data"
-    print_info "  Logs:   $runtime_grafana_logs"
+    print_info "Grafana пути (user-space для $mon_sys_user):"
+    print_info "  Config: $mon_sys_grafana_config"
+    print_info "  Data:   $mon_sys_grafana_data"
+    print_info "  Logs:   $mon_sys_grafana_logs"
     
     # ИБ-COMPLIANT: Явные пути в ExecStart
     cat > "$graf_unit" << EOF
@@ -3181,10 +3170,10 @@ After=network-online.target
 [Service]
 Type=simple
 # SECURE EDITION: Grafana config в пользовательском пространстве
-ExecStart=/usr/sbin/grafana-server --config=${runtime_grafana_config}/grafana.ini --homepath=/usr/share/grafana
-WorkingDirectory=${runtime_grafana_data}
-StandardOutput=append:${runtime_grafana_logs}/grafana.log
-StandardError=append:${runtime_grafana_logs}/grafana.log
+ExecStart=/usr/sbin/grafana-server --config=${mon_sys_grafana_config}/grafana.ini --homepath=/usr/share/grafana
+WorkingDirectory=${mon_sys_grafana_data}
+StandardOutput=append:${mon_sys_grafana_logs}/grafana.log
+StandardError=append:${mon_sys_grafana_logs}/grafana.log
 Restart=on-failure
 RestartSec=10
 
@@ -3194,13 +3183,13 @@ EOF
 
     # User-юнит Harvest (аналогично системному сервису)
     # SECURE EDITION: WorkingDirectory остается /opt/harvest (RPM бинарники)
-    # но конфиги будут в ${runtime_home}/monitoring/config/harvest/
+    # но конфиги будут в ${mon_sys_home}/monitoring/config/harvest/
     local harvest_unit="${user_systemd_dir}/monitoring-harvest.service"
     
-    local runtime_harvest_config="${runtime_home}/monitoring/config/harvest"
+    local mon_sys_harvest_config="${mon_sys_home}/monitoring/config/harvest"
     
-    print_info "Harvest пути (user-space для $runtime_user):"
-    print_info "  Config: $runtime_harvest_config"
+    print_info "Harvest пути (user-space для $mon_sys_user):"
+    print_info "  Config: $mon_sys_harvest_config"
     print_info "  Binaries: /opt/harvest (RPM installation)"
     
     # ИБ-COMPLIANT: Явные пути в Environment
@@ -3214,11 +3203,11 @@ Type=oneshot
 # Бинарники из RPM остаются в /opt/harvest
 WorkingDirectory=/opt/harvest
 # Конфиги в user-space: передаются через --config
-ExecStart=/opt/harvest/bin/harvest start --config ${runtime_harvest_config}/harvest.yml
-ExecStop=/opt/harvest/bin/harvest stop --config ${runtime_harvest_config}/harvest.yml
+ExecStart=/opt/harvest/bin/harvest start --config ${mon_sys_harvest_config}/harvest.yml
+ExecStop=/opt/harvest/bin/harvest stop --config ${mon_sys_harvest_config}/harvest.yml
 RemainAfterExit=yes
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/opt/harvest/bin
-Environment=HARVEST_CONF=${runtime_harvest_config}
+Environment=HARVEST_CONF=${mon_sys_harvest_config}
 
 [Install]
 WantedBy=default.target
@@ -3237,7 +3226,7 @@ EOF
     # ✅ SECURE EDITION: НЕТ chown/chmod - файлы создаются от имени mon_sys пользователя
     # Права устанавливаются автоматически при создании файлов
     
-    print_success "User-юниты systemd для мониторинга созданы под пользователем ${runtime_user}"
+    print_success "User-юниты systemd для мониторинга созданы под пользователем ${mon_sys_user}"
     
     # Логируем для отладки
     echo "[DEBUG-SYSTEMD] Юниты созданы в: $user_systemd_dir" | tee /dev/stderr
@@ -5912,78 +5901,58 @@ configure_services() {
         exit 1
     fi
 
-    # Определяем runtime-пользователя для user-юнитов (mon_ci или mon_sys)
+    # Определяем, можем ли использовать user-юниты под ${KAE}-lnx-mon_sys
     local use_user_units=false
-    local runtime_user=""
-    local runtime_uid=""
+    local mon_sys_user=""
+    local mon_sys_uid=""
 
-    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
-        runtime_user="$(whoami)"
-        runtime_uid="$(id -u)"
-        use_user_units=true
-        print_warning "RUN_SERVICES_AS_MON_CI=true: user-юниты будут запускаться под ${runtime_user} (UID=${runtime_uid})"
-    elif [[ -n "${KAE:-}" ]]; then
-        runtime_user="${KAE}-lnx-mon_sys"
-        if id "$runtime_user" >/dev/null 2>&1; then
-            runtime_uid=$(id -u "$runtime_user")
+    if [[ -n "${KAE:-}" ]]; then
+        mon_sys_user="${KAE}-lnx-mon_sys"
+        if id "$mon_sys_user" >/dev/null 2>&1; then
+            mon_sys_uid=$(id -u "$mon_sys_user")
             use_user_units=true
-            print_info "Обнаружен пользователь для user-юнитов: ${runtime_user} (UID=${runtime_uid})"
+            print_info "Обнаружен пользователь для user-юнитов: ${mon_sys_user} (UID=${mon_sys_uid})"
         else
-            print_warning "Пользователь ${runtime_user} не найден, будем использовать системные юниты"
+            print_warning "Пользователь ${mon_sys_user} не найден, будем использовать системные юниты"
         fi
     else
         print_warning "KAE не определён, будем использовать системные юниты"
     fi
 
     if [[ "$use_user_units" == true ]]; then
-        print_info "Настройка и запуск user-юнитов мониторинга под пользователем ${runtime_user}"
-        local xdg_env="XDG_RUNTIME_DIR=/run/user/${runtime_uid}"
-        local run_as_current_user=false
-        if [[ "$runtime_user" == "$(whoami)" ]]; then
-            run_as_current_user=true
-        fi
-
-        run_user_systemctl() {
-            if [[ "$run_as_current_user" == "true" ]]; then
-                env "$xdg_env" /usr/bin/systemctl --user "$@"
-            else
-                runuser -u "$runtime_user" -- env "$xdg_env" /usr/bin/systemctl --user "$@"
-            fi
-        }
+        print_info "Настройка и запуск user-юнитов мониторинга под пользователем ${mon_sys_user}"
+        local ru_cmd="runuser -u ${mon_sys_user} --"
+        local xdg_env="XDG_RUNTIME_DIR=/run/user/${mon_sys_uid}"
 
         # Перед запуском Prometheus настраиваем права на его файлы/директории
-        if [[ "$run_as_current_user" != "true" && "${SKIP_PROMETHEUS_PERMISSIONS_ADJUST:-false}" != "true" ]]; then
+        if [[ "${SKIP_PROMETHEUS_PERMISSIONS_ADJUST:-false}" != "true" ]]; then
             adjust_prometheus_permissions_for_mon_sys
         else
-            print_info "Пропускаем настройку прав Prometheus для mon_sys (runtime user: ${runtime_user})"
+            print_warning "Пропускаем настройку прав Prometheus (SKIP_PROMETHEUS_PERMISSIONS_ADJUST=true)"
         fi
         
         # Перед запуском Grafana настраиваем права на её файлы/директории
-        if [[ "$run_as_current_user" != "true" ]]; then
-            adjust_grafana_permissions_for_mon_sys
-        else
-            print_info "Пропускаем настройку прав Grafana для mon_sys (runtime user: ${runtime_user})"
-        fi
+        adjust_grafana_permissions_for_mon_sys
 
         # Перечитываем конфигурацию user-юнитов
-        run_user_systemctl daemon-reload >/dev/null 2>&1 || print_warning "Не удалось выполнить daemon-reload для user-юнитов"
+        $ru_cmd env "$xdg_env" /usr/bin/systemctl --user daemon-reload >/dev/null 2>&1 || print_warning "Не удалось выполнить daemon-reload для user-юнитов"
 
         # Сбрасываем предыдущее failed-состояние, чтобы StartLimitBurst
         # не блокировал перезапуск юнитов после неудачных попыток
-        run_user_systemctl reset-failed \
+        $ru_cmd env "$xdg_env" /usr/bin/systemctl --user reset-failed \
             monitoring-prometheus.service \
             monitoring-grafana.service \
             >/dev/null 2>&1 || print_warning "Не удалось выполнить reset-failed для user-юнитов мониторинга"
 
         # Включаем и перезапускаем Prometheus
-        run_user_systemctl enable monitoring-prometheus.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-prometheus.service"
-        run_user_systemctl restart monitoring-prometheus.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-prometheus.service"
+        $ru_cmd env "$xdg_env" /usr/bin/systemctl --user enable monitoring-prometheus.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-prometheus.service"
+        $ru_cmd env "$xdg_env" /usr/bin/systemctl --user restart monitoring-prometheus.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-prometheus.service"
         sleep 2
-        if run_user_systemctl is-active --quiet monitoring-prometheus.service; then
+        if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-prometheus.service; then
             print_success "monitoring-prometheus.service успешно запущен (user-юнит)"
         else
             print_error "monitoring-prometheus.service не удалось запустить"
-            run_user_systemctl status monitoring-prometheus.service --no-pager | while IFS= read -r line; do
+            $ru_cmd env "$xdg_env" /usr/bin/systemctl --user status monitoring-prometheus.service --no-pager | while IFS= read -r line; do
                 print_info "$line"
                 log_message "[PROMETHEUS USER SYSTEMD STATUS] $line"
             done
@@ -5991,33 +5960,17 @@ configure_services() {
         echo
 
         # Включаем и перезапускаем Grafana
-        run_user_systemctl enable monitoring-grafana.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-grafana.service"
-        run_user_systemctl restart monitoring-grafana.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-grafana.service"
+        $ru_cmd env "$xdg_env" /usr/bin/systemctl --user enable monitoring-grafana.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-grafana.service"
+        $ru_cmd env "$xdg_env" /usr/bin/systemctl --user restart monitoring-grafana.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-grafana.service"
         sleep 2
-        if run_user_systemctl is-active --quiet monitoring-grafana.service; then
+        if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-grafana.service; then
             print_success "monitoring-grafana.service успешно запущен (user-юнит)"
         else
             print_error "monitoring-grafana.service не удалось запустить"
-            run_user_systemctl status monitoring-grafana.service --no-pager | while IFS= read -r line; do
+            $ru_cmd env "$xdg_env" /usr/bin/systemctl --user status monitoring-grafana.service --no-pager | while IFS= read -r line; do
                 print_info "$line"
                 log_message "[GRAFANA USER SYSTEMD STATUS] $line"
             done
-        fi
-        echo
-
-        # Включаем и запускаем Harvest user-юнит
-        run_user_systemctl enable monitoring-harvest.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-harvest.service"
-        run_user_systemctl restart monitoring-harvest.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-harvest.service"
-        sleep 3
-        if run_user_systemctl is-active --quiet monitoring-harvest.service; then
-            print_success "monitoring-harvest.service успешно запущен (user-юнит)"
-        else
-            print_error "monitoring-harvest.service не удалось запустить"
-            run_user_systemctl status monitoring-harvest.service --no-pager | while IFS= read -r line; do
-                print_info "$line"
-                log_message "[HARVEST USER SYSTEMD STATUS] $line"
-            done
-            exit 1
         fi
         echo
     else
@@ -6053,11 +6006,6 @@ configure_services() {
             done
         fi
         echo
-    fi
-
-    if [[ "$use_user_units" == true ]]; then
-        print_info "Harvest уже управляется через monitoring-harvest.service (user-юнит), системный harvest пропускаем"
-        return 0
     fi
 
     print_info "Настройка и запуск Harvest..."
