@@ -58,7 +58,9 @@ INSTALL_DIR="$HOME/monitoring/distrib/mon_rpm_${DATE_INSTALL}"
 LOG_FILE="$HOME/monitoring_deployment_${DATE_INSTALL}.log"
 DEBUG_LOG="$HOME/monitoring_deployment_debug_${DATE_INSTALL}.log"
 DEBUG_SUMMARY="$HOME/monitoring_deployment_summary.log"
-STATE_FILE="/var/lib/monitoring_deployment_state"
+# Non-root по умолчанию: state-файл в user-space.
+# Legacy путь /var/lib сохраняем только как fallback при наличии прав.
+STATE_FILE="$HOME/monitoring/state/deployment_state"
 
 echo "[SCRIPT_START] Variables initialized" >&2
 echo "[SCRIPT_START] DEBUG_LOG=$DEBUG_LOG" >&2
@@ -6564,7 +6566,8 @@ verify_installation() {
 save_installation_state() {
     print_step "Сохранение состояния установки"
     ensure_working_directory
-    "$WRAPPERS_DIR/config-writer_launcher.sh" "$STATE_FILE" << STATE_EOF
+    local target_state_file="$STATE_FILE"
+    if ! "$WRAPPERS_DIR/config-writer_launcher.sh" "$target_state_file" << STATE_EOF
 # Состояние установки мониторинговой системы
 DEPLOYMENT_VERSION=$DEPLOY_VERSION
 DEPLOYMENT_GIT_COMMIT=$DEPLOY_GIT_COMMIT
@@ -6580,7 +6583,28 @@ HARVEST_UNIX_PORT=$HARVEST_UNIX_PORT
 HARVEST_NETAPP_PORT=$HARVEST_NETAPP_PORT
 NETAPP_API_ADDR=$NETAPP_API_ADDR
 STATE_EOF
-    chmod 600 "$STATE_FILE"
+    then
+        print_warning "Не удалось сохранить state в $target_state_file, пробуем fallback в user-space"
+        target_state_file="$HOME/monitoring/state/deployment_state"
+        "$WRAPPERS_DIR/config-writer_launcher.sh" "$target_state_file" << STATE_EOF_FALLBACK
+# Состояние установки мониторинговой системы
+DEPLOYMENT_VERSION=$DEPLOY_VERSION
+DEPLOYMENT_GIT_COMMIT=$DEPLOY_GIT_COMMIT
+DEPLOYMENT_BUILD_DATE=$DEPLOY_BUILD_DATE
+INSTALL_DATE=$DATE_INSTALL
+SERVER_IP=$SERVER_IP
+SERVER_DOMAIN=$SERVER_DOMAIN
+INSTALL_DIR=$INSTALL_DIR
+LOG_FILE=$LOG_FILE
+PROMETHEUS_PORT=$PROMETHEUS_PORT
+GRAFANA_PORT=$GRAFANA_PORT
+HARVEST_UNIX_PORT=$HARVEST_UNIX_PORT
+HARVEST_NETAPP_PORT=$HARVEST_NETAPP_PORT
+NETAPP_API_ADDR=$NETAPP_API_ADDR
+STATE_EOF_FALLBACK
+    fi
+    chmod 600 "$target_state_file" 2>/dev/null || true
+    STATE_FILE="$target_state_file"
     print_success "Состояние установки сохранено в $STATE_FILE"
 }
 
