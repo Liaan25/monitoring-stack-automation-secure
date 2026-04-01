@@ -28,8 +28,8 @@ fail() {
 
 validate_grafana_url() {
   local url="$1"
-  # Разрешаем только https://<host>:3000[/...]
-  [[ "$url" =~ ^https://[a-zA-Z0-9._-]+:3000(/.*)?$ ]] || fail "Недопустимый grafana_url (ожидается порт 3000): $url"
+  # Разрешаем https://<host>:<port>[/...], где порт задаётся параметрами pipeline.
+  [[ "$url" =~ ^https://[a-zA-Z0-9._-]+:[0-9]{1,5}(/.*)?$ ]] || fail "Недопустимый grafana_url (ожидается https://<host>:<port>): $url"
 }
 
 validate_http_local_url() {
