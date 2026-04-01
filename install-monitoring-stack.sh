@@ -1336,14 +1336,21 @@ ensure_monitoring_users_in_as_admin() {
     ensure_user_in_as_admin "$mon_ci_user"
 
     # Для RUN_SERVICES_AS_MON_CI=true user-юниты запускаются от mon_ci:
-    # включаем linger и для него, чтобы сервисы не останавливались после logout.
-    if command -v linuxadm-enable-linger >/dev/null 2>&1 && id "$mon_ci_user" >/dev/null 2>&1; then
-        print_step "Включение linger для ${mon_ci_user} (required for mon_ci user units)"
-        if linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
-            print_success "✅ Linger включен для ${mon_ci_user}"
-        else
-            print_warning "Не удалось включить linger для ${mon_ci_user}. User units могут останавливаться после logout"
-        fi
+    # linger для runtime-пользователя обязателен.
+    print_step "Включение linger для ${mon_ci_user} (required for mon_ci user units)"
+    if ! id "$mon_ci_user" >/dev/null 2>&1; then
+        print_error "Пользователь ${mon_ci_user} не найден"
+        exit 1
+    fi
+    if ! command -v linuxadm-enable-linger >/dev/null 2>&1; then
+        print_error "❌ linuxadm-enable-linger не найден на сервере"
+        exit 1
+    fi
+    if linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
+        print_success "✅ Linger включен для ${mon_ci_user}"
+    else
+        print_error "❌ Не удалось включить linger для ${mon_ci_user}"
+        exit 1
     fi
 }
 

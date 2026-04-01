@@ -279,13 +279,15 @@ sudo -u CI84324523-lnx-mon_sys \
 ### 7.2. Решение
 
 ```bash
-# После добавления mon_sys в as-admin
+# Для runtime user (по умолчанию mon_ci)
+RUNTIME_USER="CI84324523-lnx-mon_ci"
+
 if command -v linuxadm-enable-linger >/dev/null 2>&1; then
-    linuxadm-enable-linger "CI84324523-lnx-mon_sys" || {
-        print_error "Ошибка включения linger"
+    linuxadm-enable-linger "$RUNTIME_USER" || {
+        print_error "Ошибка включения linger для $RUNTIME_USER"
         exit 1
     }
-    print_success "✅ Linger включен для CI84324523-lnx-mon_sys"
+    print_success "✅ Linger включен для $RUNTIME_USER"
 else
     print_error "❌ linuxadm-enable-linger не найден"
     exit 1
