@@ -339,20 +339,33 @@ pipeline {
                                             vaultNamespace: vaultNamespace,
                                             vaultAddr: "https://${params.SEC_MAN_ADDR}"
                                         ]]) {
-                                            def namespaceHeader = vaultNamespace ? "-H \"X-Vault-Namespace: ${vaultNamespace}\" \\\n" : ""
-                                            def certResponseRaw = sh(
-                                                script: """#!/bin/bash
+                                            def certResponseRaw = ''
+                                            withEnv([
+                                                "SBERCA_URL=https://${params.SEC_MAN_ADDR}",
+                                                "SBERCA_API_PATH=${apiPath}",
+                                                "SBERCA_NAMESPACE=${vaultNamespace ?: ''}"
+                                            ]) {
+                                                certResponseRaw = sh(
+                                                    script: '''#!/bin/bash
 set -euo pipefail
 set +x
-curl -sS --fail \\
-  -H "X-Vault-Token: \$VAULT_TOKEN" \\
-  ${namespaceHeader}  -H "Content-Type: application/json" \\
-  --request POST \\
-  --data @sberca_request_payload.json \\
-  "https://${params.SEC_MAN_ADDR}/v1/${apiPath}"
-""",
-                                                returnStdout: true
-                                            ).trim()
+
+NS_HEADER=()
+if [[ -n "${SBERCA_NAMESPACE}" ]]; then
+  NS_HEADER=(-H "X-Vault-Namespace: ${SBERCA_NAMESPACE}")
+fi
+
+curl -sS --fail \
+  -H "X-Vault-Token: ${VAULT_TOKEN}" \
+  "${NS_HEADER[@]}" \
+  -H "Content-Type: application/json" \
+  --request POST \
+  --data @sberca_request_payload.json \
+  "${SBERCA_URL}/v1/${SBERCA_API_PATH}"
+''',
+                                                    returnStdout: true
+                                                ).trim()
+                                            }
 
                                             def certResponse = new groovy.json.JsonSlurperClassic().parseText(certResponseRaw)
                                             def cert = (certResponse?.data?.certificate ?: '').toString().trim()
