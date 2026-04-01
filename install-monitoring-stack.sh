@@ -1183,14 +1183,15 @@ ensure_monitoring_users_in_as_admin() {
 
     # Сначала добавляем mon_sys, ожидаем success
     ensure_user_in_as_admin "$mon_sys_user"
-    
-    # КРИТИЧЕСКИ ВАЖНО: Включаем linger для mon_sys (обязательно для user units!)
-    # Linger позволяет user units продолжать работать после logout пользователя
-    print_step "Включение linger для ${mon_sys_user} (required for user units)"
-    
-    if ! id "$mon_sys_user" >/dev/null 2>&1; then
-        print_warning "Пользователь $mon_sys_user не найден, пропускаем linger"
-    elif command -v linuxadm-enable-linger >/dev/null 2>&1; then
+
+    # КРИТИЧЕСКИ ВАЖНО: Включаем linger для mon_sys только если runtime = mon_sys.
+    # Если runtime = mon_ci, linger для mon_sys не является блокером.
+    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" != "true" ]]; then
+        print_step "Включение linger для ${mon_sys_user} (required for user units)"
+        
+        if ! id "$mon_sys_user" >/dev/null 2>&1; then
+            print_warning "Пользователь $mon_sys_user не найден, пропускаем linger"
+        elif command -v linuxadm-enable-linger >/dev/null 2>&1; then
         # ===== РАСШИРЕННАЯ ДИАГНОСТИКА =====
         log_debug "========================================"
         log_debug "ДИАГНОСТИКА: linuxadm-enable-linger"
@@ -1311,25 +1312,24 @@ ensure_monitoring_users_in_as_admin() {
         
         echo "[DEBUG-LINGER] ========================================" >&2
         
-        if [[ $linger_exit_code -eq 0 ]]; then
-            print_success "✅ Linger включен для ${mon_sys_user}"
-            log_debug "✅ Linger enabled successfully"
+            if [[ $linger_exit_code -eq 0 ]]; then
+                print_success "✅ Linger включен для ${mon_sys_user}"
+                log_debug "✅ Linger enabled successfully"
+            else
+                print_error "❌ Ошибка включения linger для ${mon_sys_user} (exit code: $linger_exit_code)"
+                print_warning "User units могут не запуститься без linger!"
+                print_info "🔍 См. детальную диагностику [DEBUG-LINGER] выше"
+                log_debug "❌ Linger enable FAILED with exit code: $linger_exit_code"
+            fi
         else
-            print_error "❌ Ошибка включения linger для ${mon_sys_user} (exit code: $linger_exit_code)"
-            print_warning "User units могут не запуститься без linger!"
-            print_info "🔍 См. детальную диагностику [DEBUG-LINGER] выше"
-            log_debug "❌ Linger enable FAILED with exit code: $linger_exit_code"
-            
-            # НЕ останавливаем выполнение для получения полной диагностики
-            # Можно раскомментировать если критично:
-            # exit 1
+            print_error "❌ linuxadm-enable-linger не найден на сервере"
+            log_debug "❌ linuxadm-enable-linger command not found"
+            print_warning "Требуется установка пакета linuxadm или аналогичного"
+            print_info "Без linger user units остановятся при logout пользователя"
+            exit 1
         fi
     else
-        print_error "❌ linuxadm-enable-linger не найден на сервере"
-        log_debug "❌ linuxadm-enable-linger command not found"
-        print_warning "Требуется установка пакета linuxadm или аналогичного"
-        print_info "Без linger user units остановятся при logout пользователя"
-        exit 1
+        print_info "RUN_SERVICES_AS_MON_CI=true: пропускаем обязательный linger для ${mon_sys_user}"
     fi
 
     # Затем добавляем mon_ci
@@ -1349,8 +1349,14 @@ ensure_monitoring_users_in_as_admin() {
     if linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
         print_success "✅ Linger включен для ${mon_ci_user}"
     else
-        print_error "❌ Не удалось включить linger для ${mon_ci_user}"
-        exit 1
+        # На части стендов linuxadm-enable-linger требует superuser. Пробуем безопасный fallback.
+        if sudo -n linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
+            print_success "✅ Linger включен для ${mon_ci_user} (через sudo fallback)"
+        else
+            print_error "❌ Не удалось включить linger для ${mon_ci_user}"
+            print_error "Команда linuxadm-enable-linger вернула ошибку даже с sudo fallback"
+            exit 1
+        fi
     fi
 }
 

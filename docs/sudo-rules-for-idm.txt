@@ -112,6 +112,7 @@ ALL=(root) NOEXEC: NOPASSWD: sha256:REPLACE_WITH_ACTUAL_SHA256_CHECKSUM /home/CI
 
 4. Включить linger для runtime user (по умолчанию mon_ci; при fallback - mon_sys)
    Использовать: linuxadm-enable-linger CI10742292-lnx-mon_ci
+   Если стенд требует superuser: sudo -n linuxadm-enable-linger CI10742292-lnx-mon_ci
    
    ОБОСНОВАНИЕ: Согласно документации SberInfra
 
