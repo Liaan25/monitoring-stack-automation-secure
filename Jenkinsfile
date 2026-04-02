@@ -891,8 +891,12 @@ if [ -n "$RUNTIME_UID" ]; then
         echo "[OK] Grafana активна" || echo "[FAIL] Grafana не активна"
     
     sudo -u "$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/$RUNTIME_UID" \
-        systemctl --user is-active monitoring-harvest.service && \
-        echo "[OK] Harvest активен" || echo "[FAIL] Harvest не активен"
+        systemctl --user is-active monitoring-harvest-unix.service && \
+        echo "[OK] Harvest Unix активен" || echo "[FAIL] Harvest Unix не активен"
+
+    sudo -u "$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/$RUNTIME_UID" \
+        systemctl --user is-active monitoring-harvest-netapp.service && \
+        echo "[OK] Harvest NetApp активен" || echo "[FAIL] Harvest NetApp не активен"
 else
     echo "[ERROR] Не удалось определить UID для $RUNTIME_USER"
 fi
@@ -902,9 +906,9 @@ echo "================================================"
 echo "ПРОВЕРКА ПОРТОВ:"
 echo "================================================"
 ss -tln | grep -q ":''' + (params.PROMETHEUS_PORT ?: '9090') + ''' " && echo "[OK] Порт ''' + (params.PROMETHEUS_PORT ?: '9090') + ''' (Prometheus) открыт" || echo "[FAIL] Порт ''' + (params.PROMETHEUS_PORT ?: '9090') + ''' не открыт"
-ss -tln | grep -q ":''' + (params.GRAFANA_PORT ?: '3000') + ''' " && echo "[OK] Порт ''' + (params.GRAFANA_PORT ?: '3000') + ''' (Grafana) открыт" || echo "[FAIL] Порт ''' + (params.GRAFANA_PORT ?: '3000') + ''' не открыт"
-ss -tln | grep -q ":12990 " && echo "[OK] Порт 12990 (Harvest-NetApp) открыт" || echo "[FAIL] Порт 12990 не открыт"
-ss -tln | grep -q ":12991 " && echo "[OK] Порт 12991 (Harvest-Unix) открыт" || echo "[FAIL] Порт 12991 не открыт"
+ss -tln | grep -q ":''' + (params.GRAFANA_PORT ?: '3300') + ''' " && echo "[OK] Порт ''' + (params.GRAFANA_PORT ?: '3300') + ''' (Grafana) открыт" || echo "[FAIL] Порт ''' + (params.GRAFANA_PORT ?: '3300') + ''' не открыт"
+ss -tln | grep -q ":12996 " && echo "[OK] Порт 12996 (Harvest-NetApp) открыт" || echo "[FAIL] Порт 12996 не открыт"
+ss -tln | grep -q ":12995 " && echo "[OK] Порт 12995 (Harvest-Unix) открыт" || echo "[FAIL] Порт 12995 не открыт"
 exit 0
 ENDSSH
 '''
@@ -1003,23 +1007,25 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     echo "[INFO] Рекомендации по проверке и диагностике (SECURE / user-units):"
                     echo " • Runtime user: ${env.DEPLOY_USER}"
                     echo " • Статус user-юнитов:"
-                    echo "   XDG_RUNTIME_DIR=\"/run/user/\$(id -u ${env.DEPLOY_USER})\" systemctl --user status monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+                    echo "   XDG_RUNTIME_DIR=\"/run/user/\$(id -u ${env.DEPLOY_USER})\" systemctl --user status monitoring-prometheus.service monitoring-grafana.service monitoring-harvest-unix.service monitoring-harvest-netapp.service"
                     echo " • Active/Enabled:"
-                    echo "   systemctl --user is-active monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
-                    echo "   systemctl --user is-enabled monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+                    echo "   systemctl --user is-active monitoring-prometheus.service monitoring-grafana.service monitoring-harvest-unix.service monitoring-harvest-netapp.service"
+                    echo "   systemctl --user is-enabled monitoring-prometheus.service monitoring-grafana.service monitoring-harvest-unix.service monitoring-harvest-netapp.service"
                     echo " • Linger:"
                     echo "   loginctl show-user ${env.DEPLOY_USER} -p Linger"
                     echo " • Проверка портов:"
-                    echo "   ss -tln | grep -E ':(3300|9090|12990|12991)'"
+                    echo "   ss -tln | grep -E ':(3300|9090|12996|12995)'"
                     echo " • Конфиги:"
                     echo "   ~/monitoring/config/prometheus/prometheus.yml"
                     echo "   ~/monitoring/config/prometheus/web-config.yml"
                     echo "   ~/monitoring/config/grafana/grafana.ini"
-                    echo "   ~/monitoring/config/harvest/harvest.yml"
+                    echo "   ~/monitoring/config/harvest/harvest-unix.yml"
+                    echo "   ~/monitoring/config/harvest/harvest-netapp.yml"
                     echo " • Journal логи:"
                     echo "   journalctl --user -u monitoring-prometheus.service -n 200 --no-pager"
                     echo "   journalctl --user -u monitoring-grafana.service -n 200 --no-pager"
-                    echo "   journalctl --user -u monitoring-harvest.service -n 200 --no-pager"
+                    echo "   journalctl --user -u monitoring-harvest-unix.service -n 200 --no-pager"
+                    echo "   journalctl --user -u monitoring-harvest-netapp.service -n 200 --no-pager"
                     echo " • File логи:"
                     echo "   tail -n 200 ~/monitoring/logs/prometheus/* 2>/dev/null"
                     echo "   tail -n 200 ~/monitoring/logs/grafana/* 2>/dev/null"
@@ -1027,8 +1033,8 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     echo " • API проверки:"
                     echo "   curl -k -sS https://${domainName}:${params.PROMETHEUS_PORT}/-/ready"
                     echo "   curl -k -sS https://${domainName}:${params.GRAFANA_PORT}/api/health"
-                    echo "   curl -k -sS https://${domainName}:12990/metrics | head"
-                    echo "   curl -sS  http://127.0.0.1:12991/metrics | head"
+                    echo "   curl -k -sS https://${domainName}:12996/metrics | head"
+                    echo "   curl -sS  http://127.0.0.1:12995/metrics | head"
                     echo "================================================"
                 }
             }

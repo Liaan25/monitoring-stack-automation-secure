@@ -93,8 +93,13 @@ GRAFANA_BEARER_TOKEN=""
 # Порты сервисов
 PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
 GRAFANA_PORT="${GRAFANA_PORT:-3300}"
-HARVEST_UNIX_PORT=12991
-HARVEST_NETAPP_PORT=12990
+HARVEST_UNIX_PORT="${HARVEST_UNIX_PORT:-12995}"
+HARVEST_NETAPP_PORT="${HARVEST_NETAPP_PORT:-12996}"
+
+# Имена user-юнитов Harvest (split архитектура)
+HARVEST_UNIX_SERVICE="monitoring-harvest-unix.service"
+HARVEST_NETAPP_SERVICE="monitoring-harvest-netapp.service"
+HARVEST_LEGACY_SERVICE="monitoring-harvest.service"
 
 # Значение KAE (вторая часть NAMESPACE_CI вида CIxxxx_CIyyyy), используется для имён УЗ
 KAE=""
@@ -350,7 +355,7 @@ create_debug_summary() {
                 mon_sys_uid=$(id -u "$mon_sys_user" 2>/dev/null || echo "")
                 
                 if [[ -n "$mon_sys_uid" ]]; then
-                    for service in monitoring-prometheus monitoring-grafana monitoring-harvest; do
+                    for service in monitoring-prometheus monitoring-grafana monitoring-harvest-unix monitoring-harvest-netapp; do
                         echo -n "$service.service: "
                         sudo -u "$mon_sys_user" env XDG_RUNTIME_DIR="/run/user/${mon_sys_uid}" \
                             systemctl --user is-active "$service.service" 2>&1 || echo "unknown"
@@ -1753,6 +1758,8 @@ cleanup_all_previous() {
         local user_units=(
             "monitoring-prometheus.service"
             "monitoring-grafana.service"
+            "monitoring-harvest-unix.service"
+            "monitoring-harvest-netapp.service"
             "monitoring-harvest.service"
         )
         for unit in "${user_units[@]}"; do
@@ -3306,39 +3313,75 @@ RestartSec=10
 WantedBy=default.target
 EOF
 
-    # User-юнит Harvest (аналогично системному сервису)
-    # SECURE EDITION: бинарники в /opt/harvest, конфиги/логи в user-space
-    local harvest_unit="${user_systemd_dir}/monitoring-harvest.service"
+    # User-юниты Harvest split: отдельные unix и netapp poller (forking + --daemon)
+    local harvest_unix_unit="${user_systemd_dir}/${HARVEST_UNIX_SERVICE}"
+    local harvest_netapp_unit="${user_systemd_dir}/${HARVEST_NETAPP_SERVICE}"
+    local harvest_legacy_unit="${user_systemd_dir}/${HARVEST_LEGACY_SERVICE}"
     
     local runtime_harvest_config="${runtime_home}/monitoring/config/harvest"
     local runtime_harvest_logs="${runtime_home}/monitoring/logs/harvest"
+    local runtime_bin_dir="${runtime_home}/bin"
+    local runtime_harvest_bin="/opt/harvest/bin/harvest"
+    
+    mkdir -p "$runtime_bin_dir" "$runtime_harvest_logs"
+    if [[ -x "/opt/harvest/bin/harvest" ]]; then
+        cp -f "/opt/harvest/bin/harvest" "${runtime_bin_dir}/harvest" 2>/dev/null || true
+        cp -f "/opt/harvest/bin/poller" "${runtime_bin_dir}/poller" 2>/dev/null || true
+        chmod 755 "${runtime_bin_dir}/harvest" "${runtime_bin_dir}/poller" 2>/dev/null || true
+        if [[ -x "${runtime_bin_dir}/harvest" ]]; then
+            runtime_harvest_bin="${runtime_bin_dir}/harvest"
+        fi
+    fi
     
     print_info "Harvest пути (user-space для $runtime_user):"
     print_info "  Config: $runtime_harvest_config"
-    print_info "  Binaries: /opt/harvest (RPM installation)"
+    print_info "  Logs:   $runtime_harvest_logs"
+    print_info "  Binary: $runtime_harvest_bin"
     
-    # ИБ-COMPLIANT: Явные пути в Environment
-    cat > "$harvest_unit" << HARVEST_USER_SERVICE_EOF
+    # Удаляем legacy single-unit, если остался с предыдущих версий
+    rm -f "$harvest_legacy_unit" 2>/dev/null || true
+    
+    cat > "$harvest_unix_unit" << HARVEST_UNIX_USER_SERVICE_EOF
 [Unit]
-Description=NetApp Harvest Poller (user service - Secure Edition)
+Description=NetApp Harvest Unix Poller (user service - Secure Edition)
 After=network.target
 
 [Service]
-Type=oneshot
-# Бинарники из RPM остаются в /opt/harvest, рабочая директория writable в user-space
-WorkingDirectory=${runtime_harvest_config}
-# Конфиги в user-space: передаются через --config
-ExecStart=/opt/harvest/bin/harvest start --config ${runtime_harvest_config}/harvest.yml
-ExecStop=/opt/harvest/bin/harvest stop --config ${runtime_harvest_config}/harvest.yml
-RemainAfterExit=yes
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/opt/harvest/bin
-Environment=HARVEST_CONF=${runtime_harvest_config}
-StandardOutput=append:${runtime_harvest_logs}/harvest.log
-StandardError=append:${runtime_harvest_logs}/harvest.log
+Type=forking
+WorkingDirectory=${runtime_home}
+Environment=HARVEST_HOME=/opt/harvest
+Environment=PATH=${runtime_bin_dir}:/opt/harvest/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${runtime_harvest_bin} start unix --config ${runtime_harvest_config}/harvest-unix.yml --confpath /opt/harvest/conf --daemon
+ExecStop=${runtime_harvest_bin} stop unix --config ${runtime_harvest_config}/harvest-unix.yml
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:${runtime_harvest_logs}/harvest-unix.log
+StandardError=append:${runtime_harvest_logs}/harvest-unix.log
 
 [Install]
 WantedBy=default.target
-HARVEST_USER_SERVICE_EOF
+HARVEST_UNIX_USER_SERVICE_EOF
+
+    cat > "$harvest_netapp_unit" << HARVEST_NETAPP_USER_SERVICE_EOF
+[Unit]
+Description=NetApp Harvest NetApp Poller (user service - Secure Edition)
+After=network.target
+
+[Service]
+Type=forking
+WorkingDirectory=${runtime_home}
+Environment=HARVEST_HOME=/opt/harvest
+Environment=PATH=${runtime_bin_dir}:/opt/harvest/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${runtime_harvest_bin} start ${NETAPP_POLLER_NAME} --config ${runtime_harvest_config}/harvest-netapp.yml --confpath /opt/harvest/conf --daemon
+ExecStop=${runtime_harvest_bin} stop ${NETAPP_POLLER_NAME} --config ${runtime_harvest_config}/harvest-netapp.yml
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:${runtime_harvest_logs}/harvest-netapp.log
+StandardError=append:${runtime_harvest_logs}/harvest-netapp.log
+
+[Install]
+WantedBy=default.target
+HARVEST_NETAPP_USER_SERVICE_EOF
 
     # Групповой target для удобства управления всем стеком
     local target_unit="${user_systemd_dir}/monitoring.target"
@@ -3359,7 +3402,8 @@ EOF
     echo "[DEBUG-SYSTEMD] Юниты созданы в: $user_systemd_dir" | tee /dev/stderr
     echo "[DEBUG-SYSTEMD] Prometheus unit: $prom_unit" | tee /dev/stderr
     echo "[DEBUG-SYSTEMD] Grafana unit: $graf_unit" | tee /dev/stderr
-    echo "[DEBUG-SYSTEMD] Harvest unit: $harvest_unit" | tee /dev/stderr
+    echo "[DEBUG-SYSTEMD] Harvest unit (unix): $harvest_unix_unit" | tee /dev/stderr
+    echo "[DEBUG-SYSTEMD] Harvest unit (netapp): $harvest_netapp_unit" | tee /dev/stderr
 }
 
 configure_grafana_ini() {
@@ -4005,6 +4049,35 @@ setup_certificates_after_install() {
     log_debug "========================================"
 }
 
+ensure_harvest_pkcs8_key() {
+    local cert_dir="$1"
+    local key_in="${cert_dir}/harvest.key"
+    local key_out="${cert_dir}/harvest_pkcs8.key"
+
+    mkdir -p "$cert_dir"
+
+    if [[ ! -s "$key_in" ]]; then
+        print_error "Ключ Harvest не найден: $key_in"
+        return 1
+    fi
+
+    if head -1 "$key_in" 2>/dev/null | grep -q "BEGIN PRIVATE KEY"; then
+        cp -f "$key_in" "$key_out"
+        chmod 600 "$key_out" 2>/dev/null || true
+        print_info "Harvest ключ уже в PKCS8, используем $key_out"
+        return 0
+    fi
+
+    if openssl pkcs8 -topk8 -nocrypt -in "$key_in" -out "$key_out" 2>/dev/null; then
+        chmod 600 "$key_out" 2>/dev/null || true
+        print_success "Harvest ключ конвертирован в PKCS8: $key_out"
+        return 0
+    fi
+
+    print_error "Не удалось конвертировать harvest.key в PKCS8"
+    return 1
+}
+
 configure_harvest() {
     print_step "Настройка Harvest (Secure Edition)"
     ensure_working_directory
@@ -4023,26 +4096,23 @@ configure_harvest() {
         print_info "Ожидаем, что copy_certs_to_user_dirs() разложит их из user-space bundle"
     fi
     
-    # Создаем harvest.yml
-    cat > "$HARVEST_USER_CONFIG_DIR/harvest.yml" << EOF
+    local HARVEST_UNIX_CONFIG="$HARVEST_USER_CONFIG_DIR/harvest-unix.yml"
+    local HARVEST_NETAPP_CONFIG="$HARVEST_USER_CONFIG_DIR/harvest-netapp.yml"
+    local HARVEST_PKCS8_KEY="$HARVEST_USER_CERTS_DIR/harvest_pkcs8.key"
+
+    ensure_harvest_pkcs8_key "$HARVEST_USER_CERTS_DIR" || exit 1
+
+    # Создаем unix-конфиг Harvest
+    cat > "$HARVEST_UNIX_CONFIG" << EOF
 Exporters:
     prometheus_unix:
         exporter: Prometheus
         local_http_addr: 0.0.0.0
         port: ${HARVEST_UNIX_PORT}
-    prometheus_netapp_https:
-        exporter: Prometheus
-        local_http_addr: 0.0.0.0
-        port: ${HARVEST_NETAPP_PORT}
-        tls:
-            cert_file: $HARVEST_USER_CERTS_DIR/harvest.crt
-            key_file: $HARVEST_USER_CERTS_DIR/harvest.key
-        http_listen_ssl: true
+        http_listen_ssl: false
 Defaults:
     collectors:
-        - Zapi
-        - ZapiPerf
-        - Ems
+        - Unix
     use_insecure_tls: false
 Pollers:
     unix:
@@ -4052,12 +4122,31 @@ Pollers:
             - Unix
         exporters:
             - prometheus_unix
+EOF
+
+    # Создаем netapp-конфиг Harvest
+    cat > "$HARVEST_NETAPP_CONFIG" << EOF
+Exporters:
+    prometheus_netapp_https:
+        exporter: Prometheus
+        local_http_addr: 0.0.0.0
+        port: ${HARVEST_NETAPP_PORT}
+        tls:
+            cert_file: $HARVEST_USER_CERTS_DIR/harvest.crt
+            key_file: $HARVEST_PKCS8_KEY
+        http_listen_ssl: true
+Defaults:
+    collectors:
+        - Rest
+        - RestPerf
+    use_insecure_tls: false
+Pollers:
     ${NETAPP_POLLER_NAME}:
         datacenter: DC1
         addr: ${NETAPP_API_ADDR}
         auth_style: certificate_auth
         ssl_cert: $HARVEST_USER_CERTS_DIR/harvest.crt
-        ssl_key: $HARVEST_USER_CERTS_DIR/harvest.key
+        ssl_key: $HARVEST_PKCS8_KEY
         use_insecure_tls: false
         collectors:
             - Rest
@@ -4066,18 +4155,23 @@ Pollers:
             - prometheus_netapp_https
 EOF
     
-    print_success "Конфигурация Harvest обновлена в $HARVEST_USER_CONFIG_DIR/harvest.yml"
+    # Legacy совместимость (часть кода/утилит ожидает harvest.yml)
+    cp -f "$HARVEST_NETAPP_CONFIG" "$HARVEST_USER_CONFIG_DIR/harvest.yml" 2>/dev/null || true
+
+    print_success "Конфигурация Harvest Unix создана: $HARVEST_UNIX_CONFIG"
+    print_success "Конфигурация Harvest NetApp создана: $HARVEST_NETAPP_CONFIG"
     
     # ✅ В Secure Edition НЕТ создания systemd сервиса в /etc/systemd/system/
     # Вместо этого используется user unit созданный в create_systemd_user_units()
     
     # Логируем для отладки
-    echo "[DEBUG-HARVEST] Конфиг: $HARVEST_USER_CONFIG_DIR/harvest.yml" | tee /dev/stderr
+    echo "[DEBUG-HARVEST] Конфиг Unix: $HARVEST_UNIX_CONFIG" | tee /dev/stderr
+    echo "[DEBUG-HARVEST] Конфиг NetApp: $HARVEST_NETAPP_CONFIG" | tee /dev/stderr
     echo "[DEBUG-HARVEST] Сертификаты: $HARVEST_USER_CERTS_DIR/" | tee /dev/stderr
-    if [[ -f "$HARVEST_USER_CERTS_DIR/harvest.crt" && -f "$HARVEST_USER_CERTS_DIR/harvest.key" ]]; then
-        echo "[DEBUG-HARVEST] ✅ Найдены harvest.crt и harvest.key" | tee /dev/stderr
+    if [[ -f "$HARVEST_USER_CERTS_DIR/harvest.crt" && -f "$HARVEST_PKCS8_KEY" ]]; then
+        echo "[DEBUG-HARVEST] ✅ Найдены harvest.crt и harvest_pkcs8.key" | tee /dev/stderr
     else
-        echo "[DEBUG-HARVEST] ❌ Нет пары harvest.crt/harvest.key в $HARVEST_USER_CERTS_DIR" | tee /dev/stderr
+        echo "[DEBUG-HARVEST] ❌ Нет пары harvest.crt/harvest_pkcs8.key в $HARVEST_USER_CERTS_DIR" | tee /dev/stderr
     fi
 }
 
@@ -6462,6 +6556,8 @@ configure_services() {
         run_user_systemctl reset-failed \
             monitoring-prometheus.service \
             monitoring-grafana.service \
+            ${HARVEST_UNIX_SERVICE} \
+            ${HARVEST_NETAPP_SERVICE} \
             >/dev/null 2>&1 || print_warning "Не удалось выполнить reset-failed для user-юнитов мониторинга"
 
         # Включаем и перезапускаем Prometheus
@@ -6522,63 +6618,55 @@ configure_services() {
         fi
         echo
 
-        # Включаем и запускаем Harvest user-юнит
-        local harvest_started=false
+        # Включаем и запускаем split Harvest user-юниты
+        local harvest_unix_started=false
+        local harvest_netapp_started=false
+
+        if port_in_use "$HARVEST_UNIX_PORT"; then
+            print_error "Порт Harvest Unix ${HARVEST_UNIX_PORT} уже занят. Чистый запуск невозможен."
+            print_port_owner_diag "$HARVEST_UNIX_PORT"
+            exit 1
+        fi
         if port_in_use "$HARVEST_NETAPP_PORT"; then
-            print_warning "Порт Harvest ${HARVEST_NETAPP_PORT} уже занят. Пропускаем запуск monitoring-harvest.service"
+            print_error "Порт Harvest NetApp ${HARVEST_NETAPP_PORT} уже занят. Чистый запуск невозможен."
             print_port_owner_diag "$HARVEST_NETAPP_PORT"
-            harvest_started=true
+            exit 1
+        fi
+
+        run_user_systemctl enable "${HARVEST_UNIX_SERVICE}" >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск ${HARVEST_UNIX_SERVICE}"
+        run_user_systemctl restart "${HARVEST_UNIX_SERVICE}" >/dev/null 2>&1 || print_error "Ошибка запуска ${HARVEST_UNIX_SERVICE}"
+        sleep 2
+        if run_user_systemctl is-active --quiet "${HARVEST_UNIX_SERVICE}"; then
+            print_success "${HARVEST_UNIX_SERVICE} успешно запущен (user-юнит)"
+            harvest_unix_started=true
         else
-            run_user_systemctl enable monitoring-harvest.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-harvest.service"
-            run_user_systemctl restart monitoring-harvest.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-harvest.service"
-            sleep 3
-            if run_user_systemctl is-active --quiet monitoring-harvest.service; then
-                print_success "monitoring-harvest.service успешно запущен (user-юнит)"
-                harvest_started=true
-            else
-                print_error "monitoring-harvest.service не удалось запустить"
-                print_info "Диагностика Harvest user-юнита:"
-                print_info "  Проверка конфига: $HOME/monitoring/config/harvest/harvest.yml"
-                print_info "  Проверка cert dir: $HOME/monitoring/config/harvest/cert"
-                if [[ -f "$HOME/monitoring/config/harvest/harvest.yml" ]]; then
-                    print_info "  ✅ harvest.yml найден"
-                else
-                    print_info "  ❌ harvest.yml отсутствует"
-                fi
-                if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.crt" ]]; then
-                    print_info "  ✅ harvest.crt найден"
-                else
-                    print_info "  ❌ harvest.crt отсутствует"
-                fi
-                if [[ -f "$HOME/monitoring/config/harvest/cert/harvest.key" ]]; then
-                    print_info "  ✅ harvest.key найден"
-                else
-                    print_info "  ❌ harvest.key отсутствует"
-                fi
-                run_user_systemctl status monitoring-harvest.service --no-pager | while IFS= read -r line; do
-                    print_info "$line"
-                    log_message "[HARVEST USER SYSTEMD STATUS] $line"
-                done
-                run_user_systemctl show monitoring-harvest.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
-                    print_info "$line"
-                    log_message "[HARVEST USER SYSTEMD SHOW] $line"
-                done
-                if [[ -f "$HOME/monitoring/logs/harvest/harvest.log" ]]; then
-                    print_info "Последние строки harvest.log:"
-                    tail -n 80 "$HOME/monitoring/logs/harvest/harvest.log" | while IFS= read -r line; do
-                        print_info "$line"
-                        log_message "[HARVEST USER LOG] $line"
-                    done
-                fi
-            fi
+            print_error "${HARVEST_UNIX_SERVICE} не удалось запустить"
+            run_user_systemctl status "${HARVEST_UNIX_SERVICE}" --no-pager | while IFS= read -r line; do
+                print_info "$line"
+                log_message "[HARVEST UNIX USER SYSTEMD STATUS] $line"
+            done
+        fi
+
+        run_user_systemctl enable "${HARVEST_NETAPP_SERVICE}" >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск ${HARVEST_NETAPP_SERVICE}"
+        run_user_systemctl restart "${HARVEST_NETAPP_SERVICE}" >/dev/null 2>&1 || print_error "Ошибка запуска ${HARVEST_NETAPP_SERVICE}"
+        sleep 2
+        if run_user_systemctl is-active --quiet "${HARVEST_NETAPP_SERVICE}"; then
+            print_success "${HARVEST_NETAPP_SERVICE} успешно запущен (user-юнит)"
+            harvest_netapp_started=true
+        else
+            print_error "${HARVEST_NETAPP_SERVICE} не удалось запустить"
+            run_user_systemctl status "${HARVEST_NETAPP_SERVICE}" --no-pager | while IFS= read -r line; do
+                print_info "$line"
+                log_message "[HARVEST NETAPP USER SYSTEMD STATUS] $line"
+            done
         fi
 
         if [[ "$grafana_started" != true ]]; then
             print_error "Grafana не удалось запустить и порт ${GRAFANA_PORT} не занят внешним процессом"
             exit 1
         fi
-        if [[ "$harvest_started" != true ]]; then
-            print_error "Harvest не удалось запустить и порт ${HARVEST_NETAPP_PORT} не занят внешним процессом"
+        if [[ "$harvest_unix_started" != true || "$harvest_netapp_started" != true ]]; then
+            print_error "Один или оба Harvest user-юнита не запущены"
             exit 1
         fi
         echo
@@ -6618,7 +6706,7 @@ configure_services() {
     fi
 
     if [[ "$use_user_units" == true ]]; then
-        print_info "Harvest уже управляется через monitoring-harvest.service (user-юнит), системный harvest пропускаем"
+        print_info "Harvest уже управляется через ${HARVEST_UNIX_SERVICE} и ${HARVEST_NETAPP_SERVICE} (user-юниты), системный harvest пропускаем"
         return 0
     fi
 
@@ -6846,6 +6934,20 @@ verify_installation() {
                 print_error "monitoring-grafana.service (user): не активен"
                 failed_services+=("monitoring-grafana.service")
             fi
+
+            if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${HARVEST_UNIX_SERVICE}" 2>/dev/null; then
+                print_success "${HARVEST_UNIX_SERVICE} (user): активен"
+            else
+                print_error "${HARVEST_UNIX_SERVICE} (user): не активен"
+                failed_services+=("${HARVEST_UNIX_SERVICE}")
+            fi
+
+            if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${HARVEST_NETAPP_SERVICE}" 2>/dev/null; then
+                print_success "${HARVEST_NETAPP_SERVICE} (user): активен"
+            else
+                print_error "${HARVEST_NETAPP_SERVICE} (user): не активен"
+                failed_services+=("${HARVEST_NETAPP_SERVICE}")
+            fi
         else
             print_warning "Пользователь ${runtime_verify_user} не найден, проверяем системные юниты"
             check_system_services "failed_services"
@@ -6853,15 +6955,6 @@ verify_installation() {
     else
         print_warning "KAE не определён, проверяем системные юниты"
         check_system_services "failed_services"
-    fi
-
-    if command -v harvest &> /dev/null; then
-        if harvest status --config "$HARVEST_CONFIG" 2>/dev/null | grep -q "running"; then
-            print_success "harvest: активен"
-        else
-            print_error "harvest: не активен"
-            failed_services+=("harvest")
-        fi
     fi
 
     echo
@@ -7614,31 +7707,33 @@ main() {
     echo "  • Runtime user:         ${runtime_user}"
     echo "  • Проверка user-юнитов:"
     echo "    XDG_RUNTIME_DIR=\"/run/user/\$(id -u ${runtime_user})\" \\"
-    echo "      systemctl --user status monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+    echo "      systemctl --user status monitoring-prometheus.service monitoring-grafana.service ${HARVEST_UNIX_SERVICE} ${HARVEST_NETAPP_SERVICE}"
     echo "  • Проверка активности/автозапуска:"
-    echo "    systemctl --user is-active monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
-    echo "    systemctl --user is-enabled monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+    echo "    systemctl --user is-active monitoring-prometheus.service monitoring-grafana.service ${HARVEST_UNIX_SERVICE} ${HARVEST_NETAPP_SERVICE}"
+    echo "    systemctl --user is-enabled monitoring-prometheus.service monitoring-grafana.service ${HARVEST_UNIX_SERVICE} ${HARVEST_NETAPP_SERVICE}"
     echo "  • Проверка linger (обязательно для user-units):"
     echo "    loginctl show-user ${runtime_user} -p Linger"
     echo "  • Проверка портов:"
-    echo "    ss -tln | grep -E ':(3300|9090|12990|12991)'"
+    echo "    ss -tln | grep -E ':(3300|9090|${HARVEST_NETAPP_PORT}|${HARVEST_UNIX_PORT})'"
     echo
     echo "📄 Конфигурационные файлы:"
     echo "  • Prometheus:           $HOME/monitoring/config/prometheus/prometheus.yml"
     echo "  • Prometheus TLS:       $HOME/monitoring/config/prometheus/web-config.yml"
     echo "  • Grafana:              $HOME/monitoring/config/grafana/grafana.ini"
-    echo "  • Harvest:              $HOME/monitoring/config/harvest/harvest.yml"
+    echo "  • Harvest Unix:         $HOME/monitoring/config/harvest/harvest-unix.yml"
+    echo "  • Harvest NetApp:       $HOME/monitoring/config/harvest/harvest-netapp.yml"
     echo "  • Harvest cert/key:     $HOME/monitoring/config/harvest/cert/harvest.{crt,key}"
     echo "  • State file:           $STATE_FILE"
     echo
     echo "🧾 Логи и диагностика:"
     echo "  • Journal (Prometheus): journalctl --user -u monitoring-prometheus.service -n 200 --no-pager"
     echo "  • Journal (Grafana):    journalctl --user -u monitoring-grafana.service -n 200 --no-pager"
-    echo "  • Journal (Harvest):    journalctl --user -u monitoring-harvest.service -n 200 --no-pager"
+    echo "  • Journal (Harvest U):  journalctl --user -u ${HARVEST_UNIX_SERVICE} -n 200 --no-pager"
+    echo "  • Journal (Harvest N):  journalctl --user -u ${HARVEST_NETAPP_SERVICE} -n 200 --no-pager"
     echo "  • Follow Grafana:       journalctl --user -u monitoring-grafana.service -f"
     echo "  • File logs Prometheus: ls -la $HOME/monitoring/logs/prometheus && tail -n 200 $HOME/monitoring/logs/prometheus/* 2>/dev/null"
     echo "  • File logs Grafana:    ls -la $HOME/monitoring/logs/grafana && tail -n 200 $HOME/monitoring/logs/grafana/* 2>/dev/null"
-    echo "  • File logs Harvest:    tail -n 200 $HOME/monitoring/logs/harvest/harvest.log 2>/dev/null"
+    echo "  • File logs Harvest:    tail -n 200 $HOME/monitoring/logs/harvest/harvest-unix.log $HOME/monitoring/logs/harvest/harvest-netapp.log 2>/dev/null"
     echo
     echo "🌐 Быстрые API проверки:"
     echo "  • Prometheus readiness: curl -k -sS https://$SERVER_DOMAIN:$PROMETHEUS_PORT/-/ready"

@@ -28,42 +28,50 @@ ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user daemon-
 # systemctl --user reset-failed (сброс failed статуса)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user reset-failed monitoring-harvest-netapp.service
 
 # systemctl --user enable (автозапуск)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user enable monitoring-harvest-netapp.service
 
 # systemctl --user disable (отключение автозапуска)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user disable monitoring-harvest-netapp.service
 
 # systemctl --user restart (перезапуск сервисов)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user restart monitoring-harvest-netapp.service
 
 # systemctl --user start (запуск сервисов)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user start monitoring-harvest-netapp.service
 
 # systemctl --user stop (остановка сервисов)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user stop monitoring-harvest-netapp.service
 
 # systemctl --user status (проверка статуса)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user status monitoring-harvest-netapp.service
 
 # systemctl --user is-active (проверка активности)
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-prometheus.service
 ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-grafana.service
-ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest-unix.service
+ALL=(CI10742292-lnx-mon_sys) NOEXEC: NOPASSWD: /usr/bin/systemctl --user is-active monitoring-harvest-netapp.service
 
 ================================================================================
   РАЗДЕЛ 2: Wrapper для копирования credentials в /opt/vault/conf/

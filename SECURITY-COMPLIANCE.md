@@ -197,22 +197,28 @@ CI84324523-lnx-mon_ci ALL=(CI84324523-lnx-mon_sys) NOEXEC: NOPASSWD: \
   /usr/bin/systemctl --user daemon-reload, \
   /usr/bin/systemctl --user reset-failed monitoring-prometheus.service, \
   /usr/bin/systemctl --user reset-failed monitoring-grafana.service, \
-  /usr/bin/systemctl --user reset-failed monitoring-harvest.service, \
+  /usr/bin/systemctl --user reset-failed monitoring-harvest-unix.service, \
+  /usr/bin/systemctl --user reset-failed monitoring-harvest-netapp.service, \
   /usr/bin/systemctl --user enable monitoring-prometheus.service, \
   /usr/bin/systemctl --user enable monitoring-grafana.service, \
-  /usr/bin/systemctl --user enable monitoring-harvest.service, \
+  /usr/bin/systemctl --user enable monitoring-harvest-unix.service, \
+  /usr/bin/systemctl --user enable monitoring-harvest-netapp.service, \
   /usr/bin/systemctl --user restart monitoring-prometheus.service, \
   /usr/bin/systemctl --user restart monitoring-grafana.service, \
-  /usr/bin/systemctl --user restart monitoring-harvest.service, \
+  /usr/bin/systemctl --user restart monitoring-harvest-unix.service, \
+  /usr/bin/systemctl --user restart monitoring-harvest-netapp.service, \
   /usr/bin/systemctl --user stop monitoring-prometheus.service, \
   /usr/bin/systemctl --user stop monitoring-grafana.service, \
-  /usr/bin/systemctl --user stop monitoring-harvest.service, \
+  /usr/bin/systemctl --user stop monitoring-harvest-unix.service, \
+  /usr/bin/systemctl --user stop monitoring-harvest-netapp.service, \
   /usr/bin/systemctl --user status monitoring-prometheus.service, \
   /usr/bin/systemctl --user status monitoring-grafana.service, \
-  /usr/bin/systemctl --user status monitoring-harvest.service, \
+  /usr/bin/systemctl --user status monitoring-harvest-unix.service, \
+  /usr/bin/systemctl --user status monitoring-harvest-netapp.service, \
   /usr/bin/systemctl --user is-active monitoring-prometheus.service, \
   /usr/bin/systemctl --user is-active monitoring-grafana.service, \
-  /usr/bin/systemctl --user is-active monitoring-harvest.service
+  /usr/bin/systemctl --user is-active monitoring-harvest-unix.service, \
+  /usr/bin/systemctl --user is-active monitoring-harvest-netapp.service
 ```
 
 **Ключевые отличия**:
