@@ -2802,7 +2802,6 @@ load_config_from_json() {
     [[ -z "$GRAFANA_URL" ]] && missing+=("GRAFANA_URL")
     [[ -z "$PROMETHEUS_URL" ]] && missing+=("PROMETHEUS_URL")
     [[ -z "$HARVEST_URL" ]] && missing+=("HARVEST_URL")
-    [[ -z "$NODE_EXPORTER_URL" ]] && missing+=("NODE_EXPORTER_URL")
     [[ -z "$VICTORIA_METRICS_REMOTE_WRITE_URL" ]] && missing+=("VICTORIA_METRICS_REMOTE_WRITE_URL")
 
     if (( ${#missing[@]} > 0 )); then
@@ -2822,6 +2821,9 @@ load_config_from_json() {
     
     echo "[DEBUG-CONFIG] ✅ Все обязательные параметры заданы" >&2
     log_debug "✅ All required parameters are set"
+    if [[ -z "$NODE_EXPORTER_URL" ]]; then
+        print_warning "NODE_EXPORTER_URL не задан: установка node_exporter будет пропущена (пакет пока опционален)"
+    fi
 
     NETAPP_POLLER_NAME=$(echo "$NETAPP_API_ADDR" | awk -F'.' '{print toupper(substr($1,1,1)) tolower(substr($1,2))}')
     
@@ -3565,9 +3567,18 @@ create_rlm_install_tasks() {
 
     for package in "${packages[@]}"; do
         IFS='|' read -r url name <<< "$package"
+        local optional_package=false
+        if [[ "$name" == "Node Exporter" ]]; then
+            optional_package=true
+        fi
 
         print_info "Создание задачи для $name..."
         if [[ -z "$url" ]]; then
+            if [[ "$optional_package" == "true" ]]; then
+                print_warning "URL пакета для $name не задан (пусто). Пропускаем (опционально)."
+                write_diagnostic "$name RLM: SKIPPED (optional, empty URL)"
+                continue
+            fi
             print_warning "URL пакета для $name не задан (пусто)"
         else
             print_info "📦 Устанавливаемый RPM: $url"
@@ -3592,6 +3603,13 @@ create_rlm_install_tasks() {
         local task_id
         task_id=$(echo "$response" | jq -r '.id // empty')
         if [[ -z "$task_id" || "$task_id" == "null" ]]; then
+            if [[ "$optional_package" == "true" ]]; then
+                print_warning "Не удалось создать задачу для $name (опционально), продолжаем."
+                print_info "Ответ RLM: $response"
+                print_info "URL пакета: ${url:-не задан}"
+                write_diagnostic "$name RLM: SKIPPED (optional, task create failed): $response"
+                continue
+            fi
             print_error "❌ Ошибка при создании задачи для $name: $response"
             print_error "❌ URL пакета: ${url:-не задан}"
             exit 1
@@ -3667,6 +3685,12 @@ create_rlm_install_tasks() {
                 break
             elif echo "$status_response" | grep -qE '"status":"(failed|error)"'; then
                 echo ""
+                if [[ "$optional_package" == "true" ]]; then
+                    print_warning "$name: ошибка установки (опционально), продолжаем"
+                    print_info "Ответ RLM: $status_response"
+                    write_diagnostic "$name RLM: FAILED (optional) - $status_response"
+                    break
+                fi
                 print_error "❌ $name: ОШИБКА УСТАНОВКИ"
                 print_error "📋 Ответ RLM: $status_response"
                 write_diagnostic "$name RLM: FAILED - $status_response"
@@ -3679,6 +3703,11 @@ create_rlm_install_tasks() {
 
         if [[ $attempt -gt $max_attempts ]]; then
             echo ""
+            if [[ "$optional_package" == "true" ]]; then
+                print_warning "$name: таймаут установки (опционально), продолжаем"
+                write_diagnostic "$name RLM: TIMEOUT (optional) after ${max_attempts} attempts"
+                continue
+            fi
             print_error "⏰ $name: ТАЙМАУТ после ${max_attempts} попыток (~$((max_attempts * interval_sec / 60)) минут)"
             exit 1
         fi

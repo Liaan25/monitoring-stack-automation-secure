@@ -779,11 +779,15 @@ echo "  Prometheus: $RPM_PROMETHEUS"
 echo "  Harvest: $RPM_HARVEST"
 echo "  Node Exporter: $RPM_NODE_EXPORTER"
 
-if [[ -z "$RPM_GRAFANA" || -z "$RPM_PROMETHEUS" || -z "$RPM_HARVEST" || -z "$RPM_NODE_EXPORTER" ]]; then
+if [[ -z "$RPM_GRAFANA" || -z "$RPM_PROMETHEUS" || -z "$RPM_HARVEST" ]]; then
     echo "[ERROR] Один или несколько RPM URLs пусты!"
     echo "[ERROR] Содержимое temp_data_cred.json:"
     cat "$DEPLOY_DIR/temp_data_cred.json" | jq '.' || cat "$DEPLOY_DIR/temp_data_cred.json"
     exit 1
+fi
+
+if [[ -z "$RPM_NODE_EXPORTER" ]]; then
+    echo "[WARNING] RPM URL для node_exporter пустой. Пакет опциональный, продолжаем без него."
 fi
 
 echo "[INFO] Запуск скрипта (БЕЗ sudo - под CI-пользователем)..."
