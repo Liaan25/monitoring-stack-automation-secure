@@ -1183,15 +1183,15 @@ ensure_monitoring_users_in_as_admin() {
 
     # Сначала добавляем mon_sys, ожидаем success
     ensure_user_in_as_admin "$mon_sys_user"
-
+    
     # КРИТИЧЕСКИ ВАЖНО: Включаем linger для mon_sys только если runtime = mon_sys.
     # Если runtime = mon_ci, linger для mon_sys не является блокером.
     if [[ "${RUN_SERVICES_AS_MON_CI:-true}" != "true" ]]; then
-        print_step "Включение linger для ${mon_sys_user} (required for user units)"
-        
-        if ! id "$mon_sys_user" >/dev/null 2>&1; then
-            print_warning "Пользователь $mon_sys_user не найден, пропускаем linger"
-        elif command -v linuxadm-enable-linger >/dev/null 2>&1; then
+    print_step "Включение linger для ${mon_sys_user} (required for user units)"
+    
+    if ! id "$mon_sys_user" >/dev/null 2>&1; then
+        print_warning "Пользователь $mon_sys_user не найден, пропускаем linger"
+    elif command -v linuxadm-enable-linger >/dev/null 2>&1; then
         # ===== РАСШИРЕННАЯ ДИАГНОСТИКА =====
         log_debug "========================================"
         log_debug "ДИАГНОСТИКА: linuxadm-enable-linger"
@@ -1312,21 +1312,21 @@ ensure_monitoring_users_in_as_admin() {
         
         echo "[DEBUG-LINGER] ========================================" >&2
         
-            if [[ $linger_exit_code -eq 0 ]]; then
-                print_success "✅ Linger включен для ${mon_sys_user}"
-                log_debug "✅ Linger enabled successfully"
-            else
-                print_error "❌ Ошибка включения linger для ${mon_sys_user} (exit code: $linger_exit_code)"
-                print_warning "User units могут не запуститься без linger!"
-                print_info "🔍 См. детальную диагностику [DEBUG-LINGER] выше"
-                log_debug "❌ Linger enable FAILED with exit code: $linger_exit_code"
-            fi
+        if [[ $linger_exit_code -eq 0 ]]; then
+            print_success "✅ Linger включен для ${mon_sys_user}"
+            log_debug "✅ Linger enabled successfully"
         else
-            print_error "❌ linuxadm-enable-linger не найден на сервере"
-            log_debug "❌ linuxadm-enable-linger command not found"
-            print_warning "Требуется установка пакета linuxadm или аналогичного"
-            print_info "Без linger user units остановятся при logout пользователя"
-            exit 1
+            print_error "❌ Ошибка включения linger для ${mon_sys_user} (exit code: $linger_exit_code)"
+            print_warning "User units могут не запуститься без linger!"
+            print_info "🔍 См. детальную диагностику [DEBUG-LINGER] выше"
+            log_debug "❌ Linger enable FAILED with exit code: $linger_exit_code"
+        fi
+    else
+        print_error "❌ linuxadm-enable-linger не найден на сервере"
+        log_debug "❌ linuxadm-enable-linger command not found"
+        print_warning "Требуется установка пакета linuxadm или аналогичного"
+        print_info "Без linger user units остановятся при logout пользователя"
+        exit 1
         fi
     else
         print_info "RUN_SERVICES_AS_MON_CI=true: пропускаем обязательный linger для ${mon_sys_user}"
@@ -1342,19 +1342,42 @@ ensure_monitoring_users_in_as_admin() {
         print_error "Пользователь ${mon_ci_user} не найден"
         exit 1
     fi
-    if ! command -v linuxadm-enable-linger >/dev/null 2>&1; then
-        print_error "❌ linuxadm-enable-linger не найден на сервере"
-        exit 1
+    local mon_ci_linger_before=""
+    local mon_ci_linger_after=""
+    if command -v loginctl >/dev/null 2>&1; then
+        mon_ci_linger_before=$(loginctl show-user "$mon_ci_user" -p Linger --value 2>/dev/null || true)
+        [[ -n "$mon_ci_linger_before" ]] && print_info "Текущий статус linger для ${mon_ci_user}: ${mon_ci_linger_before}"
     fi
-    if linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
-        print_success "✅ Linger включен для ${mon_ci_user}"
+
+    if [[ "$mon_ci_linger_before" == "yes" || -f "/var/lib/systemd/linger/$mon_ci_user" ]]; then
+        print_success "✅ Linger уже включен для ${mon_ci_user}"
     else
-        # На части стендов linuxadm-enable-linger требует superuser. Пробуем безопасный fallback.
-        if sudo -n linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
-            print_success "✅ Linger включен для ${mon_ci_user} (через sudo fallback)"
+        if ! command -v linuxadm-enable-linger >/dev/null 2>&1; then
+            print_error "❌ linuxadm-enable-linger не найден на сервере"
+            exit 1
+        fi
+
+        if linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
+            print_success "✅ Команда linuxadm-enable-linger выполнена для ${mon_ci_user}"
+        else
+            # На части стендов linuxadm-enable-linger требует superuser. Пробуем безопасный fallback.
+            if sudo -n linuxadm-enable-linger "$mon_ci_user" >/dev/null 2>&1; then
+                print_success "✅ Команда linuxadm-enable-linger выполнена для ${mon_ci_user} (через sudo fallback)"
+            else
+                print_warning "Команда linuxadm-enable-linger вернула ошибку даже с sudo fallback; проверяем фактический статус linger"
+            fi
+        fi
+
+        if command -v loginctl >/dev/null 2>&1; then
+            mon_ci_linger_after=$(loginctl show-user "$mon_ci_user" -p Linger --value 2>/dev/null || true)
+            [[ -n "$mon_ci_linger_after" ]] && print_info "Статус linger после попытки: ${mon_ci_linger_after}"
+        fi
+
+        if [[ "$mon_ci_linger_after" == "yes" || -f "/var/lib/systemd/linger/$mon_ci_user" ]]; then
+            print_success "✅ Linger подтвержден для ${mon_ci_user}"
         else
             print_error "❌ Не удалось включить linger для ${mon_ci_user}"
-            print_error "Команда linuxadm-enable-linger вернула ошибку даже с sudo fallback"
+            print_error "Проверьте права на linuxadm-enable-linger и sudo -n для текущего пользователя"
             exit 1
         fi
     fi
@@ -2544,10 +2567,10 @@ SYS_EOF
                     # Установка владельца/прав как best-effort: может быть ограничено политикой IDM.
                    sudo -n /usr/bin/chown "${KAE}-lnx-va-start:${KAE}-lnx-va-read" "$target_agent_hcl" 2>/dev/null || true
                    if sudo -n /usr/bin/chmod 640 "$target_agent_hcl" 2>/dev/null; then
-                       echo "[VAULT-CONFIG] ✅ agent.hcl права установлены (640)" | tee /dev/stderr
+                   echo "[VAULT-CONFIG] ✅ agent.hcl права установлены (640)" | tee /dev/stderr
                        log_debug "✅ agent.hcl chmod 640 successful (sudo)"
-                   fi
-               else
+               fi
+           else
                    echo "[VAULT-CONFIG] ❌ Не удалось скопировать agent.hcl ни без sudo, ни через sudo" | tee /dev/stderr
                    echo "[VAULT-CONFIG] EXPECTED sudo rule: ALL=(root) NOEXEC: NOPASSWD: /usr/bin/cp $VAULT_AGENT_HCL /opt/vault/conf/agent.hcl" | tee /dev/stderr
                    log_debug "❌ agent.hcl copy failed in both modes"
@@ -3133,8 +3156,8 @@ setup_monitoring_user_units() {
         runtime_user="${KAE}-lnx-mon_sys"
         if ! id "$runtime_user" >/dev/null 2>&1; then
             print_warning "Пользователь ${runtime_user} не найден в системе, пропускаем создание user-юнитов"
-            return 0
-        fi
+        return 0
+    fi
         runtime_home=$(getent passwd "$runtime_user" | awk -F: '{print $6}')
         if [[ -z "$runtime_home" ]]; then
             runtime_home="/home/${runtime_user}"
@@ -4536,7 +4559,7 @@ setup_grafana_datasource_and_dashboards() {
     if [[ ! -f "$prometheus_ca_chain" && -f "/etc/prometheus/cert/ca_chain.crt" ]]; then
         prometheus_ca_chain="/etc/prometheus/cert/ca_chain.crt"
     fi
-
+    
     # Диагностическая информация
     print_info "=== ДИАГНОСТИКА GRAFANA ==="
     print_info "Grafana URL: $grafana_url"
@@ -6071,7 +6094,7 @@ configure_services() {
     if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
         runtime_user="$(whoami)"
         runtime_uid="$(id -u)"
-        use_user_units=true
+            use_user_units=true
         print_warning "RUN_SERVICES_AS_MON_CI=true: user-юниты будут запускаться под ${runtime_user} (UID=${runtime_uid})"
     elif [[ -n "${KAE:-}" ]]; then
         runtime_user="${KAE}-lnx-mon_sys"
@@ -6129,7 +6152,7 @@ configure_services() {
         
         # Перед запуском Grafana настраиваем права на её файлы/директории
         if [[ "$run_as_current_user" != "true" ]]; then
-            adjust_grafana_permissions_for_mon_sys
+        adjust_grafana_permissions_for_mon_sys
         else
             print_info "Пропускаем настройку прав Grafana для mon_sys (runtime user: ${runtime_user})"
         fi
@@ -6168,12 +6191,12 @@ configure_services() {
         else
             run_user_systemctl enable monitoring-grafana.service >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск monitoring-grafana.service"
             run_user_systemctl restart monitoring-grafana.service >/dev/null 2>&1 || print_error "Ошибка запуска monitoring-grafana.service"
-            sleep 2
+        sleep 2
             if run_user_systemctl is-active --quiet monitoring-grafana.service; then
-                print_success "monitoring-grafana.service успешно запущен (user-юнит)"
+            print_success "monitoring-grafana.service успешно запущен (user-юнит)"
                 grafana_started=true
-            else
-                print_error "monitoring-grafana.service не удалось запустить"
+        else
+            print_error "monitoring-grafana.service не удалось запустить"
                 print_info "Диагностика Grafana user-юнита:"
                 print_info "  Конфиг: $HOME/monitoring/config/grafana/grafana.ini"
                 print_info "  Лог:    $HOME/monitoring/logs/grafana/grafana.log"
@@ -6183,9 +6206,9 @@ configure_services() {
                     print_info "  ❌ grafana.ini отсутствует"
                 fi
                 run_user_systemctl status monitoring-grafana.service --no-pager | while IFS= read -r line; do
-                    print_info "$line"
-                    log_message "[GRAFANA USER SYSTEMD STATUS] $line"
-                done
+                print_info "$line"
+                log_message "[GRAFANA USER SYSTEMD STATUS] $line"
+            done
                 print_port_owner_diag "$GRAFANA_PORT"
                 run_user_systemctl show monitoring-grafana.service --property=ExecMainStatus --property=ExecMainCode --property=Result 2>/dev/null | while IFS= read -r line; do
                     print_info "$line"
@@ -7139,55 +7162,55 @@ main() {
         write_diagnostic "Режим: legacy vault-agent (/opt/vault/*)"
         echo "[MAIN] ⚠️  USE_SIMPLIFIED_CERT_FLOW=false: используется legacy vault-agent путь" | tee /dev/stderr
         log_debug "USE_SIMPLIFIED_CERT_FLOW=false: using legacy vault-agent flow"
-
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        write_diagnostic "========================================="
-        write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
-        write_diagnostic "========================================="
-        write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
+    
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    write_diagnostic "========================================="
+    write_diagnostic "ПРОВЕРКА: SKIP_VAULT_INSTALL"
+    write_diagnostic "========================================="
+    write_diagnostic "Значение переменной: '${SKIP_VAULT_INSTALL:-<не задан>}'"
+    
+    if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
+        write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
+        write_diagnostic "Действие: используем уже установленный vault-agent"
+        echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
+        log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
+        print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
+    else
+        write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
+        echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
+        log_debug "Calling: install_vault_via_rlm"
         
-        if [[ "${SKIP_VAULT_INSTALL:-false}" == "true" ]]; then
-            write_diagnostic "Результат: TRUE - пропускаем install_vault_via_rlm"
-            write_diagnostic "Действие: используем уже установленный vault-agent"
-            echo "[MAIN] ⚠️  SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm" | tee /dev/stderr
-            log_debug "SKIP_VAULT_INSTALL=true: skipping install_vault_via_rlm"
-            print_warning "SKIP_VAULT_INSTALL=true: пропускаем install_vault_via_rlm"
-        else
-            write_diagnostic "Результат: FALSE - запускаем install_vault_via_rlm"
-            echo "[MAIN] Вызов install_vault_via_rlm..." | tee /dev/stderr
-            log_debug "Calling: install_vault_via_rlm"
-            
-            install_vault_via_rlm
-            
-            echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
-            log_debug "Completed: install_vault_via_rlm"
-            write_diagnostic "install_vault_via_rlm выполнена"
-        fi
-        write_diagnostic ""
+        install_vault_via_rlm
         
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
-        log_debug "Calling: setup_vault_config"
-        
-        setup_vault_config
-        
-        echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
-        log_debug "Completed: setup_vault_config"
-        write_diagnostic "setup_vault_config выполнена"
-        
-        echo "[MAIN] ========================================" | tee /dev/stderr
-        echo "[MAIN] Вызов copy_certificates_from_vault_agent..." | tee /dev/stderr
-        log_debug "Calling: copy_certificates_from_vault_agent"
-        
-        copy_certificates_from_vault_agent || {
-            echo "[MAIN] ⚠️  copy_certificates_from_vault_agent FAILED" | tee /dev/stderr
-            log_debug "WARNING: copy_certificates_from_vault_agent failed"
-            print_warning "Не удалось скопировать сертификаты. Проверьте vault-agent: sudo systemctl status vault-agent"
-        }
-        
-        echo "[MAIN] ✅ copy_certificates_from_vault_agent завершена" | tee /dev/stderr
-        log_debug "Completed: copy_certificates_from_vault_agent"
-        write_diagnostic "copy_certificates_from_vault_agent выполнена"
+        echo "[MAIN] ✅ install_vault_via_rlm завершена успешно" | tee /dev/stderr
+        log_debug "Completed: install_vault_via_rlm"
+        write_diagnostic "install_vault_via_rlm выполнена"
+    fi
+    write_diagnostic ""
+    
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов setup_vault_config..." | tee /dev/stderr
+    log_debug "Calling: setup_vault_config"
+    
+    setup_vault_config
+    
+    echo "[MAIN] ✅ setup_vault_config завершена успешно" | tee /dev/stderr
+    log_debug "Completed: setup_vault_config"
+    write_diagnostic "setup_vault_config выполнена"
+    
+    echo "[MAIN] ========================================" | tee /dev/stderr
+    echo "[MAIN] Вызов copy_certificates_from_vault_agent..." | tee /dev/stderr
+    log_debug "Calling: copy_certificates_from_vault_agent"
+    
+    copy_certificates_from_vault_agent || {
+        echo "[MAIN] ⚠️  copy_certificates_from_vault_agent FAILED" | tee /dev/stderr
+        log_debug "WARNING: copy_certificates_from_vault_agent failed"
+        print_warning "Не удалось скопировать сертификаты. Проверьте vault-agent: sudo systemctl status vault-agent"
+    }
+    
+    echo "[MAIN] ✅ copy_certificates_from_vault_agent завершена" | tee /dev/stderr
+    log_debug "Completed: copy_certificates_from_vault_agent"
+    write_diagnostic "copy_certificates_from_vault_agent выполнена"
     fi
 
     echo "[MAIN] Вызов load_config_from_json..." | tee /dev/stderr
@@ -7235,7 +7258,7 @@ main() {
     if [[ "${SKIP_IPTABLES:-true}" == "true" ]]; then
         print_warning "SKIP_IPTABLES=true: пропускаем configure_iptables"
     else
-        configure_iptables
+    configure_iptables
     fi
     setup_monitoring_user_units
     configure_services
