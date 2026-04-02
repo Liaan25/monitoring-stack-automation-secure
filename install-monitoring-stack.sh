@@ -27,7 +27,6 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${SEC_MAN_SECRET_ID:=}"
 : "${SEC_MAN_ADDR:=}"
 : "${NAMESPACE_CI:=}"
-: "${VAULT_AGENT_KV:=}"
 : "${RPM_URL_KV:=}"
 : "${NETAPP_SSH_KV:=}"
 : "${GRAFANA_WEB_KV:=}"
@@ -82,6 +81,8 @@ LOCAL_CRED_JSON="/tmp/temp_data_cred.json"
 PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 HARVEST_URL="${HARVEST_URL:-}"
 GRAFANA_URL="${GRAFANA_URL:-}"
+NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-}"
+VICTORIA_METRICS_REMOTE_WRITE_URL="${VICTORIA_METRICS_REMOTE_WRITE_URL:-}"
 
 # Глобальные переменные (будут инициализированы в detect_network_info)
 SERVER_IP=""
@@ -2425,23 +2426,9 @@ SYS_EOF
 SYS_EOF
    fi
 
-    # Добавляем блок vault-agent
-   if [[ -n "$VAULT_AGENT_KV" ]]; then
-       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
- "vault-agent": {
-   {{ with secret "$VAULT_AGENT_KV" }}
-   "role_id": {{ .Data.role_id | toJSON }},
-   "secret_id": {{ .Data.secret_id | toJSON }}
-   {{ end }}
- }
-}
- EOT
- perms = "0640"
- error_on_missing_key = false
-}
-SYS_EOF
-   else
-       cat >> "$VAULT_AGENT_HCL" << SYS_EOF
+    # VAULT_AGENT_KV больше не используется в current flow.
+    # Оставляем ключ для обратной совместимости формата data_sec.json.
+    cat >> "$VAULT_AGENT_HCL" << SYS_EOF
  "vault-agent": {}
 }
  EOT
@@ -2449,7 +2436,6 @@ SYS_EOF
  error_on_missing_key = false
 }
 SYS_EOF
-   fi
 
     # Добавляем блоки для сертификатов SBERCA
    if [[ -n "$SBERCA_CERT_KV" ]]; then
@@ -2802,16 +2788,22 @@ load_config_from_json() {
     echo "[DEBUG-CONFIG] GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}" >&2
     log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
     log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
     log_debug "HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}"
+    log_debug "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<НЕ ЗАДАН>}"
+    log_debug "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}"
     
     local missing=()
     [[ -z "$NETAPP_API_ADDR" ]] && missing+=("NETAPP_API_ADDR")
     [[ -z "$GRAFANA_URL" ]] && missing+=("GRAFANA_URL")
     [[ -z "$PROMETHEUS_URL" ]] && missing+=("PROMETHEUS_URL")
     [[ -z "$HARVEST_URL" ]] && missing+=("HARVEST_URL")
+    [[ -z "$NODE_EXPORTER_URL" ]] && missing+=("NODE_EXPORTER_URL")
+    [[ -z "$VICTORIA_METRICS_REMOTE_WRITE_URL" ]] && missing+=("VICTORIA_METRICS_REMOTE_WRITE_URL")
 
     if (( ${#missing[@]} > 0 )); then
         echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" >&2
@@ -2822,7 +2814,7 @@ load_config_from_json() {
         
         echo "[DEBUG-CONFIG] ========================================" >&2
         echo "[DEBUG-CONFIG] DUMP всех ENV переменных:" >&2
-        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NAMESPACE|KAE)" | sort >&2
+        env | grep -E "(NETAPP|GRAFANA|PROMETHEUS|HARVEST|NODE_EXPORTER|VICTORIA|NAMESPACE|KAE)" | sort >&2
         echo "[DEBUG-CONFIG] ========================================" >&2
         
         exit 1
@@ -3554,6 +3546,8 @@ create_rlm_install_tasks() {
     write_diagnostic "  GRAFANA_URL: ${GRAFANA_URL:-<не задан>}"
     write_diagnostic "  PROMETHEUS_URL: ${PROMETHEUS_URL:-<не задан>}"
     write_diagnostic "  HARVEST_URL: ${HARVEST_URL:-<не задан>}"
+    write_diagnostic "  NODE_EXPORTER_URL: ${NODE_EXPORTER_URL:-<не задан>}"
+    write_diagnostic "  VICTORIA_METRICS_REMOTE_WRITE_URL: ${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
 
     if [[ -z "$RLM_TOKEN" || -z "$RLM_API_URL" ]]; then
         write_diagnostic "ERROR: RLM API токен или URL не задан"
@@ -3566,6 +3560,7 @@ create_rlm_install_tasks() {
         "$GRAFANA_URL|Grafana"
         "$PROMETHEUS_URL|Prometheus"
         "$HARVEST_URL|Harvest"
+        "$NODE_EXPORTER_URL|Node Exporter"
     )
 
     for package in "${packages[@]}"; do
@@ -3664,6 +3659,10 @@ create_rlm_install_tasks() {
                         RLM_ID_TASK_HARVEST="$task_id"
                         export RLM_ID_TASK_HARVEST
                         ;;
+                    "Node Exporter")
+                        RLM_ID_TASK_NODE_EXPORTER="$task_id"
+                        export RLM_ID_TASK_NODE_EXPORTER
+                        ;;
                 esac
                 break
             elif echo "$status_response" | grep -qE '"status":"(failed|error)"'; then
@@ -3697,6 +3696,7 @@ create_rlm_install_tasks() {
     echo "  ✅ Grafana       - Task ID: ${RLM_ID_TASK_GRAFANA:-N/A}"
     echo "  ✅ Prometheus    - Task ID: ${RLM_ID_TASK_PROMETHEUS:-N/A}"
     echo "  ✅ Harvest       - Task ID: ${RLM_ID_TASK_HARVEST:-N/A}"
+    echo "  ✅ Node Exporter - Task ID: ${RLM_ID_TASK_NODE_EXPORTER:-N/A}"
     echo ""
 
     # Настройка PATH для Harvest
@@ -4231,6 +4231,13 @@ scrape_configs:
       - targets: ['${SERVER_DOMAIN}:${HARVEST_NETAPP_PORT}']
     metrics_path: /metrics
     scrape_interval: 60s
+
+remote_write:
+  - url: '${VICTORIA_METRICS_REMOTE_WRITE_URL}'
+    queue_config:
+      max_samples_per_send: 10000
+      max_shards: 30
+      capacity: 50000
 PROMETHEUS_CONFIG_EOF
 
     chmod 640 "$prometheus_config" 2>/dev/null || true
@@ -7465,6 +7472,8 @@ main() {
     write_diagnostic "GRAFANA_URL=${GRAFANA_URL:-<не задан>}"
     write_diagnostic "PROMETHEUS_URL=${PROMETHEUS_URL:-<не задан>}"
     write_diagnostic "HARVEST_URL=${HARVEST_URL:-<не задан>}"
+    write_diagnostic "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<не задан>}"
+    write_diagnostic "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
     write_diagnostic ""
     write_diagnostic "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<не задан>}"
     write_diagnostic "SERVER_IP=${SERVER_IP:-<не определен>}"

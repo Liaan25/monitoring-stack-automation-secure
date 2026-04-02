@@ -62,8 +62,8 @@ pipeline {
         string(name: 'SEC_MAN_ADDR',       defaultValue: params.SEC_MAN_ADDR ?: '',       description: 'Адрес Vault для SecMan')
         string(name: 'NAMESPACE_CI',       defaultValue: params.NAMESPACE_CI ?: '',       description: 'Namespace для CI в Vault')
         string(name: 'NETAPP_API_ADDR',    defaultValue: params.NETAPP_API_ADDR ?: '',    description: 'FQDN/IP NetApp API')
-        string(name: 'VAULT_AGENT_KV',     defaultValue: params.VAULT_AGENT_KV ?: '',     description: 'Путь KV в Vault для AppRole')
         string(name: 'RPM_URL_KV',         defaultValue: params.RPM_URL_KV ?: '',         description: 'Путь KV в Vault для RPM URL')
+        string(name: 'VICTORIA_METRICS_REMOTE_WRITE_URL', defaultValue: params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: '', description: 'URL VictoriaMetrics для Prometheus remote_write (например http://10.73.129.70:8480/insert/0/prometheus)')
         string(name: 'NETAPP_SSH_KV',      defaultValue: params.NETAPP_SSH_KV ?: '',      description: 'Путь KV в Vault для NetApp SSH')
         string(name: 'GRAFANA_WEB_KV',     defaultValue: params.GRAFANA_WEB_KV ?: '',     description: 'Путь KV в Vault для Grafana Web')
         string(name: 'SBERCA_CERT_KV',     defaultValue: params.SBERCA_CERT_KV ?: '',     description: 'Путь KV в Vault для SberCA Cert')
@@ -261,17 +261,12 @@ pipeline {
                     // Формируем массив vaultSecrets для withVault плагина (как в v3.x)
                     def vaultSecrets = []
                     
-                    if (params.VAULT_AGENT_KV?.trim()) {
-                        vaultSecrets << [path: params.VAULT_AGENT_KV, secretValues: [
-                            [envVar: 'VA_ROLE_ID',    vaultKey: 'role_id'],
-                            [envVar: 'VA_SECRET_ID',  vaultKey: 'secret_id']
-                        ]]
-                    }
                     if (params.RPM_URL_KV?.trim()) {
                         vaultSecrets << [path: params.RPM_URL_KV, secretValues: [
                             [envVar: 'VA_RPM_HARVEST',    vaultKey: 'harvest'],
                             [envVar: 'VA_RPM_PROMETHEUS', vaultKey: 'prometheus'],
-                            [envVar: 'VA_RPM_GRAFANA',    vaultKey: 'grafana']
+                            [envVar: 'VA_RPM_GRAFANA',    vaultKey: 'grafana'],
+                            [envVar: 'VA_RPM_NODE_EXPORTER', vaultKey: 'node_exporter']
                         ]]
                     }
                     if (params.NETAPP_SSH_KV?.trim()) {
@@ -292,7 +287,7 @@ pipeline {
                         // Создаем пустой JSON
                         def emptyData = [
                             "vault-agent": [role_id: '', secret_id: ''],
-                            "rpm_url": [harvest: '', prometheus: '', grafana: ''],
+                            "rpm_url": [harvest: '', prometheus: '', grafana: '', node_exporter: ''],
                             "netapp_ssh": [addr: '', user: '', pass: ''],
                             "grafana_web": [user: '', pass: ''],
                             "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
@@ -462,7 +457,8 @@ rm -f "${FETCH_RESP_FILE}"
                                     "rpm_url": [
                                         harvest: (env.VA_RPM_HARVEST ?: ''),
                                         prometheus: (env.VA_RPM_PROMETHEUS ?: ''),
-                                        grafana: (env.VA_RPM_GRAFANA ?: '')
+                                        grafana: (env.VA_RPM_GRAFANA ?: ''),
+                                        node_exporter: (env.VA_RPM_NODE_EXPORTER ?: '')
                                     ],
                                     "netapp_ssh": [
                                         addr: (env.VA_NETAPP_SSH_ADDR ?: ''),
@@ -775,13 +771,15 @@ fi
 RPM_GRAFANA=$(jq -r '.rpm_url.grafana // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
 RPM_PROMETHEUS=$(jq -r '.rpm_url.prometheus // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
 RPM_HARVEST=$(jq -r '.rpm_url.harvest // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
+RPM_NODE_EXPORTER=$(jq -r '.rpm_url.node_exporter // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
 
 echo "[INFO] RPM URLs из Vault:"
 echo "  Grafana: $RPM_GRAFANA"
 echo "  Prometheus: $RPM_PROMETHEUS"
 echo "  Harvest: $RPM_HARVEST"
+echo "  Node Exporter: $RPM_NODE_EXPORTER"
 
-if [[ -z "$RPM_GRAFANA" || -z "$RPM_PROMETHEUS" || -z "$RPM_HARVEST" ]]; then
+if [[ -z "$RPM_GRAFANA" || -z "$RPM_PROMETHEUS" || -z "$RPM_HARVEST" || -z "$RPM_NODE_EXPORTER" ]]; then
     echo "[ERROR] Один или несколько RPM URLs пусты!"
     echo "[ERROR] Содержимое temp_data_cred.json:"
     cat "$DEPLOY_DIR/temp_data_cred.json" | jq '.' || cat "$DEPLOY_DIR/temp_data_cred.json"
@@ -797,12 +795,12 @@ env \
   NETAPP_API_ADDR="__NETAPP_API_ADDR__" \
   GRAFANA_PORT="__GRAFANA_PORT__" \
   PROMETHEUS_PORT="__PROMETHEUS_PORT__" \
-  VAULT_AGENT_KV="__VAULT_AGENT_KV__" \
   RPM_URL_KV="__RPM_URL_KV__" \
   NETAPP_SSH_KV="__NETAPP_SSH_KV__" \
   GRAFANA_WEB_KV="__GRAFANA_WEB_KV__" \
   SBERCA_CERT_KV="__SBERCA_CERT_KV__" \
   ADMIN_EMAIL="__ADMIN_EMAIL__" \
+  VICTORIA_METRICS_REMOTE_WRITE_URL="__VICTORIA_METRICS_REMOTE_WRITE_URL__" \
   RENEW_CERTIFICATES_ONLY="__RENEW_CERTIFICATES_ONLY__" \
   USE_SIMPLIFIED_CERT_FLOW="__USE_SIMPLIFIED_CERT_FLOW__" \
   SKIP_RPM_INSTALL="__SKIP_RPM_INSTALL__" \
@@ -811,6 +809,7 @@ env \
   GRAFANA_URL="$RPM_GRAFANA" \
   PROMETHEUS_URL="$RPM_PROMETHEUS" \
   HARVEST_URL="$RPM_HARVEST" \
+  NODE_EXPORTER_URL="$RPM_NODE_EXPORTER" \
   DEPLOY_VERSION="__DEPLOY_VERSION__" \
   DEPLOY_GIT_COMMIT="__DEPLOY_GIT_COMMIT__" \
   DEPLOY_BUILD_DATE="__DEPLOY_BUILD_DATE__" \
@@ -828,12 +827,12 @@ REMOTE_EOF
                             .replace('__NETAPP_API_ADDR__',    params.NETAPP_API_ADDR    ?: '')
                             .replace('__GRAFANA_PORT__',       params.GRAFANA_PORT       ?: '3000')
                             .replace('__PROMETHEUS_PORT__',    params.PROMETHEUS_PORT    ?: '9090')
-                            .replace('__VAULT_AGENT_KV__',     params.VAULT_AGENT_KV     ?: '')
                             .replace('__RPM_URL_KV__',         params.RPM_URL_KV         ?: '')
                             .replace('__NETAPP_SSH_KV__',      params.NETAPP_SSH_KV      ?: '')
                             .replace('__GRAFANA_WEB_KV__',     params.GRAFANA_WEB_KV     ?: '')
                             .replace('__SBERCA_CERT_KV__',     params.SBERCA_CERT_KV     ?: '')
                             .replace('__ADMIN_EMAIL__',               params.ADMIN_EMAIL             ?: '')
+                            .replace('__VICTORIA_METRICS_REMOTE_WRITE_URL__', params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: '')
                             .replace('__RENEW_CERTIFICATES_ONLY__',  params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')
                             .replace('__USE_SIMPLIFIED_CERT_FLOW__', params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')
                             .replace('__SKIP_RPM_INSTALL__',         params.SKIP_RPM_INSTALL        ? 'true' : 'false')
