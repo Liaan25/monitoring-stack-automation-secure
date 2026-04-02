@@ -39,6 +39,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${USE_SIMPLIFIED_CERT_FLOW:=true}"
 : "${SKIP_IPTABLES:=true}"
 : "${RUN_SERVICES_AS_MON_CI:=true}"
+: "${FORCE_FRESH_INSTALL:=true}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -1741,6 +1742,68 @@ cleanup_all_previous() {
 
 
 
+
+    # ========================================================================
+    # SECURE EDITION: Агрессивная очистка user-space (чистая установка каждый запуск)
+    # ========================================================================
+    if [[ "${FORCE_FRESH_INSTALL:-true}" == "true" ]]; then
+        print_info "FORCE_FRESH_INSTALL=true: выполняем полную очистку user-space данных"
+
+        # Останавливаем и удаляем user-юниты текущего runtime-пользователя
+        local user_units=(
+            "monitoring-prometheus.service"
+            "monitoring-grafana.service"
+            "monitoring-harvest.service"
+        )
+        for unit in "${user_units[@]}"; do
+            if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+                print_info "Остановка user-юнита: $unit"
+                systemctl --user stop "$unit" >/dev/null 2>&1 || true
+            fi
+            if systemctl --user is-enabled --quiet "$unit" 2>/dev/null; then
+                print_info "Отключение user-юнита: $unit"
+                systemctl --user disable "$unit" >/dev/null 2>&1 || true
+            fi
+            if [[ -f "$HOME/.config/systemd/user/$unit" ]]; then
+                print_info "Удаление user-unit файла: $HOME/.config/systemd/user/$unit"
+                rm -f "$HOME/.config/systemd/user/$unit" >/dev/null 2>&1 || true
+            fi
+        done
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+        systemctl --user reset-failed >/dev/null 2>&1 || true
+
+        # Удаляем все runtime-данные в user-space, включая БД Grafana,
+        # чтобы admin-пароль/SA/tokens/datasource всегда создавались заново.
+        local user_dirs_to_clean=(
+            "$HOME/monitoring/config/grafana"
+            "$HOME/monitoring/config/prometheus"
+            "$HOME/monitoring/config/harvest"
+            "$HOME/monitoring/data/grafana"
+            "$HOME/monitoring/data/prometheus"
+            "$HOME/monitoring/data/harvest"
+            "$HOME/monitoring/logs/grafana"
+            "$HOME/monitoring/logs/prometheus"
+            "$HOME/monitoring/logs/harvest"
+            "$HOME/monitoring/certs/grafana"
+            "$HOME/monitoring/certs/prometheus"
+            "$HOME/monitoring/certs/vault"
+            "$HOME/monitoring/state"
+        )
+
+        for dir in "${user_dirs_to_clean[@]}"; do
+            if [[ -d "$dir" ]]; then
+                print_info "Удаление user-space директории: $dir"
+                if ! rm -rf "$dir" >/dev/null 2>&1; then
+                    print_warning "Не удалось удалить user-space директорию: $dir"
+                fi
+            fi
+        done
+
+        # Чистим временные credentials артефакты от предыдущих прогонов
+        rm -f "$PWD/temp_data_cred.json" "/tmp/temp_data_cred.json" >/dev/null 2>&1 || true
+    else
+        print_warning "FORCE_FRESH_INSTALL=false: user-space данные не очищаются полностью"
+    fi
 
     systemctl daemon-reload >/dev/null 2>&1
     print_success "Полная очистка завершена"
@@ -5693,6 +5756,61 @@ EOF_HEADER
             fi
         }
         
+        # Проверка basic auth к Grafana API (endpoint /api/user требует валидные креды)
+        check_grafana_basic_auth() {
+            local auth_response auth_code
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
+                auth_response=$(curl -k -s -w "\n%{http_code}" \
+                    --cert "${grafana_client_cert}" \
+                    --key "${grafana_client_key}" \
+                    -u "${grafana_user}:${grafana_password}" \
+                    "${grafana_url}/api/user" 2>&1) || true
+            else
+                auth_response=$(curl -k -s -w "\n%{http_code}" \
+                    -u "${grafana_user}:${grafana_password}" \
+                    "${grafana_url}/api/user" 2>&1) || true
+            fi
+            auth_code=$(echo "$auth_response" | tail -1)
+            [[ -z "$auth_code" ]] && auth_code="000"
+            echo "$auth_code"
+        }
+
+        # Ресинхронизация admin-пароля Grafana из Vault секрета в локальный grafana DB.
+        # Нужна на стендах, где пароль в DB "уплыл" между деплоями.
+        sync_grafana_admin_password() {
+            local grafana_cfg="$HOME/monitoring/config/grafana/grafana.ini"
+            local cli_cmd=""
+            if command -v grafana >/dev/null 2>&1; then
+                cli_cmd="grafana cli"
+            elif command -v grafana-cli >/dev/null 2>&1; then
+                cli_cmd="grafana-cli"
+            else
+                print_warning "grafana-cli не найден, пропускаем ресинк admin-пароля"
+                return 1
+            fi
+
+            if [[ ! -f "$grafana_cfg" ]]; then
+                print_warning "Не найден grafana.ini в user-space: $grafana_cfg"
+                return 1
+            fi
+
+            print_warning "Обнаружен HTTP 401. Пробуем ресинк admin-пароля Grafana через CLI..."
+            if [[ "$cli_cmd" == "grafana cli" ]]; then
+                if grafana cli --config "$grafana_cfg" --homepath /usr/share/grafana admin reset-admin-password "$grafana_password" >/dev/null 2>&1; then
+                    print_success "Пароль admin в Grafana синхронизирован с секретом"
+                    return 0
+                fi
+            else
+                if grafana-cli --config "$grafana_cfg" --homepath /usr/share/grafana admin reset-admin-password "$grafana_password" >/dev/null 2>&1; then
+                    print_success "Пароль admin в Grafana синхронизирован с секретом"
+                    return 0
+                fi
+            fi
+
+            print_warning "Не удалось синхронизировать пароль через grafana-cli"
+            return 1
+        }
+
         # Функция для создания токена через API
         create_token_via_api() {
             local sa_id="$1"
@@ -5835,9 +5953,11 @@ EOF_HEADER
         
         # Пробуем получить токен через API
         print_info "Вызов функции create_service_account_via_api..."
-        local sa_id
+        local sa_id sa_result
+        set +e
         sa_id=$(create_service_account_via_api)
-        local sa_result=$?
+        sa_result=$?
+        set -e
         print_info "Результат create_service_account_via_api: код $sa_result, sa_id='$sa_id'"
         
         # Логируем ВСЕ детали для отладки пайплайна
@@ -5847,6 +5967,22 @@ EOF_HEADER
         print_info "grafana_url: $grafana_url"
         print_info "service_account_name: $service_account_name"
         
+        if [[ $sa_result -ne 0 ]]; then
+            local auth_code
+            auth_code=$(check_grafana_basic_auth)
+            print_info "Проверка Basic Auth (/api/user): HTTP $auth_code"
+            if [[ "$auth_code" == "401" ]]; then
+                if sync_grafana_admin_password; then
+                    service_account_name="harvest-service-account-resync_$(date +%s)"
+                    set +e
+                    sa_id=$(create_service_account_via_api)
+                    sa_result=$?
+                    set -e
+                    print_info "Результат повторной попытки после ресинка пароля: код $sa_result, sa_id='$sa_id'"
+                fi
+            fi
+        fi
+
         if [[ $sa_result -eq 0 && -n "$sa_id" ]]; then
             # Успешно создали сервисный аккаунт, пробуем создать токен
             if ! create_token_via_api "$sa_id"; then
@@ -5877,8 +6013,10 @@ EOF_HEADER
             # Сбрасываем переменные и пробуем снова
             unset sa_id sa_result
             service_account_name="harvest-service-account-localhost_$(date +%s)"
+            set +e
             sa_id=$(create_service_account_via_api)
             sa_result=$?
+            set -e
             
             # Восстанавливаем оригинальный домен
             export SERVER_DOMAIN="$original_domain"
