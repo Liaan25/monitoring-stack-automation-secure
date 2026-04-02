@@ -2802,7 +2802,6 @@ load_config_from_json() {
     [[ -z "$GRAFANA_URL" ]] && missing+=("GRAFANA_URL")
     [[ -z "$PROMETHEUS_URL" ]] && missing+=("PROMETHEUS_URL")
     [[ -z "$HARVEST_URL" ]] && missing+=("HARVEST_URL")
-    [[ -z "$VICTORIA_METRICS_REMOTE_WRITE_URL" ]] && missing+=("VICTORIA_METRICS_REMOTE_WRITE_URL")
 
     if (( ${#missing[@]} > 0 )); then
         echo "[DEBUG-CONFIG] ❌ Отсутствуют параметры: ${missing[*]}" >&2
@@ -2823,6 +2822,9 @@ load_config_from_json() {
     log_debug "✅ All required parameters are set"
     if [[ -z "$NODE_EXPORTER_URL" ]]; then
         print_warning "NODE_EXPORTER_URL не задан: установка node_exporter будет пропущена (пакет пока опционален)"
+    fi
+    if [[ -z "$VICTORIA_METRICS_REMOTE_WRITE_URL" ]]; then
+        print_warning "VICTORIA_METRICS_REMOTE_WRITE_URL не задан: remote_write в Prometheus будет пропущен"
     fi
 
     NETAPP_POLLER_NAME=$(echo "$NETAPP_API_ADDR" | awk -F'.' '{print toupper(substr($1,1,1)) tolower(substr($1,2))}')
@@ -4260,6 +4262,10 @@ scrape_configs:
       - targets: ['${SERVER_DOMAIN}:${HARVEST_NETAPP_PORT}']
     metrics_path: /metrics
     scrape_interval: 60s
+PROMETHEUS_CONFIG_EOF
+
+    if [[ -n "$VICTORIA_METRICS_REMOTE_WRITE_URL" ]]; then
+        cat >> "$prometheus_config" << PROMETHEUS_REMOTE_WRITE_EOF
 
 remote_write:
   - url: '${VICTORIA_METRICS_REMOTE_WRITE_URL}'
@@ -4267,7 +4273,11 @@ remote_write:
       max_samples_per_send: 10000
       max_shards: 30
       capacity: 50000
-PROMETHEUS_CONFIG_EOF
+PROMETHEUS_REMOTE_WRITE_EOF
+        print_info "remote_write включен: ${VICTORIA_METRICS_REMOTE_WRITE_URL}"
+    else
+        print_warning "remote_write не настроен: VICTORIA_METRICS_REMOTE_WRITE_URL пустой"
+    fi
 
     chmod 640 "$prometheus_config" 2>/dev/null || true
     print_success "Конфигурация Prometheus создана в user-space: $prometheus_config"
