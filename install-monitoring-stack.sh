@@ -6651,14 +6651,16 @@ configure_services() {
         fi
         echo
 
-        # Включаем и запускаем split Harvest user-юниты
+        # Включаем и запускаем split Harvest user-юниты.
+        # Временная бизнес-логика: критичным считаем только NetApp unit.
         local harvest_unix_started=false
         local harvest_netapp_started=false
+        local skip_unix_start=false
 
         if port_in_use "$HARVEST_UNIX_PORT"; then
-            print_error "Порт Harvest Unix ${HARVEST_UNIX_PORT} уже занят. Чистый запуск невозможен."
+            print_warning "Порт Harvest Unix ${HARVEST_UNIX_PORT} уже занят. Пропускаем запуск ${HARVEST_UNIX_SERVICE}."
             print_port_owner_diag "$HARVEST_UNIX_PORT"
-            exit 1
+            skip_unix_start=true
         fi
         if port_in_use "$HARVEST_NETAPP_PORT"; then
             print_error "Порт Harvest NetApp ${HARVEST_NETAPP_PORT} уже занят. Чистый запуск невозможен."
@@ -6666,19 +6668,26 @@ configure_services() {
             exit 1
         fi
 
-        run_user_systemctl enable "${HARVEST_UNIX_SERVICE}" >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск ${HARVEST_UNIX_SERVICE}"
-        run_user_systemctl restart "${HARVEST_UNIX_SERVICE}" >/dev/null 2>&1 || print_error "Ошибка запуска ${HARVEST_UNIX_SERVICE}"
-        sleep 2
-        if run_user_systemctl is-active --quiet "${HARVEST_UNIX_SERVICE}"; then
-            print_success "${HARVEST_UNIX_SERVICE} успешно запущен (user-юнит)"
-            harvest_unix_started=true
+        if [[ "$skip_unix_start" != true ]]; then
+            run_user_systemctl enable "${HARVEST_UNIX_SERVICE}" >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск ${HARVEST_UNIX_SERVICE}"
+            run_user_systemctl restart "${HARVEST_UNIX_SERVICE}" >/dev/null 2>&1 || print_error "Ошибка запуска ${HARVEST_UNIX_SERVICE}"
+            sleep 2
+            if run_user_systemctl is-active --quiet "${HARVEST_UNIX_SERVICE}"; then
+                print_success "${HARVEST_UNIX_SERVICE} успешно запущен (user-юнит)"
+                harvest_unix_started=true
+            else
+                print_error "${HARVEST_UNIX_SERVICE} не удалось запустить"
+                run_user_systemctl status "${HARVEST_UNIX_SERVICE}" --no-pager | while IFS= read -r line; do
+                    print_info "$line"
+                    log_message "[HARVEST UNIX USER SYSTEMD STATUS] $line"
+                done
+            fi
         else
-            print_error "${HARVEST_UNIX_SERVICE} не удалось запустить"
-            run_user_systemctl status "${HARVEST_UNIX_SERVICE}" --no-pager | while IFS= read -r line; do
-                print_info "$line"
-                log_message "[HARVEST UNIX USER SYSTEMD STATUS] $line"
-            done
+            print_warning "Запуск ${HARVEST_UNIX_SERVICE} пропущен"
         fi
+
+        print_info "Ожидание 4 секунды перед запуском ${HARVEST_NETAPP_SERVICE}..."
+        sleep 4
 
         run_user_systemctl enable "${HARVEST_NETAPP_SERVICE}" >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск ${HARVEST_NETAPP_SERVICE}"
         run_user_systemctl restart "${HARVEST_NETAPP_SERVICE}" >/dev/null 2>&1 || print_error "Ошибка запуска ${HARVEST_NETAPP_SERVICE}"
@@ -6698,8 +6707,11 @@ configure_services() {
             print_error "Grafana не удалось запустить и порт ${GRAFANA_PORT} не занят внешним процессом"
             exit 1
         fi
-        if [[ "$harvest_unix_started" != true || "$harvest_netapp_started" != true ]]; then
-            print_error "Один или оба Harvest user-юнита не запущены"
+        if [[ "$harvest_unix_started" != true ]]; then
+            print_warning "${HARVEST_UNIX_SERVICE} не активен, продолжаем по временной логике (критичен только NetApp)"
+        fi
+        if [[ "$harvest_netapp_started" != true ]]; then
+            print_error "${HARVEST_NETAPP_SERVICE} не запущен (критическая ошибка)"
             exit 1
         fi
         echo
