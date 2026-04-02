@@ -5020,8 +5020,78 @@ EOF_HEADER
                 local curl_start_time=$(date +%s.%3N)
                 local response
                 
-                # ВАЖНО: Выполняем БЕЗ verbose, чтобы получить чистый ответ
-                if ! response=$(eval "$cmd" 2>&1); then
+                # ВАЖНО: Выполняем БЕЗ eval, чтобы спецсимволы в пароле не ломали Basic Auth
+                if [[ "$use_cert" == "with_cert" ]]; then
+                    response=$(curl -k -s -w "\n%{http_code}" \
+                        --cert "${grafana_client_cert}" \
+                        --key "${grafana_client_key}" \
+                        -X POST \
+                        -H "Content-Type: application/json" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        --data-binary "@${payload_file}" \
+                        "${grafana_url}/api/serviceaccounts" 2>&1) || {
+                        local curl_end_time=$(date +%s.%3N)
+                        local curl_duration=$(echo "$curl_end_time - $curl_start_time" | bc)
+                        
+                        print_error "ОШИБКА выполнения curl команды!"
+                        print_info "Команда: $safe_cmd"
+                        print_info "Ошибка: $response"
+                        
+                        log_diagnosis "❌ ОШИБКА выполнения curl команды!"
+                        log_diagnosis "Время выполнения: ${curl_duration} секунд"
+                        log_diagnosis "Команда: $safe_cmd"
+                        log_diagnosis "Полная ошибка: $response"
+                        log_diagnosis "Код возврата: $?"
+                        log_diagnosis "Время ошибки: $(date '+%Y-%m-%d %H:%M:%S.%3N')"
+                        
+                        echo "[ОШИБКА] CURL выполнение провалилось!" >> "$DEBUG_LOG"
+                        echo "  Время выполнения: ${curl_duration} секунд" >> "$DEBUG_LOG"
+                        echo "  Ошибка curl: $response" >> "$DEBUG_LOG"
+                        echo "  Код возврата: $?" >> "$DEBUG_LOG"
+                        echo "" >> "$DEBUG_LOG"
+                        echo "DEBUG LOG сохранен в: $DEBUG_LOG" >> "$DEBUG_LOG"
+                        
+                        echo ""
+                        echo "DEBUG_RETURN: Ошибка выполнения curl, возвращаем код 2" >&2
+                        print_error "DEBUG LOG: $DEBUG_LOG"
+                        return 2
+                    }
+                else
+                    response=$(curl -k -s -w "\n%{http_code}" \
+                        -X POST \
+                        -H "Content-Type: application/json" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        --data-binary "@${payload_file}" \
+                        "${grafana_url}/api/serviceaccounts" 2>&1) || {
+                        local curl_end_time=$(date +%s.%3N)
+                        local curl_duration=$(echo "$curl_end_time - $curl_start_time" | bc)
+                        
+                        print_error "ОШИБКА выполнения curl команды!"
+                        print_info "Команда: $safe_cmd"
+                        print_info "Ошибка: $response"
+                        
+                        log_diagnosis "❌ ОШИБКА выполнения curl команды!"
+                        log_diagnosis "Время выполнения: ${curl_duration} секунд"
+                        log_diagnosis "Команда: $safe_cmd"
+                        log_diagnosis "Полная ошибка: $response"
+                        log_diagnosis "Код возврата: $?"
+                        log_diagnosis "Время ошибки: $(date '+%Y-%m-%d %H:%M:%S.%3N')"
+                        
+                        echo "[ОШИБКА] CURL выполнение провалилось!" >> "$DEBUG_LOG"
+                        echo "  Время выполнения: ${curl_duration} секунд" >> "$DEBUG_LOG"
+                        echo "  Ошибка curl: $response" >> "$DEBUG_LOG"
+                        echo "  Код возврата: $?" >> "$DEBUG_LOG"
+                        echo "" >> "$DEBUG_LOG"
+                        echo "DEBUG LOG сохранен в: $DEBUG_LOG" >> "$DEBUG_LOG"
+                        
+                        echo ""
+                        echo "DEBUG_RETURN: Ошибка выполнения curl, возвращаем код 2" >&2
+                        print_error "DEBUG LOG: $DEBUG_LOG"
+                        return 2
+                    }
+                fi
+
+                if [[ -z "$response" ]]; then
                     local curl_end_time=$(date +%s.%3N)
                     local curl_duration=$(echo "$curl_end_time - $curl_start_time" | bc)
                     
@@ -5255,7 +5325,14 @@ EOF_HEADER
                         \"${grafana_url}/api/serviceaccounts/${sa_id}\""
                     
                     local role_response role_code role_body
-                    role_response=$(eval "$role_update_cmd" 2>&1)
+                    role_response=$(curl -k -s -w "\n%{http_code}" \
+                        --cert "${grafana_client_cert}" \
+                        --key "${grafana_client_key}" \
+                        -X PATCH \
+                        -H "Content-Type: application/json" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        --data-binary "@${role_update_file}" \
+                        "${grafana_url}/api/serviceaccounts/${sa_id}" 2>&1)
                     role_code=$(echo "$role_response" | tail -1)
                     role_body=$(echo "$role_response" | head -n -1)
                     
@@ -5321,7 +5398,17 @@ EOF_HEADER
                 fi
                 
                 log_diagnosis "Команда для поиска сервисного аккаунта: $(echo "$list_cmd" | sed "s/${grafana_password}/*****/g")"
-                list_response=$(eval "$list_cmd" 2>&1)
+                if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
+                    list_response=$(curl -k -s -w "\n%{http_code}" \
+                        --cert "${grafana_client_cert}" \
+                        --key "${grafana_client_key}" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        "${grafana_url}/api/serviceaccounts/search?query=${service_account_name}" 2>&1)
+                else
+                    list_response=$(curl -k -s -w "\n%{http_code}" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        "${grafana_url}/api/serviceaccounts/search?query=${service_account_name}" 2>&1)
+                fi
                 list_code=$(echo "$list_response" | tail -1)
                 list_body=$(echo "$list_response" | head -n -1)
                 
@@ -5355,7 +5442,17 @@ EOF_HEADER
                         \"${grafana_url}/api/serviceaccounts\""
                 fi
                 
-                all_response=$(eval "$all_cmd" 2>&1)
+                if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
+                    all_response=$(curl -k -s -w "\n%{http_code}" \
+                        --cert "${grafana_client_cert}" \
+                        --key "${grafana_client_key}" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        "${grafana_url}/api/serviceaccounts" 2>&1)
+                else
+                    all_response=$(curl -k -s -w "\n%{http_code}" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        "${grafana_url}/api/serviceaccounts" 2>&1)
+                fi
                 all_code=$(echo "$all_response" | tail -1)
                 all_body=$(echo "$all_response" | head -n -1)
                 
@@ -5640,7 +5737,25 @@ EOF_HEADER
                 echo "DEBUG_TOKEN_CURL_CMD: ${cmd//${grafana_password}/*****}" >&2
                 
                 local response
-                if ! response=$(eval "$cmd" 2>&1); then
+                if [[ "$use_cert" == "true" ]]; then
+                    response=$(curl -k -s -w "\n%{http_code}" \
+                        --cert "${grafana_client_cert}" \
+                        --key "${grafana_client_key}" \
+                        -X POST \
+                        -H "Content-Type: application/json" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        --data-binary "@${token_payload_file}" \
+                        "${grafana_url}/api/serviceaccounts/${sa_id}/tokens" 2>&1) || true
+                else
+                    response=$(curl -k -s -w "\n%{http_code}" \
+                        -X POST \
+                        -H "Content-Type: application/json" \
+                        -u "${grafana_user}:${grafana_password}" \
+                        --data-binary "@${token_payload_file}" \
+                        "${grafana_url}/api/serviceaccounts/${sa_id}/tokens" 2>&1) || true
+                fi
+
+                if [[ -z "$response" ]]; then
                     print_error "Ошибка выполнения curl команды для токена"
                     echo "ERROR|||{\"error\":\"curl failed\"}|||curl execution failed"
                     return 1
@@ -5855,7 +5970,17 @@ EOF_HEADER
                 \"${grafana_url}/api/datasources/name/prometheus\""
         fi
         
-        ds_response=$(eval "$curl_cmd")
+        if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
+            ds_response=$(curl -k -s -w "\n%{http_code}" \
+                --cert "${grafana_client_cert}" \
+                --key "${grafana_client_key}" \
+                -H "Authorization: Bearer $bearer_token" \
+                "${grafana_url}/api/datasources/name/prometheus" 2>&1)
+        else
+            ds_response=$(curl -k -s -w "\n%{http_code}" \
+                -H "Authorization: Bearer $bearer_token" \
+                "${grafana_url}/api/datasources/name/prometheus" 2>&1)
+        fi
         ds_code=$(echo "$ds_response" | tail -1)
         ds_body=$(echo "$ds_response" | head -n -1)
         
@@ -5886,7 +6011,23 @@ EOF_HEADER
             echo "DEBUG_DS_UPDATE_CMD: ${update_cmd//$bearer_token/*****}" >&2
             
             local update_response update_code update_body
-            update_response=$(eval "$update_cmd" 2>&1)
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
+                update_response=$(curl -k -s -w "\n%{http_code}" \
+                    --cert "${grafana_client_cert}" \
+                    --key "${grafana_client_key}" \
+                    -X PUT \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $bearer_token" \
+                    --data-binary "@${ds_payload_file}" \
+                    "${grafana_url}/api/datasources/${ds_id}" 2>&1)
+            else
+                update_response=$(curl -k -s -w "\n%{http_code}" \
+                    -X PUT \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $bearer_token" \
+                    --data-binary "@${ds_payload_file}" \
+                    "${grafana_url}/api/datasources/${ds_id}" 2>&1)
+            fi
             update_code=$(echo "$update_response" | tail -1)
             update_body=$(echo "$update_response" | head -n -1)
             
@@ -5929,7 +6070,23 @@ EOF_HEADER
             echo "DEBUG_DS_CREATE_CMD: ${create_cmd//$bearer_token/*****}" >&2
             
             local create_response create_code create_body
-            create_response=$(eval "$create_cmd" 2>&1)
+            if [[ -f "$grafana_client_cert" && -f "$grafana_client_key" ]]; then
+                create_response=$(curl -k -s -w "\n%{http_code}" \
+                    --cert "${grafana_client_cert}" \
+                    --key "${grafana_client_key}" \
+                    -X POST \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $bearer_token" \
+                    --data-binary "@${ds_payload_file}" \
+                    "${grafana_url}/api/datasources" 2>&1)
+            else
+                create_response=$(curl -k -s -w "\n%{http_code}" \
+                    -X POST \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $bearer_token" \
+                    --data-binary "@${ds_payload_file}" \
+                    "${grafana_url}/api/datasources" 2>&1)
+            fi
             create_code=$(echo "$create_response" | tail -1)
             create_body=$(echo "$create_response" | head -n -1)
             
