@@ -4498,35 +4498,56 @@ check_grafana_availability() {
     local max_attempts=30
     local attempt=1
     local interval_sec=2
+    local runtime_check_user=""
+    local runtime_check_uid=""
+    local can_check_user_unit=false
+    local run_as_current_user=false
+
+    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
+        runtime_check_user="$(whoami)"
+        runtime_check_uid="$(id -u)"
+        can_check_user_unit=true
+        run_as_current_user=true
+    elif [[ -n "${KAE:-}" ]]; then
+        runtime_check_user="${KAE}-lnx-mon_sys"
+        if id "$runtime_check_user" >/dev/null 2>&1; then
+            runtime_check_uid="$(id -u "$runtime_check_user")"
+            can_check_user_unit=true
+            if [[ "$runtime_check_user" == "$(whoami)" ]]; then
+                run_as_current_user=true
+            fi
+        fi
+    fi
+
+    run_user_systemctl_check() {
+        local xdg_env="XDG_RUNTIME_DIR=/run/user/${runtime_check_uid}"
+        if [[ "$run_as_current_user" == "true" ]]; then
+            env "$xdg_env" /usr/bin/systemctl --user "$@"
+        else
+            runuser -u "$runtime_check_user" -- env "$xdg_env" /usr/bin/systemctl --user "$@"
+        fi
+    }
     
     print_info "Ожидание запуска Grafana (максимум $((max_attempts * interval_sec)) секунд)..."
     
     while [[ $attempt -le $max_attempts ]]; do
-        # Проверяем, активен ли user-юнит Grafana
-        if [[ -n "${KAE:-}" ]]; then
-            local mon_sys_user="${KAE}-lnx-mon_sys"
-            local mon_sys_uid=""
-            if id "$mon_sys_user" >/dev/null 2>&1; then
-                mon_sys_uid=$(id -u "$mon_sys_user")
-                local ru_cmd="sudo -n -u ${mon_sys_user}"
-                local xdg_env="XDG_RUNTIME_DIR=/run/user/${mon_sys_uid}"
+        # Проверяем user-юнит под фактическим runtime user (mon_ci или mon_sys)
+        if [[ "$can_check_user_unit" == "true" ]]; then
+            if run_user_systemctl_check is-active --quiet monitoring-grafana.service 2>/dev/null; then
+                print_success "Grafana user-юнит активен (${runtime_check_user})"
                 
-                if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-grafana.service 2>/dev/null; then
-                    print_success "Grafana user-юнит активен"
-                    
-                    # Проверяем что процесс слушает порт
-                    if ss -tln | grep -q ":${GRAFANA_PORT} "; then
-                        print_success "Grafana слушает порт ${GRAFANA_PORT}"
-                        print_info "Проверка процесса grafana..."
-                        if pgrep -f "grafana" >/dev/null 2>&1; then
-                            print_success "Процесс grafana найден"
-                        else
-                            print_warning "Процесс grafana не найден по имени, но порт слушается"
-                        fi
-                        return 0
+                # Проверяем что процесс слушает порт
+                if ss -tln | grep -q ":${GRAFANA_PORT} "; then
+                    print_success "Grafana слушает порт ${GRAFANA_PORT}"
+                    print_info "Проверка процесса grafana..."
+                    if pgrep -f "grafana" >/dev/null 2>&1; then
+                        print_success "Процесс grafana найден"
                     else
-                        print_info "Grafana юнит активен, но порт ${GRAFANA_PORT} не слушается (попытка $attempt/$max_attempts)"
+                        print_warning "Процесс grafana не найден по имени, но порт слушается"
                     fi
+                    return 0
+                else
+                    print_info "Grafana юнит активен, но порт ${GRAFANA_PORT} не слушается (попытка $attempt/$max_attempts)"
                 fi
             fi
         fi
@@ -4543,6 +4564,16 @@ check_grafana_availability() {
                 print_info "Grafana системный юнит активен, но порт ${GRAFANA_PORT} не слушается (попытка $attempt/$max_attempts)"
             fi
         fi
+
+        # Дополнительная проверка endpoint'а: если /api/health отвечает 200 — Grafana доступна.
+        if ss -tln | grep -q ":${GRAFANA_PORT} "; then
+            local health_code
+            health_code=$(curl -k -s -o /dev/null -w "%{http_code}" "${grafana_url}/api/health" 2>/dev/null || echo "000")
+            if [[ "$health_code" == "200" ]]; then
+                print_success "Grafana доступна по API (/api/health HTTP 200)"
+                return 0
+            fi
+        fi
         
         echo "[INFO] ├─ Ожидание Grafana... (попытка $attempt/$max_attempts)" >&2
         sleep "$interval_sec"
@@ -4550,7 +4581,9 @@ check_grafana_availability() {
     done
     print_error "Grafana не доступна после $((max_attempts * interval_sec)) секунд ожидания"
     print_info "Проверьте статус:"
-    print_info "  sudo -u CI10742292-lnx-mon_sys XDG_RUNTIME_DIR=\"/run/user/\$(id -u CI10742292-lnx-mon_sys)\" systemctl --user status monitoring-grafana.service"
+    if [[ -n "$runtime_check_user" ]]; then
+        print_info "  XDG_RUNTIME_DIR=\"/run/user/\$(id -u ${runtime_check_user})\" systemctl --user status monitoring-grafana.service"
+    fi
     print_info "  sudo systemctl status grafana-server"
     print_info "Проверьте логи: /tmp/grafana-debug.log"
     
@@ -6905,22 +6938,34 @@ verify_installation() {
     local failed_services=()
 
     # Проверяем user-юниты под фактическим runtime-пользователем (mon_ci или mon_sys)
-    if [[ -n "${KAE:-}" ]]; then
-        local runtime_verify_user=""
-        if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
-            runtime_verify_user="${KAE}-lnx-mon_ci"
-        else
-            runtime_verify_user="${KAE}-lnx-mon_sys"
-        fi
-        local runtime_verify_uid=""
-        
+    local runtime_verify_user=""
+    local runtime_verify_uid=""
+    local verify_use_current_user=false
+    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
+        runtime_verify_user="$(whoami)"
+        runtime_verify_uid="$(id -u)"
+        verify_use_current_user=true
+    elif [[ -n "${KAE:-}" ]]; then
+        runtime_verify_user="${KAE}-lnx-mon_sys"
         if id "$runtime_verify_user" >/dev/null 2>&1; then
             runtime_verify_uid=$(id -u "$runtime_verify_user")
-            local ru_cmd="runuser -u ${runtime_verify_user} --"
-            local xdg_env="XDG_RUNTIME_DIR=/run/user/${runtime_verify_uid}"
+            if [[ "$runtime_verify_user" == "$(whoami)" ]]; then
+                verify_use_current_user=true
+            fi
+        fi
+    fi
+
+    if [[ -n "$runtime_verify_user" ]] && id "$runtime_verify_user" >/dev/null 2>&1; then
+        local ru_cmd=""
+        local xdg_env="XDG_RUNTIME_DIR=/run/user/${runtime_verify_uid}"
+        if [[ "$verify_use_current_user" == "true" ]]; then
+            ru_cmd="env"
+        else
+            ru_cmd="runuser -u ${runtime_verify_user} -- env"
+        fi
             
             # Проверяем Prometheus user-юнит
-            if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-prometheus.service 2>/dev/null; then
+            if $ru_cmd "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-prometheus.service 2>/dev/null; then
                 print_success "monitoring-prometheus.service (user): активен"
             else
                 print_error "monitoring-prometheus.service (user): не активен"
@@ -6928,32 +6973,28 @@ verify_installation() {
             fi
             
             # Проверяем Grafana user-юнит
-            if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-grafana.service 2>/dev/null; then
+            if $ru_cmd "$xdg_env" /usr/bin/systemctl --user is-active --quiet monitoring-grafana.service 2>/dev/null; then
                 print_success "monitoring-grafana.service (user): активен"
             else
                 print_error "monitoring-grafana.service (user): не активен"
                 failed_services+=("monitoring-grafana.service")
             fi
 
-            if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${HARVEST_UNIX_SERVICE}" 2>/dev/null; then
+            if $ru_cmd "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${HARVEST_UNIX_SERVICE}" 2>/dev/null; then
                 print_success "${HARVEST_UNIX_SERVICE} (user): активен"
             else
                 print_error "${HARVEST_UNIX_SERVICE} (user): не активен"
                 failed_services+=("${HARVEST_UNIX_SERVICE}")
             fi
 
-            if $ru_cmd env "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${HARVEST_NETAPP_SERVICE}" 2>/dev/null; then
+            if $ru_cmd "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${HARVEST_NETAPP_SERVICE}" 2>/dev/null; then
                 print_success "${HARVEST_NETAPP_SERVICE} (user): активен"
             else
                 print_error "${HARVEST_NETAPP_SERVICE} (user): не активен"
                 failed_services+=("${HARVEST_NETAPP_SERVICE}")
             fi
-        else
-            print_warning "Пользователь ${runtime_verify_user} не найден, проверяем системные юниты"
-            check_system_services "failed_services"
-        fi
     else
-        print_warning "KAE не определён, проверяем системные юниты"
+        print_warning "Runtime user для user-юнитов не определён, проверяем системные юниты"
         check_system_services "failed_services"
     fi
 
@@ -7698,7 +7739,7 @@ main() {
     echo
     local runtime_user
     if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
-        runtime_user="${KAE}-lnx-mon_ci"
+        runtime_user="$(whoami)"
     else
         runtime_user="${KAE}-lnx-mon_sys"
     fi
