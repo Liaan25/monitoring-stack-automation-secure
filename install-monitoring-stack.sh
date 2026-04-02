@@ -7603,21 +7603,48 @@ main() {
     echo "  • Harvest (NetApp):     https://$SERVER_DOMAIN:$HARVEST_NETAPP_PORT/metrics"
     echo "  • Harvest (Unix):       http://localhost:$HARVEST_UNIX_PORT/metrics"
     echo
-    echo "📋 Проверка статуса:"
-    if [[ -n "${KAE:-}" ]] && id "${KAE}-lnx-mon_sys" >/dev/null 2>&1; then
-        echo "  • User-юниты (${KAE}-lnx-mon_sys):"
-        echo "    sudo -u ${KAE}-lnx-mon_sys \\"
-        echo "      XDG_RUNTIME_DIR=\"/run/user/\$(id -u ${KAE}-lnx-mon_sys)\" \\"
-        echo "      systemctl --user status monitoring-prometheus.service monitoring-grafana.service"
+    local runtime_user
+    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
+        runtime_user="${KAE}-lnx-mon_ci"
     else
-        echo "  • Системные юниты:"
-        echo "    systemctl status prometheus grafana-server harvest"
+        runtime_user="${KAE}-lnx-mon_sys"
     fi
-    echo "  • Порты:"
-    echo "    ss -tln | grep -E ':(3000|9090|12990|12991)'"
+
+    echo "📋 Профессиональная проверка и диагностика:"
+    echo "  • Runtime user:         ${runtime_user}"
+    echo "  • Проверка user-юнитов:"
+    echo "    XDG_RUNTIME_DIR=\"/run/user/\$(id -u ${runtime_user})\" \\"
+    echo "      systemctl --user status monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+    echo "  • Проверка активности/автозапуска:"
+    echo "    systemctl --user is-active monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+    echo "    systemctl --user is-enabled monitoring-prometheus.service monitoring-grafana.service monitoring-harvest.service"
+    echo "  • Проверка linger (обязательно для user-units):"
+    echo "    loginctl show-user ${runtime_user} -p Linger"
+    echo "  • Проверка портов:"
+    echo "    ss -tln | grep -E ':(3300|9090|12990|12991)'"
     echo
-    echo "📄 Файлы:"
+    echo "📄 Конфигурационные файлы:"
+    echo "  • Prometheus:           $HOME/monitoring/config/prometheus/prometheus.yml"
+    echo "  • Prometheus TLS:       $HOME/monitoring/config/prometheus/web-config.yml"
+    echo "  • Grafana:              $HOME/monitoring/config/grafana/grafana.ini"
+    echo "  • Harvest:              $HOME/monitoring/config/harvest/harvest.yml"
+    echo "  • Harvest cert/key:     $HOME/monitoring/config/harvest/cert/harvest.{crt,key}"
     echo "  • State file:           $STATE_FILE"
+    echo
+    echo "🧾 Логи и диагностика:"
+    echo "  • Journal (Prometheus): journalctl --user -u monitoring-prometheus.service -n 200 --no-pager"
+    echo "  • Journal (Grafana):    journalctl --user -u monitoring-grafana.service -n 200 --no-pager"
+    echo "  • Journal (Harvest):    journalctl --user -u monitoring-harvest.service -n 200 --no-pager"
+    echo "  • Follow Grafana:       journalctl --user -u monitoring-grafana.service -f"
+    echo "  • File logs Prometheus: ls -la $HOME/monitoring/logs/prometheus && tail -n 200 $HOME/monitoring/logs/prometheus/* 2>/dev/null"
+    echo "  • File logs Grafana:    ls -la $HOME/monitoring/logs/grafana && tail -n 200 $HOME/monitoring/logs/grafana/* 2>/dev/null"
+    echo "  • File logs Harvest:    tail -n 200 $HOME/monitoring/logs/harvest/harvest.log 2>/dev/null"
+    echo
+    echo "🌐 Быстрые API проверки:"
+    echo "  • Prometheus readiness: curl -k -sS https://$SERVER_DOMAIN:$PROMETHEUS_PORT/-/ready"
+    echo "  • Grafana health:       curl -k -sS https://$SERVER_DOMAIN:$GRAFANA_PORT/api/health"
+    echo "  • Harvest NetApp:       curl -k -sS https://$SERVER_DOMAIN:$HARVEST_NETAPP_PORT/metrics | head"
+    echo "  • Harvest Unix:         curl -sS  http://127.0.0.1:$HARVEST_UNIX_PORT/metrics | head"
     echo
     echo "================================================================"
     
