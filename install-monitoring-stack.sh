@@ -1,4 +1,4 @@
-!/bin/bash
+#!/bin/bash
 # Мониторинг Stack Deployment Script
 # Компоненты: Harvest + Prometheus + Grafana
 
@@ -1799,8 +1799,10 @@ cleanup_all_previous() {
             fi
         done
 
-        # Чистим временные credentials артефакты от предыдущих прогонов
-        rm -f "$PWD/temp_data_cred.json" "/tmp/temp_data_cred.json" >/dev/null 2>&1 || true
+        # Чистим только truly-temporary credentials в /tmp.
+        # ВАЖНО: НЕ удаляем "$PWD/temp_data_cred.json" — он скопирован Jenkins-ом
+        # в рабочую директорию и нужен следующему шагу get_certificates_from_jenkins().
+        rm -f "/tmp/temp_data_cred.json" >/dev/null 2>&1 || true
     else
         print_warning "FORCE_FRESH_INSTALL=false: user-space данные не очищаются полностью"
     fi

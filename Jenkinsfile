@@ -563,7 +563,7 @@ rm -f "${FETCH_RESP_FILE}"
                     
                     withVaultSshCredentials(this) {
                         def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
-                        echo "[INFO] Подключение под пользователем настроено (ожидается: ${expectedSshUser})"
+                        echo '[INFO] Подключение под пользователем настроено (ожидается: ' + expectedSshUser + ')'
                         
                         // Генерируем лаунчеры
                         writeFile file: 'prep_clone.sh', text: '''#!/bin/bash
