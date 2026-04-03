@@ -65,6 +65,20 @@ def buildDeploymentPairs(String serverAddressesRaw, String netappAddressesRaw) {
     return pairs
 }
 
+@NonCPS
+def renderDeploySummary(String title, List<Map> rows) {
+    def header = []
+    header << "================================================"
+    header << "📋 ${title}"
+    header << "================================================"
+    header << "server | netapp | stage | status | reason"
+    rows.each { r ->
+        header << "${r.server} | ${r.netapp} | ${r.stage} | ${r.status} | ${r.reason}"
+    }
+    header << "================================================"
+    return header.join('\n')
+}
+
 def withVaultSshCredentials(scriptContext, Closure body) {
     def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
     if (!sshCredentialsId) {
@@ -589,6 +603,7 @@ rm -f "${FETCH_RESP_FILE}"
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
+                    sh 'mkdir -p .deploy-status'
                     
                     echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
                     
@@ -611,7 +626,7 @@ rm -f "${FETCH_RESP_FILE}"
                         deploymentPairs.each { pair ->
                             def p = pair
                             parallelCopies["copy-${p.server}"] = {
-                                sh """#!/bin/bash
+                                int rc = sh(returnStatus: true, script: """#!/bin/bash
 set -e
 SSH_OPTS="-q -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o TCPKeepAlive=yes -o LogLevel=ERROR"
 [ ! -f "${p.credJsonFile}" ] && echo "[ERROR] ${p.credJsonFile} не найден!" && exit 1
@@ -641,10 +656,33 @@ ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
 echo "[OK] Все файлы на месте"
 REMOTE_EOF
 echo "[SUCCESS] [${p.server}] Копирование завершено"
-"""
+""")
+                                def statusObj = [
+                                    server: p.server,
+                                    netapp: p.netapp,
+                                    stage: 'copy',
+                                    status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
+                                    reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
+                                ]
+                                writeFile file: ".deploy-status/copy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
                             }
                         }
                         parallel parallelCopies
+                    }
+                    def copyRows = []
+                    deploymentPairs.each { p ->
+                        def f = ".deploy-status/copy_${p.serverPrefixSafe}.json"
+                        if (fileExists(f)) {
+                            copyRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
+                        } else {
+                            copyRows << [server: p.server, netapp: p.netapp, stage: 'copy', status: 'FAILED', reason: 'no_status_file']
+                        }
+                    }
+                    def copySummary = renderDeploySummary("СВОДКА COPY", copyRows)
+                    echo copySummary
+                    env.DEPLOY_STATUS_SUMMARY = copySummary
+                    if (copyRows.any { it.status != 'SUCCESS' }) {
+                        error("❌ Ошибка копирования на одном или нескольких серверах")
                     }
                     echo "[SUCCESS] Копирование завершено для всех серверов"
                 }
@@ -660,6 +698,7 @@ echo "[SUCCESS] [${p.server}] Копирование завершено"
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
+                    sh 'mkdir -p .deploy-status'
                     
                     echo "[STEP] Запуск развертывания на удаленных серверах..."
                     echo "[INFO] Режим: БЕЗ SUDO (User Units Only)"
@@ -675,7 +714,7 @@ echo "[SUCCESS] [${p.server}] Копирование завершено"
                             deploymentPairs.each { pair ->
                                 def p = pair
                                 parallelDeploy["deploy-${p.server}"] = {
-                                    sh """#!/bin/bash
+                                    int rc = sh(returnStatus: true, script: """#!/bin/bash
 set -e
 ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${env.SSH_USER}"@"${p.server}" RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
 set -e
@@ -711,6 +750,8 @@ env \
   NAMESPACE_CI="${params.NAMESPACE_CI ?: ''}" \
   RLM_API_URL="${params.RLM_API_URL ?: ''}" \
   RLM_TOKEN="\$RLM_TOKEN" \
+  DEPLOY_TARGET_SERVER="${p.server}" \
+  DEPLOY_TARGET_NETAPP="${p.netapp}" \
   NETAPP_API_ADDR="\$TARGET_NETAPP" \
   GRAFANA_PORT="${params.GRAFANA_PORT ?: '3000'}" \
   PROMETHEUS_PORT="${params.PROMETHEUS_PORT ?: '9090'}" \
@@ -736,11 +777,34 @@ env \
   CRED_JSON_PATH="\$DEPLOY_DIR/\$CRED_JSON_FILE" \
   /bin/bash "\$REMOTE_SCRIPT_PATH"
 REMOTE_EOF
-"""
+""")
+                                    def statusObj = [
+                                        server: p.server,
+                                        netapp: p.netapp,
+                                        stage: 'deploy',
+                                        status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
+                                        reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
+                                    ]
+                                    writeFile file: ".deploy-status/deploy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
                                 }
                             }
                             parallel parallelDeploy
                         }
+                    }
+                    def deployRows = []
+                    deploymentPairs.each { p ->
+                        def f = ".deploy-status/deploy_${p.serverPrefixSafe}.json"
+                        if (fileExists(f)) {
+                            deployRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
+                        } else {
+                            deployRows << [server: p.server, netapp: p.netapp, stage: 'deploy', status: 'FAILED', reason: 'no_status_file']
+                        }
+                    }
+                    def deploySummary = renderDeploySummary("СВОДКА DEPLOY", deployRows)
+                    echo deploySummary
+                    env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + deploySummary) : deploySummary)
+                    if (deployRows.any { it.status != 'SUCCESS' }) {
+                        error("❌ Ошибка развертывания на одном или нескольких серверах")
                     }
                 }
             }
@@ -961,6 +1025,13 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
             echo "================================================"
         }
         always {
+            if (env.DEPLOY_STATUS_SUMMARY?.trim()) {
+                echo env.DEPLOY_STATUS_SUMMARY
+            } else {
+                echo "================================================"
+                echo "📋 СВОДКА ПО СЕРВЕРАМ: недоступна (ветки не стартовали)"
+                echo "================================================"
+            }
             echo "Время выполнения: ${currentBuild.durationString}"
         }
     }

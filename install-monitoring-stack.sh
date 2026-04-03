@@ -41,6 +41,8 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${RUN_SERVICES_AS_MON_CI:=true}"
 : "${FORCE_FRESH_INSTALL:=true}"
 : "${ALLOW_LINGER_FAILURE:=true}"
+: "${DEPLOY_TARGET_SERVER:=}"
+: "${DEPLOY_TARGET_NETAPP:=}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -1401,6 +1403,12 @@ ensure_monitoring_users_in_as_admin() {
 ensure_mon_sys_in_grafana_group() {
     print_step "Проверка членства ${KAE}-lnx-mon_sys в группе grafana"
     ensure_working_directory
+
+    # В режиме runtime=mon_ci членство mon_sys в grafana не является обязательным блокером.
+    if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
+        print_info "RUN_SERVICES_AS_MON_CI=true: пропускаем обязательное добавление mon_sys в группу grafana"
+        return 0
+    fi
 
     if [[ -z "${KAE:-}" ]]; then
         print_warning "KAE не определён (NAMESPACE_CI пуст), пропускаем добавление mon_sys в grafana"
@@ -3576,6 +3584,10 @@ create_rlm_install_tasks() {
         exit 1
     fi
 
+    # Контекст текущего target (для удобного логирования в параллельных ветках)
+    local target_server="${DEPLOY_TARGET_SERVER:-${SERVER_DOMAIN:-unknown-server}}"
+    local target_netapp="${DEPLOY_TARGET_NETAPP:-${NETAPP_API_ADDR:-unknown-netapp}}"
+
     # Создание задач для всех RPM пакетов
     local packages=(
         "$GRAFANA_URL|Grafana"
@@ -3678,7 +3690,7 @@ create_rlm_install_tasks() {
             esac
 
             # Вывод прогресса (каждая попытка - новая строка для Jenkins)
-            echo "📦 $name │ Попытка $attempt/$max_attempts │ Статус: $current_status $status_icon │ Время: ${elapsed_min}м (${elapsed_sec}с)"
+            echo "📦 $name │ server: ${target_server} │ netapp: ${target_netapp} │ Попытка $attempt/$max_attempts │ Статус: $current_status $status_icon │ Время: ${elapsed_min}м (${elapsed_sec}с)"
 
             write_diagnostic "$name RLM: attempt=$attempt/$max_attempts, status=$current_status, elapsed=${elapsed_min}m"
 
@@ -4266,13 +4278,13 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 60s
 
-  - job_name: 'harvest-${NETAPP_POLLER_NAME}'
+  - job_name: 'harvest-${NETAPP_POLLER_NAME}-unix'
     static_configs:
       - targets: ['localhost:${HARVEST_UNIX_PORT}']
     metrics_path: /metrics
     scrape_interval: 30s
 
-  - job_name: 'harvest-${NETAPP_POLLER_NAME}'
+  - job_name: 'harvest-${NETAPP_POLLER_NAME}-netapp'
     scheme: https
     tls_config:
       cert_file: ${PROMETHEUS_USER_CERTS_DIR}/server.crt
