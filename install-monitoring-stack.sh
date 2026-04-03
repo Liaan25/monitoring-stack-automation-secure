@@ -43,6 +43,8 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${ALLOW_LINGER_FAILURE:=true}"
 : "${DEPLOY_TARGET_SERVER:=}"
 : "${DEPLOY_TARGET_NETAPP:=}"
+: "${NODE_EXPORTER_REPO_USER:=}"
+: "${NODE_EXPORTER_REPO_PASS:=}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -100,11 +102,13 @@ PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
 GRAFANA_PORT="${GRAFANA_PORT:-3300}"
 HARVEST_UNIX_PORT="${HARVEST_UNIX_PORT:-12995}"
 HARVEST_NETAPP_PORT="${HARVEST_NETAPP_PORT:-12996}"
+NODE_EXPORTER_PORT="${NODE_EXPORTER_PORT:-9100}"
 
 # Имена user-юнитов Harvest (split архитектура)
 HARVEST_UNIX_SERVICE="monitoring-harvest-unix.service"
 HARVEST_NETAPP_SERVICE="monitoring-harvest-netapp.service"
 HARVEST_LEGACY_SERVICE="monitoring-harvest.service"
+NODE_EXPORTER_SERVICE="monitoring-node-exporter.service"
 
 # Значение KAE (вторая часть NAMESPACE_CI вида CIxxxx_CIyyyy), используется для имён УЗ
 KAE=""
@@ -1776,6 +1780,7 @@ cleanup_all_previous() {
             "monitoring-grafana.service"
             "monitoring-harvest-unix.service"
             "monitoring-harvest-netapp.service"
+            "monitoring-node-exporter.service"
             "monitoring-harvest.service"
         )
         for unit in "${user_units[@]}"; do
@@ -1807,6 +1812,7 @@ cleanup_all_previous() {
             "$HOME/monitoring/logs/grafana"
             "$HOME/monitoring/logs/prometheus"
             "$HOME/monitoring/logs/harvest"
+            "$HOME/monitoring/logs/node_exporter"
             "$HOME/monitoring/certs/grafana"
             "$HOME/monitoring/certs/prometheus"
             "$HOME/monitoring/certs/vault"
@@ -3404,6 +3410,37 @@ StandardError=append:${runtime_harvest_logs}/harvest-netapp.log
 WantedBy=default.target
 HARVEST_NETAPP_USER_SERVICE_EOF
 
+    # User-юнит Node Exporter (опционально, если бинарник установлен)
+    local node_exporter_unit="${user_systemd_dir}/${NODE_EXPORTER_SERVICE}"
+    local runtime_node_exporter_logs="${runtime_home}/monitoring/logs/node_exporter"
+    local runtime_node_exporter_bin="${runtime_home}/bin/node_exporter"
+    mkdir -p "$runtime_node_exporter_logs"
+
+    if [[ -x "$runtime_node_exporter_bin" ]]; then
+        cat > "$node_exporter_unit" << NODE_EXPORTER_USER_SERVICE_EOF
+[Unit]
+Description=Node Exporter (user service - Secure Edition)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${runtime_home}
+Environment=PATH=${runtime_bin_dir}:/usr/local/bin:/usr/bin:/bin
+ExecStart=${runtime_node_exporter_bin} --web.listen-address=0.0.0.0:${NODE_EXPORTER_PORT} --log.level=info
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:${runtime_node_exporter_logs}/node_exporter.log
+StandardError=append:${runtime_node_exporter_logs}/node_exporter.log
+
+[Install]
+WantedBy=default.target
+NODE_EXPORTER_USER_SERVICE_EOF
+        print_success "Создан user-юнит Node Exporter: $node_exporter_unit"
+    else
+        rm -f "$node_exporter_unit" 2>/dev/null || true
+        print_warning "Бинарник Node Exporter не найден (${runtime_node_exporter_bin}), user-юнит не создаем"
+    fi
+
     # Групповой target для удобства управления всем стеком
     local target_unit="${user_systemd_dir}/monitoring.target"
     cat > "$target_unit" << EOF
@@ -3565,6 +3602,121 @@ EOF
     print_success "Файлы Prometheus созданы (без SSL)"
 }
 
+install_node_exporter_from_tarball() {
+    local url="$1"
+    local target_server="${DEPLOY_TARGET_SERVER:-${SERVER_DOMAIN:-unknown-server}}"
+    local work_dir="/tmp/node_exporter_install_${DATE_INSTALL}_$$"
+    local archive_path="${work_dir}/node_exporter.tar.gz"
+    local extract_dir="${work_dir}/extract"
+    local target_bin_dir="$HOME/bin"
+    local target_bin="${target_bin_dir}/node_exporter"
+    local repo_user="${NODE_EXPORTER_REPO_USER:-}"
+    local repo_pass="${NODE_EXPORTER_REPO_PASS:-}"
+
+    print_step "Установка Node Exporter из tar.gz (user-space)"
+    print_info "Целевой сервер: ${target_server}"
+    print_info "URL архива: ${url:-<empty>}"
+    write_diagnostic "Node Exporter install: server=${target_server}, url=${url:-<empty>}"
+
+    if [[ -z "$url" ]]; then
+        print_warning "URL Node Exporter пустой: пропускаем установку"
+        return 1
+    fi
+
+    # Если креды не переданы напрямую, пробуем взять их из CRED JSON.
+    if [[ -z "$repo_user" || -z "$repo_pass" ]]; then
+        local cred_json_path=""
+        for p in \
+            "${CRED_JSON_PATH:-}" \
+            "$LOCAL_CRED_JSON" \
+            "$PWD/temp_data_cred.json" \
+            "$PWD"/temp_data_cred_*.json \
+            "$(dirname "$0")/temp_data_cred.json" \
+            "$(dirname "$0")"/temp_data_cred_*.json \
+            "/tmp/temp_data_cred.json" \
+            "/tmp"/temp_data_cred_*.json; do
+            [[ -z "$p" ]] && continue
+            for f in $p; do
+                if [[ -f "$f" ]]; then
+                    cred_json_path="$f"
+                    break 2
+                fi
+            done
+        done
+
+        if [[ -n "$cred_json_path" ]]; then
+            repo_user="$(jq -r '.node_exporter_tuz.user // empty' "$cred_json_path" 2>/dev/null || true)"
+            repo_pass="$(jq -r '.node_exporter_tuz.pass // empty' "$cred_json_path" 2>/dev/null || true)"
+            print_info "Креды Node Exporter взяты из: $cred_json_path"
+        fi
+    fi
+
+    if [[ -z "$repo_user" || -z "$repo_pass" ]]; then
+        print_warning "Креды TUZ (user/pass) для Node Exporter не найдены. Пропускаем установку."
+        write_diagnostic "Node Exporter install: skipped, creds not found"
+        return 1
+    fi
+
+    rm -rf "$work_dir" >/dev/null 2>&1 || true
+    mkdir -p "$work_dir" "$extract_dir" "$target_bin_dir"
+
+    print_info "Скачивание архива в: $archive_path"
+    print_info "Команда: curl -k -fL -u <user>:*** -o $archive_path <URL>"
+    if ! curl -k -fL --retry 2 --connect-timeout 20 --max-time 300 \
+        -u "${repo_user}:${repo_pass}" \
+        -o "$archive_path" \
+        "$url"; then
+        print_warning "Не удалось скачать Node Exporter архив"
+        write_diagnostic "Node Exporter install: download failed"
+        rm -rf "$work_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    local archive_size
+    archive_size=$(stat -c%s "$archive_path" 2>/dev/null || stat -f%z "$archive_path" 2>/dev/null || echo "0")
+    print_info "Архив скачан: ${archive_size} байт"
+    print_info "SHA256 архива:"
+    sha256sum "$archive_path" | while IFS= read -r line; do
+        print_info "  $line"
+    done
+
+    print_info "Содержимое архива:"
+    tar -tzf "$archive_path" | sed 's/^/  - /' | while IFS= read -r line; do
+        print_info "$line"
+    done
+
+    print_info "Распаковка архива в: $extract_dir"
+    tar -xvzf "$archive_path" -C "$extract_dir" | while IFS= read -r line; do
+        print_info "  [untar] $line"
+    done
+
+    local extracted_bin=""
+    extracted_bin=$(find "$extract_dir" -type f -name "node_exporter" -perm -111 2>/dev/null | head -1 || true)
+    if [[ -z "$extracted_bin" || ! -x "$extracted_bin" ]]; then
+        print_warning "Не удалось найти исполняемый node_exporter после распаковки"
+        write_diagnostic "Node Exporter install: binary not found after extract"
+        rm -rf "$work_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    cp -f "$extracted_bin" "$target_bin"
+    chmod 755 "$target_bin"
+
+    print_success "Node Exporter установлен: $target_bin"
+    print_info "Проверка версии:"
+    "$target_bin" --version 2>&1 | while IFS= read -r line; do
+        print_info "  $line"
+    done
+    print_info "Проверка help (первые 25 строк):"
+    "$target_bin" --help 2>&1 | head -25 | while IFS= read -r line; do
+        print_info "  $line"
+    done
+
+    rm -rf "$work_dir" >/dev/null 2>&1 || true
+    write_diagnostic "Node Exporter install: success, binary=${target_bin}"
+    return 0
+}
+
 create_rlm_install_tasks() {
     print_step "Создание задач RLM для установки пакетов"
     ensure_working_directory
@@ -3631,6 +3783,19 @@ create_rlm_install_tasks() {
             print_warning "URL пакета для $name не задан (пусто)"
         else
             print_info "📦 Устанавливаемый RPM: $url"
+        fi
+
+        # Node Exporter устанавливаем не через RLM, а из tar.gz в user-space.
+        if [[ "$name" == "Node Exporter" ]]; then
+            if install_node_exporter_from_tarball "$url"; then
+                RLM_ID_TASK_NODE_EXPORTER="local-bin:${target_server}"
+                export RLM_ID_TASK_NODE_EXPORTER
+                print_success "Node Exporter установлен локально (tar.gz) на ${target_server}"
+            else
+                print_warning "Node Exporter не установлен (опционально), продолжаем"
+            fi
+            sleep 2
+            continue
         fi
 
         local response
@@ -4319,6 +4484,19 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 60s
 PROMETHEUS_CONFIG_EOF
+
+    if [[ -n "$NODE_EXPORTER_URL" ]]; then
+        cat >> "$prometheus_config" << PROMETHEUS_NODE_EXPORTER_EOF
+  - job_name: 'node-exporter-${NETAPP_POLLER_NAME}'
+    static_configs:
+      - targets: ['127.0.0.1:${NODE_EXPORTER_PORT}']
+    metrics_path: /metrics
+    scrape_interval: 30s
+PROMETHEUS_NODE_EXPORTER_EOF
+        print_info "Scrape job Node Exporter добавлен (порт ${NODE_EXPORTER_PORT})"
+    else
+        print_warning "Node Exporter scrape job не добавлен: NODE_EXPORTER_URL пустой"
+    fi
 
     if [[ -n "$VICTORIA_METRICS_REMOTE_WRITE_URL" ]]; then
         cat >> "$prometheus_config" << PROMETHEUS_REMOTE_WRITE_EOF
@@ -6693,6 +6871,7 @@ configure_services() {
             monitoring-grafana.service \
             ${HARVEST_UNIX_SERVICE} \
             ${HARVEST_NETAPP_SERVICE} \
+            ${NODE_EXPORTER_SERVICE} \
             >/dev/null 2>&1 || print_warning "Не удалось выполнить reset-failed для user-юнитов мониторинга"
 
         # Включаем и перезапускаем Prometheus
@@ -6815,6 +6994,29 @@ configure_services() {
         if [[ "$harvest_netapp_started" != true ]]; then
             print_error "${HARVEST_NETAPP_SERVICE} не запущен (критическая ошибка)"
             exit 1
+        fi
+
+        # Node Exporter (опционально): запускаем, если есть user-юнит.
+        if run_user_systemctl list-unit-files "${NODE_EXPORTER_SERVICE}" >/dev/null 2>&1; then
+            if port_in_use "$NODE_EXPORTER_PORT"; then
+                print_warning "Порт Node Exporter ${NODE_EXPORTER_PORT} уже занят. Пропускаем запуск ${NODE_EXPORTER_SERVICE}"
+                print_port_owner_diag "$NODE_EXPORTER_PORT"
+            else
+                run_user_systemctl enable "${NODE_EXPORTER_SERVICE}" >/dev/null 2>&1 || print_warning "Не удалось включить автозапуск ${NODE_EXPORTER_SERVICE}"
+                run_user_systemctl restart "${NODE_EXPORTER_SERVICE}" >/dev/null 2>&1 || print_warning "Ошибка запуска ${NODE_EXPORTER_SERVICE} (опционально)"
+                sleep 2
+                if run_user_systemctl is-active --quiet "${NODE_EXPORTER_SERVICE}"; then
+                    print_success "${NODE_EXPORTER_SERVICE} успешно запущен (user-юнит)"
+                else
+                    print_warning "${NODE_EXPORTER_SERVICE} не активен (опционально)"
+                    run_user_systemctl status "${NODE_EXPORTER_SERVICE}" --no-pager | while IFS= read -r line; do
+                        print_info "$line"
+                        log_message "[NODE EXPORTER USER SYSTEMD STATUS] $line"
+                    done
+                fi
+            fi
+        else
+            print_warning "Node Exporter user-юнит не найден, пропускаем запуск (опционально)"
         fi
         echo
     else
@@ -7107,6 +7309,14 @@ verify_installation() {
                 print_error "${HARVEST_NETAPP_SERVICE} (user): не активен"
                 failed_services+=("${HARVEST_NETAPP_SERVICE}")
             fi
+
+            if [[ -n "$NODE_EXPORTER_URL" ]]; then
+                if $ru_cmd "$xdg_env" /usr/bin/systemctl --user is-active --quiet "${NODE_EXPORTER_SERVICE}" 2>/dev/null; then
+                    print_success "${NODE_EXPORTER_SERVICE} (user): активен"
+                else
+                    print_warning "${NODE_EXPORTER_SERVICE} (user): не активен (опционально)"
+                fi
+            fi
     else
         print_warning "Runtime user для user-юнитов не определён, проверяем системные юниты"
         check_system_services "failed_services"
@@ -7120,6 +7330,9 @@ verify_installation() {
         "$HARVEST_UNIX_PORT:Harvest-Unix"
         "$HARVEST_NETAPP_PORT:Harvest-NetApp"
     )
+    if [[ -n "$NODE_EXPORTER_URL" ]]; then
+        ports+=("$NODE_EXPORTER_PORT:Node-Exporter")
+    fi
 
     for port_info in "${ports[@]}"; do
         IFS=':' read -r port name <<< "$port_info"

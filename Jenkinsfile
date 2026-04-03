@@ -258,6 +258,12 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
             [envVar: 'VA_NETAPP_SSH_PASS', vaultKey: 'pass']
         ]]
     }
+    if (scriptContext.params.NODE_EXPORTER_TUZ_KV?.trim()) {
+        vaultSecrets << [path: scriptContext.params.NODE_EXPORTER_TUZ_KV, secretValues: [
+            [envVar: 'VA_NODE_EXPORTER_TUZ_USER', vaultKey: 'user'],
+            [envVar: 'VA_NODE_EXPORTER_TUZ_PASS', vaultKey: 'pass']
+        ]]
+    }
     if (scriptContext.params.GRAFANA_WEB_KV?.trim()) {
         vaultSecrets << [path: scriptContext.params.GRAFANA_WEB_KV, secretValues: [
             [envVar: 'VA_GRAFANA_WEB_USER', vaultKey: 'user'],
@@ -271,6 +277,7 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
             "vault-agent": [role_id: '', secret_id: ''],
             "rpm_url": [harvest: '', prometheus: '', grafana: '', node_exporter: ''],
             "netapp_ssh": [addr: '', user: '', pass: ''],
+            "node_exporter_tuz": [user: '', pass: ''],
             "grafana_web": [user: '', pass: ''],
             "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
         ]
@@ -352,6 +359,7 @@ SBERCA_REQUEST_PAYLOAD='${certRequestPayload.replace("'", "'\"'\"'")}' \\
                     "vault-agent": [role_id: (scriptContext.env.VA_ROLE_ID ?: ''), secret_id: (scriptContext.env.VA_SECRET_ID ?: '')],
                     "rpm_url": [harvest: (scriptContext.env.VA_RPM_HARVEST ?: ''), prometheus: (scriptContext.env.VA_RPM_PROMETHEUS ?: ''), grafana: (scriptContext.env.VA_RPM_GRAFANA ?: ''), node_exporter: (scriptContext.env.VA_RPM_NODE_EXPORTER ?: '')],
                     "netapp_ssh": [addr: (scriptContext.env.VA_NETAPP_SSH_ADDR ?: ''), user: (scriptContext.env.VA_NETAPP_SSH_USER ?: ''), pass: (scriptContext.env.VA_NETAPP_SSH_PASS ?: '')],
+                    "node_exporter_tuz": [user: (scriptContext.env.VA_NODE_EXPORTER_TUZ_USER ?: ''), pass: (scriptContext.env.VA_NODE_EXPORTER_TUZ_PASS ?: '')],
                     "grafana_web": [user: (scriptContext.env.VA_GRAFANA_WEB_USER ?: ''), pass: (scriptContext.env.VA_GRAFANA_WEB_PASS ?: '')],
                     "certificates": [server_bundle_pem: serverBundlePem, ca_chain_crt: caChainCrt, grafana_client_pem: grafanaClientPem]
                 ]
@@ -389,6 +397,7 @@ pipeline {
         string(name: 'NAMESPACE_CI',       defaultValue: params.NAMESPACE_CI ?: '',       description: 'Namespace для CI в Vault')
         string(name: 'NETAPP_API_ADDR',    defaultValue: params.NETAPP_API_ADDR ?: '',    description: 'FQDN/IP NetApp API')
         string(name: 'RPM_URL_KV',         defaultValue: params.RPM_URL_KV ?: '',         description: 'Путь KV в Vault для RPM URL')
+        string(name: 'NODE_EXPORTER_TUZ_KV', defaultValue: params.NODE_EXPORTER_TUZ_KV ?: '', description: 'Путь KV в Vault для кредов Node Exporter tar.gz (ключи: user, pass)')
         string(name: 'VICTORIA_METRICS_REMOTE_WRITE_URL', defaultValue: params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: '', description: 'URL VictoriaMetrics для Prometheus remote_write (например http://10.73.129.70:8480/insert/0/prometheus)')
         string(name: 'NETAPP_SSH_KV',      defaultValue: params.NETAPP_SSH_KV ?: '',      description: 'Путь KV в Vault для NetApp SSH')
         string(name: 'GRAFANA_WEB_KV',     defaultValue: params.GRAFANA_WEB_KV ?: '',     description: 'Путь KV в Vault для Grafana Web')
