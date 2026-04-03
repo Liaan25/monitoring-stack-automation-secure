@@ -3590,6 +3590,10 @@ create_rlm_install_tasks() {
 
     # Опциональный фильтр по конкретному пакету (для фазового lockstep режима Jenkins)
     local package_filter="${RLM_PACKAGE_FILTER:-}"
+    local package_filter_norm=""
+    if [[ -n "$package_filter" ]]; then
+        package_filter_norm=$(echo "$package_filter" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+    fi
     if [[ -n "$package_filter" ]]; then
         print_info "RLM package filter активен: $package_filter"
         write_diagnostic "RLM package filter: $package_filter"
@@ -3606,7 +3610,9 @@ create_rlm_install_tasks() {
 
     for package in "${packages[@]}"; do
         IFS='|' read -r url name <<< "$package"
-        if [[ -n "$package_filter" && "$name" != "$package_filter" ]]; then
+        local name_norm
+        name_norm=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+        if [[ -n "$package_filter_norm" && "$name_norm" != "$package_filter_norm" ]]; then
             continue
         fi
         processed_packages=$((processed_packages + 1))

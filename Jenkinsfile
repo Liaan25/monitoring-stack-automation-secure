@@ -119,6 +119,7 @@ rm -f "$ASKPASS_SCRIPT"
 }
 
 def runRemoteRpmPhaseInstall(scriptContext, Map pair, String phaseName) {
+    def phaseFilterSafe = phaseName.replaceAll(/[^A-Za-z0-9]+/, '')
     return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
 set -e
 chmod +x tools/remote_rpm_phase.sh
@@ -128,7 +129,7 @@ DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
 CRED_JSON_FILE='${pair.credJsonFile}' \
 TARGET_NETAPP='${pair.netapp}' \
 RLM_TOKEN="\$RLM_TOKEN" \
-PHASE_NAME='${phaseName}' \
+PHASE_NAME='${phaseFilterSafe}' \
 SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
 NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
 RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
