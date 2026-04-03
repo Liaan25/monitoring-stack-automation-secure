@@ -197,6 +197,186 @@ GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3300'}' \
 """, returnStdout: true).trim()
 }
 
+def runRemoteCopy(scriptContext, Map pair) {
+    return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
+set -e
+chmod +x tools/remote_copy.sh
+SSH_USER='${scriptContext.env.SSH_USER}' \
+TARGET_SERVER='${pair.server}' \
+DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
+CRED_JSON_FILE='${pair.credJsonFile}' \
+./tools/remote_copy.sh
+""")
+}
+
+def getRemoteDomain(scriptContext, String serverAddress) {
+    return scriptContext.sh(
+        script: """#!/bin/bash
+ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+  "${scriptContext.env.SSH_USER}"@"${serverAddress}" \
+  "nslookup ${serverAddress} 2>/dev/null | grep 'name =' | awk '{print \\\$4}' | sed 's/\\.\$//' || echo ''" 2>/dev/null
+""",
+        returnStdout: true
+    ).trim()
+}
+
+def getRemoteIp(scriptContext, String serverAddress) {
+    return scriptContext.sh(
+        script: """#!/bin/bash
+ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+  "${scriptContext.env.SSH_USER}"@"${serverAddress}" \
+  "hostname -I | awk '{print \\\$1}' || echo ${serverAddress}" 2>/dev/null
+""",
+        returnStdout: true
+    ).trim()
+}
+
+def fetchVaultCredentialsForAllPairs(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    def allServerNamesForSberca = deploymentPairs.collect { it.server }.join(',')
+    def primaryServerNameForSberca = deploymentPairs[0].server
+    def vaultCredId = scriptContext.params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
+
+    scriptContext.echo "[STEP] Получение секретов из Vault..."
+    scriptContext.echo "[INFO] Используется Vault Credential ID: ${vaultCredId}"
+
+    def vaultSecrets = []
+    if (scriptContext.params.RPM_URL_KV?.trim()) {
+        vaultSecrets << [path: scriptContext.params.RPM_URL_KV, secretValues: [
+            [envVar: 'VA_RPM_HARVEST', vaultKey: 'harvest'],
+            [envVar: 'VA_RPM_PROMETHEUS', vaultKey: 'prometheus'],
+            [envVar: 'VA_RPM_GRAFANA', vaultKey: 'grafana'],
+            [envVar: 'VA_RPM_NODE_EXPORTER', vaultKey: 'node_exporter']
+        ]]
+    }
+    if (scriptContext.params.NETAPP_SSH_KV?.trim()) {
+        vaultSecrets << [path: scriptContext.params.NETAPP_SSH_KV, secretValues: [
+            [envVar: 'VA_NETAPP_SSH_ADDR', vaultKey: 'addr'],
+            [envVar: 'VA_NETAPP_SSH_USER', vaultKey: 'user'],
+            [envVar: 'VA_NETAPP_SSH_PASS', vaultKey: 'pass']
+        ]]
+    }
+    if (scriptContext.params.GRAFANA_WEB_KV?.trim()) {
+        vaultSecrets << [path: scriptContext.params.GRAFANA_WEB_KV, secretValues: [
+            [envVar: 'VA_GRAFANA_WEB_USER', vaultKey: 'user'],
+            [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
+        ]]
+    }
+
+    if (vaultSecrets.isEmpty()) {
+        scriptContext.echo "[WARNING] KV пути не заданы"
+        def emptyData = [
+            "vault-agent": [role_id: '', secret_id: ''],
+            "rpm_url": [harvest: '', prometheus: '', grafana: '', node_exporter: ''],
+            "netapp_ssh": [addr: '', user: '', pass: ''],
+            "grafana_web": [user: '', pass: ''],
+            "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
+        ]
+        scriptContext.writeFile file: scriptContext.env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(emptyData)
+    } else {
+        try {
+            scriptContext.withVault([
+                configuration: [
+                    vaultUrl: "https://${scriptContext.params.SEC_MAN_ADDR}",
+                    engineVersion: 1,
+                    skipSslVerification: false,
+                    vaultCredentialId: vaultCredId,
+                    vaultNamespace: scriptContext.params.NAMESPACE_CI?.trim()
+                ],
+                vaultSecrets: vaultSecrets
+            ]) {
+                def serverBundlePem = ''
+                def caChainCrt = ''
+                def grafanaClientPem = ''
+
+                if (scriptContext.params.SBERCA_CERT_KV?.trim()) {
+                    def requestedPath = scriptContext.params.SBERCA_CERT_KV.trim()
+                    def vaultNamespace = scriptContext.params.NAMESPACE_CI?.trim()
+                    def apiPath = requestedPath.replaceAll('^/+', '')
+                    if (apiPath.startsWith('v1/')) { apiPath = apiPath.substring(3) }
+                    if (vaultNamespace && apiPath.startsWith("${vaultNamespace}/")) { apiPath = apiPath.substring(vaultNamespace.length() + 1) }
+                    apiPath = apiPath.replace('/SBERCA/fetch/', '/SBERCA/')
+                    if (!apiPath.contains('/SBERCA/') || !apiPath.contains('/fetch/')) {
+                        scriptContext.error("❌ SBERCA_CERT_KV имеет неверный формат. Ожидается: <NAMESPACE>/.../SBERCA/<mount>/fetch/<role>")
+                    }
+                    if (apiPath.contains('/fetch/') && apiPath.split('/fetch/').size() > 2) {
+                        scriptContext.error("❌ SBERCA_CERT_KV содержит лишний '/fetch/'. Используйте формат: <NAMESPACE>/.../SBERCA/<mount>/fetch/<role>")
+                    }
+                    if (requestedPath != apiPath && requestedPath != "${vaultNamespace}/${apiPath}") {
+                        scriptContext.echo "[SBERCA-DIAG] Нормализация пути SBERCA_CERT_KV"
+                        scriptContext.echo "[SBERCA-DIAG] requested_path: ${requestedPath}"
+                        scriptContext.echo "[SBERCA-DIAG] normalized_api_path: ${apiPath}"
+                    }
+                    def certRequestPayload = groovy.json.JsonOutput.toJson([
+                        common_name: (primaryServerNameForSberca ?: '').trim(),
+                        email: (scriptContext.params.ADMIN_EMAIL?.trim() ?: 'noreply@sberbank.ru'),
+                        format: 'pem',
+                        alt_names: (allServerNamesForSberca ?: '').trim()
+                    ])
+                    scriptContext.withCredentials([[
+                        $class: 'VaultTokenCredentialBinding',
+                        credentialsId: vaultCredId,
+                        vaultNamespace: vaultNamespace,
+                        vaultAddr: "https://${scriptContext.params.SEC_MAN_ADDR}"
+                    ]]) {
+                        def certResponseRaw = scriptContext.sh(
+                            script: """#!/bin/bash
+set -euo pipefail
+chmod +x tools/fetch_sberca.sh
+SBERCA_URL='https://${scriptContext.params.SEC_MAN_ADDR}' \\
+SBERCA_API_PATH='${apiPath}' \\
+SBERCA_NAMESPACE='${vaultNamespace ?: ''}' \\
+SBERCA_REQUEST_PAYLOAD='${certRequestPayload.replace("'", "'\"'\"'")}' \\
+./tools/fetch_sberca.sh
+""",
+                            returnStdout: true
+                        ).trim()
+                        def certResponse = new groovy.json.JsonSlurperClassic().parseText(certResponseRaw)
+                        def cert = (certResponse?.data?.certificate ?: '').toString().trim()
+                        def pkey = (certResponse?.data?.private_key ?: '').toString().trim()
+                        def issuingCa = (certResponse?.data?.issuing_ca ?: '').toString().trim()
+                        def chainObj = certResponse?.data?.ca_chain
+                        def chainText = ''
+                        if (chainObj instanceof List) { chainText = chainObj.findAll { it != null }.collect { it.toString() }.join('\n') }
+                        else if (chainObj != null) { chainText = chainObj.toString().trim() }
+                        serverBundlePem = [pkey, cert, issuingCa].findAll { it?.trim() }.join('\n')
+                        caChainCrt = chainText?.trim() ? chainText : issuingCa
+                        grafanaClientPem = [pkey, cert, issuingCa].findAll { it?.trim() }.join('\n')
+                        if (!serverBundlePem?.trim()) { scriptContext.error("❌ SberCA fetch вернул пустой server_bundle_pem") }
+                    }
+                }
+
+                def data = [
+                    "vault-agent": [role_id: (scriptContext.env.VA_ROLE_ID ?: ''), secret_id: (scriptContext.env.VA_SECRET_ID ?: '')],
+                    "rpm_url": [harvest: (scriptContext.env.VA_RPM_HARVEST ?: ''), prometheus: (scriptContext.env.VA_RPM_PROMETHEUS ?: ''), grafana: (scriptContext.env.VA_RPM_GRAFANA ?: ''), node_exporter: (scriptContext.env.VA_RPM_NODE_EXPORTER ?: '')],
+                    "netapp_ssh": [addr: (scriptContext.env.VA_NETAPP_SSH_ADDR ?: ''), user: (scriptContext.env.VA_NETAPP_SSH_USER ?: ''), pass: (scriptContext.env.VA_NETAPP_SSH_PASS ?: '')],
+                    "grafana_web": [user: (scriptContext.env.VA_GRAFANA_WEB_USER ?: ''), pass: (scriptContext.env.VA_GRAFANA_WEB_PASS ?: '')],
+                    "certificates": [server_bundle_pem: serverBundlePem, ca_chain_crt: caChainCrt, grafana_client_pem: grafanaClientPem]
+                ]
+                scriptContext.writeFile file: scriptContext.env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(data)
+            }
+        } catch (Exception e) {
+            scriptContext.echo "[ERROR] Ошибка Vault: ${e.message}"
+            scriptContext.error("❌ Не удалось получить данные из Vault")
+        }
+    }
+
+    deploymentPairs.each { pair ->
+        if (pair.credJsonFile != scriptContext.env.CRED_JSON_FILE) {
+            scriptContext.sh "cp -f '${scriptContext.env.CRED_JSON_FILE}' '${pair.credJsonFile}'"
+        }
+        scriptContext.sh """#!/bin/bash
+[ ! -f "${pair.credJsonFile}" ] && echo "[ERROR] Файл ${pair.credJsonFile} не создан!" && exit 1
+if command -v jq >/dev/null 2>&1; then
+  jq empty "${pair.credJsonFile}" 2>/dev/null || { echo "[ERROR] Невалидный JSON: ${pair.credJsonFile}!"; exit 1; }
+fi
+"""
+    }
+    scriptContext.stash name: 'vault-credentials', includes: 'temp_data_cred_*.json,temp_data_cred.json'
+    scriptContext.echo "[SUCCESS] Данные из Vault получены"
+}
+
 pipeline {
     agent none
 
@@ -396,276 +576,7 @@ pipeline {
             agent { label "clearAgent&&sbel8&&!static" }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    def allServerNamesForSberca = deploymentPairs.collect { it.server }.join(',')
-                    def primaryServerNameForSberca = deploymentPairs[0].server
-                    
-                    echo "[STEP] Получение секретов из Vault..."
-                    
-                    // Проверяем наличие credential ID
-                    def vaultCredId = params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
-                    echo "[INFO] Используется Vault Credential ID: ${vaultCredId}"
-                    
-                    // Формируем массив vaultSecrets для withVault плагина (как в v3.x)
-                    def vaultSecrets = []
-                    
-                    if (params.RPM_URL_KV?.trim()) {
-                        vaultSecrets << [path: params.RPM_URL_KV, secretValues: [
-                            [envVar: 'VA_RPM_HARVEST',    vaultKey: 'harvest'],
-                            [envVar: 'VA_RPM_PROMETHEUS', vaultKey: 'prometheus'],
-                            [envVar: 'VA_RPM_GRAFANA',    vaultKey: 'grafana'],
-                            [envVar: 'VA_RPM_NODE_EXPORTER', vaultKey: 'node_exporter']
-                        ]]
-                    }
-                    if (params.NETAPP_SSH_KV?.trim()) {
-                        vaultSecrets << [path: params.NETAPP_SSH_KV, secretValues: [
-                            [envVar: 'VA_NETAPP_SSH_ADDR', vaultKey: 'addr'],
-                            [envVar: 'VA_NETAPP_SSH_USER', vaultKey: 'user'],
-                            [envVar: 'VA_NETAPP_SSH_PASS', vaultKey: 'pass']
-                        ]]
-                    }
-                    if (params.GRAFANA_WEB_KV?.trim()) {
-                        vaultSecrets << [path: params.GRAFANA_WEB_KV, secretValues: [
-                            [envVar: 'VA_GRAFANA_WEB_USER', vaultKey: 'user'],
-                            [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
-                        ]]
-                    }
-                    if (vaultSecrets.isEmpty()) {
-                        echo "[WARNING] KV пути не заданы"
-                        // Создаем пустой JSON
-                        def emptyData = [
-                            "vault-agent": [role_id: '', secret_id: ''],
-                            "rpm_url": [harvest: '', prometheus: '', grafana: '', node_exporter: ''],
-                            "netapp_ssh": [addr: '', user: '', pass: ''],
-                            "grafana_web": [user: '', pass: ''],
-                            "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
-                        ]
-                        writeFile file: env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(emptyData)
-                        deploymentPairs.each { pair ->
-                            if (pair.credJsonFile != env.CRED_JSON_FILE) {
-                                sh """#!/bin/bash
-                                    cp -f "${env.CRED_JSON_FILE}" "${pair.credJsonFile}"
-                                """
-                            }
-                        }
-                    } else {
-                        try {
-                            // ВАЖНО: Используем withVault() плагин (как в v3.x), а не withCredentials()
-                            // Это работает с типом credential "Vault App Role Credential"
-                            withVault([
-                                configuration: [
-                                    vaultUrl: "https://${params.SEC_MAN_ADDR}",
-                                    engineVersion: 1,
-                                    skipSslVerification: false,
-                                    vaultCredentialId: vaultCredId,
-                                    vaultNamespace: params.NAMESPACE_CI?.trim()
-                                ],
-                                vaultSecrets: vaultSecrets
-                            ]) {
-                                // Секреты загружены в переменные окружения (VA_ROLE_ID, VA_SECRET_ID и т.д.)
-                                def serverBundlePem = ''
-                                def caChainCrt = ''
-                                def grafanaClientPem = ''
-
-                                // SberCA нужно вызывать через fetch (POST), а не через withVault read.
-                                if (params.SBERCA_CERT_KV?.trim()) {
-                                    def requestedPath = params.SBERCA_CERT_KV.trim()
-                                    def vaultNamespace = params.NAMESPACE_CI?.trim()
-                                    def apiPath = requestedPath.replaceAll('^/+', '')
-                                    if (apiPath.startsWith('v1/')) {
-                                        apiPath = apiPath.substring(3)
-                                    }
-                                    if (vaultNamespace && apiPath.startsWith("${vaultNamespace}/")) {
-                                        apiPath = apiPath.substring(vaultNamespace.length() + 1)
-                                    }
-
-                                    // Поддержка legacy ввода, где mount ошибочно задается как /SBERCA/fetch/<mount>/fetch/<role>.
-                                    // Нормализуем к корректному формату: /SBERCA/<mount>/fetch/<role>.
-                                    apiPath = apiPath.replace('/SBERCA/fetch/', '/SBERCA/')
-
-                                    if (!apiPath.contains('/SBERCA/') || !apiPath.contains('/fetch/')) {
-                                        error("❌ SBERCA_CERT_KV имеет неверный формат. Ожидается: <NAMESPACE>/.../SBERCA/<mount>/fetch/<role>")
-                                    }
-
-                                    if (apiPath.contains('/fetch/') && apiPath.split('/fetch/').size() > 2) {
-                                        error("❌ SBERCA_CERT_KV содержит лишний '/fetch/'. Используйте формат: <NAMESPACE>/.../SBERCA/<mount>/fetch/<role>")
-                                    }
-
-                                    if (requestedPath != apiPath && requestedPath != "${vaultNamespace}/${apiPath}") {
-                                        echo "[SBERCA-DIAG] Нормализация пути SBERCA_CERT_KV"
-                                        echo "[SBERCA-DIAG] requested_path: ${requestedPath}"
-                                        echo "[SBERCA-DIAG] normalized_api_path: ${apiPath}"
-                                    }
-
-                                    def certRequestPayload = groovy.json.JsonOutput.toJson([
-                                        common_name: (primaryServerNameForSberca ?: '').trim(),
-                                        email: (params.ADMIN_EMAIL?.trim() ?: 'noreply@sberbank.ru'),
-                                        format: 'pem',
-                                        alt_names: (allServerNamesForSberca ?: '').trim()
-                                    ])
-                                    writeFile file: 'sberca_request_payload.json', text: certRequestPayload
-                                    writeFile file: 'sberca_api_path.txt', text: apiPath
-                                    writeFile file: 'sberca_namespace.txt', text: (vaultNamespace ?: '')
-                                    writeFile file: 'sberca_url.txt', text: "https://${params.SEC_MAN_ADDR}"
-
-                                    try {
-                                        withCredentials([[
-                                            $class: 'VaultTokenCredentialBinding',
-                                            credentialsId: vaultCredId,
-                                            vaultNamespace: vaultNamespace,
-                                            vaultAddr: "https://${params.SEC_MAN_ADDR}"
-                                        ]]) {
-                                            def certResponseRaw = sh(
-                                                script: '''#!/bin/bash
-set -euo pipefail
-set +x
-
-SBERCA_URL="$(cat sberca_url.txt)"
-SBERCA_API_PATH="$(cat sberca_api_path.txt)"
-SBERCA_NAMESPACE="$(cat sberca_namespace.txt)"
-
-NS_HEADER=()
-if [[ -n "${SBERCA_NAMESPACE}" ]]; then
-  NS_HEADER=(-H "X-Vault-Namespace: ${SBERCA_NAMESPACE}")
-fi
-
-REQ_URL="${SBERCA_URL}/v1/${SBERCA_API_PATH}"
-
-echo "[SBERCA-DIAG] ========================================" >&2
-echo "[SBERCA-DIAG] Подготовка запроса к SberCA fetch" >&2
-echo "[SBERCA-DIAG] namespace: ${SBERCA_NAMESPACE:-<empty>}" >&2
-echo "[SBERCA-DIAG] api_path: ${SBERCA_API_PATH}" >&2
-echo "[SBERCA-DIAG] request_url: ${REQ_URL}" >&2
-echo "[SBERCA-DIAG] payload_json: $(cat sberca_request_payload.json)" >&2
-echo "[SBERCA-DIAG] curl шаблон: curl -X POST <REQ_URL> -H 'X-Vault-Token: ***' -H 'X-Vault-Namespace: ...' -H 'Content-Type: application/json' --data @sberca_request_payload.json" >&2
-echo "[SBERCA-DIAG] ========================================" >&2
-
-# Диагностика прав токена на путь fetch
-CAP_PAYLOAD=$(printf '{"paths":["%s"]}' "${SBERCA_API_PATH}")
-CAP_RESP_FILE="$(mktemp)"
-CAP_HTTP_CODE=$(curl -sS -o "${CAP_RESP_FILE}" -w "%{http_code}" \
-  -H "X-Vault-Token: ${VAULT_TOKEN}" \
-  "${NS_HEADER[@]}" \
-  -H "Content-Type: application/json" \
-  --request POST \
-  --data "${CAP_PAYLOAD}" \
-  "${SBERCA_URL}/v1/sys/capabilities-self" || true)
-
-echo "[SBERCA-DIAG] capabilities-self http_code: ${CAP_HTTP_CODE}" >&2
-echo "[SBERCA-DIAG] capabilities-self response: $(cat "${CAP_RESP_FILE}" 2>/dev/null || true)" >&2
-rm -f "${CAP_RESP_FILE}"
-
-# Основной вызов fetch
-FETCH_RESP_FILE="$(mktemp)"
-FETCH_HTTP_CODE=$(curl -sS -o "${FETCH_RESP_FILE}" -w "%{http_code}" \
-  -H "X-Vault-Token: ${VAULT_TOKEN}" \
-  "${NS_HEADER[@]}" \
-  -H "Content-Type: application/json" \
-  --request POST \
-  --data @sberca_request_payload.json \
-  "${REQ_URL}" || true)
-
-echo "[SBERCA-DIAG] fetch http_code: ${FETCH_HTTP_CODE}" >&2
-if [[ "${FETCH_HTTP_CODE}" -lt 200 || "${FETCH_HTTP_CODE}" -gt 299 ]]; then
-  echo "[SBERCA-DIAG] fetch error response: $(cat "${FETCH_RESP_FILE}" 2>/dev/null || true)" >&2
-  rm -f "${FETCH_RESP_FILE}"
-  exit 22
-fi
-
-cat "${FETCH_RESP_FILE}"
-rm -f "${FETCH_RESP_FILE}"
-''',
-                                                returnStdout: true
-                                            ).trim()
-
-                                            def certResponse = new groovy.json.JsonSlurperClassic().parseText(certResponseRaw)
-                                            def cert = (certResponse?.data?.certificate ?: '').toString().trim()
-                                            def pkey = (certResponse?.data?.private_key ?: '').toString().trim()
-                                            def issuingCa = (certResponse?.data?.issuing_ca ?: '').toString().trim()
-
-                                            def chainObj = certResponse?.data?.ca_chain
-                                            def chainText = ''
-                                            if (chainObj instanceof List) {
-                                                chainText = chainObj.findAll { it != null }.collect { it.toString() }.join('\n')
-                                            } else if (chainObj != null) {
-                                                chainText = chainObj.toString().trim()
-                                            }
-
-                                            serverBundlePem = [pkey, cert, issuingCa].findAll { it?.trim() }.join('\n')
-                                            caChainCrt = chainText?.trim() ? chainText : issuingCa
-                                            grafanaClientPem = [pkey, cert, issuingCa].findAll { it?.trim() }.join('\n')
-
-                                            if (!serverBundlePem?.trim()) {
-                                                error("❌ SberCA fetch вернул пустой server_bundle_pem")
-                                            }
-                                        }
-                                    } finally {
-                                        sh 'rm -f sberca_request_payload.json sberca_api_path.txt sberca_namespace.txt sberca_url.txt'
-                                    }
-                                }
-
-                                def data = [
-                                    "vault-agent": [
-                                        role_id: (env.VA_ROLE_ID ?: ''),
-                                        secret_id: (env.VA_SECRET_ID ?: '')
-                                    ],
-                                    "rpm_url": [
-                                        harvest: (env.VA_RPM_HARVEST ?: ''),
-                                        prometheus: (env.VA_RPM_PROMETHEUS ?: ''),
-                                        grafana: (env.VA_RPM_GRAFANA ?: ''),
-                                        node_exporter: (env.VA_RPM_NODE_EXPORTER ?: '')
-                                    ],
-                                    "netapp_ssh": [
-                                        addr: (env.VA_NETAPP_SSH_ADDR ?: ''),
-                                        user: (env.VA_NETAPP_SSH_USER ?: ''),
-                                        pass: (env.VA_NETAPP_SSH_PASS ?: '')
-                                    ],
-                                    "grafana_web": [
-                                        user: (env.VA_GRAFANA_WEB_USER ?: ''),
-                                        pass: (env.VA_GRAFANA_WEB_PASS ?: '')
-                                    ],
-                                    "certificates": [
-                                        server_bundle_pem: serverBundlePem,
-                                        ca_chain_crt: caChainCrt,
-                                        grafana_client_pem: grafanaClientPem
-                                    ]
-                                ]
-                                
-                                writeFile file: env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(data)
-                                echo "[INFO] credentials file: ${env.CRED_JSON_FILE}"
-                                echo "[INFO] certificates in ${env.CRED_JSON_FILE}: " +
-                                     "server_bundle_pem=${serverBundlePem ? 'yes' : 'no'}, " +
-                                     "ca_chain_crt=${caChainCrt ? 'yes' : 'no'}, " +
-                                     "grafana_client_pem=${grafanaClientPem ? 'yes' : 'no'}"
-                                deploymentPairs.each { pair ->
-                                    if (pair.credJsonFile != env.CRED_JSON_FILE) {
-                                        sh """#!/bin/bash
-                                            cp -f "${env.CRED_JSON_FILE}" "${pair.credJsonFile}"
-                                        """
-                                    }
-                                }
-                            }
-                        } catch (Exception e) {
-                            echo "[ERROR] Ошибка Vault: ${e.message}"
-                            error("❌ Не удалось получить данные из Vault")
-                        }
-                    }
-                    
-                    // Проверка файла
-                    deploymentPairs.each { pair ->
-                        sh """#!/bin/bash
-                            [ ! -f "${pair.credJsonFile}" ] && echo "[ERROR] Файл ${pair.credJsonFile} не создан!" && exit 1
-                            if command -v jq >/dev/null 2>&1; then
-                                jq empty "${pair.credJsonFile}" 2>/dev/null || { echo "[ERROR] Невалидный JSON: ${pair.credJsonFile}!"; exit 1; }
-                            fi
-                        """
-                    }
-                    
-                    // Сохраняем для CDL этапа
-                    stash name: 'vault-credentials', includes: 'temp_data_cred_*.json,temp_data_cred.json'
-                    
-                    echo "[SUCCESS] Данные из Vault получены"
+                    fetchVaultCredentialsForAllPairs(this)
                 }
             }
         }
@@ -706,37 +617,7 @@ rm -f "${FETCH_RESP_FILE}"
                         deploymentPairs.each { pair ->
                             def p = pair
                             parallelCopies["copy-${p.server}"] = {
-                                int rc = sh(returnStatus: true, script: """#!/bin/bash
-set -e
-SSH_OPTS="-q -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o TCPKeepAlive=yes -o LogLevel=ERROR"
-[ ! -f "${p.credJsonFile}" ] && echo "[ERROR] ${p.credJsonFile} не найден!" && exit 1
-
-echo "[INFO] [${p.server}] Тестируем SSH подключение..."
-ssh \$SSH_OPTS "${env.SSH_USER}@${p.server}" "echo '[OK] SSH подключение успешно'" 2>/dev/null
-
-echo "[INFO] [${p.server}] Создаем рабочую директорию ${env.DEPLOY_PATH}..."
-ssh \$SSH_OPTS "${env.SSH_USER}@${p.server}" "mkdir -p '${env.DEPLOY_PATH}'" 2>/dev/null
-
-echo "[INFO] [${p.server}] Копируем скрипт, wrappers и credentials..."
-scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    install-monitoring-stack.sh \
-    "${env.SSH_USER}@${p.server}:${env.DEPLOY_PATH}/install-monitoring-stack.sh" 2>/dev/null
-scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
-    wrappers \
-    "${env.SSH_USER}@${p.server}:${env.DEPLOY_PATH}/" 2>/dev/null
-scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "${p.credJsonFile}" \
-    "${env.SSH_USER}@${p.server}:${env.DEPLOY_PATH}/${p.credJsonFile}" 2>/dev/null
-
-ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "${env.SSH_USER}@${p.server}" 2>/dev/null << 'REMOTE_EOF'
-[ ! -f "${env.DEPLOY_PATH}/install-monitoring-stack.sh" ] && echo "[ERROR] Скрипт не найден!" && exit 1
-[ ! -d "${env.DEPLOY_PATH}/wrappers" ] && echo "[ERROR] Wrappers не найдены!" && exit 1
-[ ! -f "${env.DEPLOY_PATH}/${p.credJsonFile}" ] && echo "[ERROR] Credentials не найдены!" && exit 1
-echo "[OK] Все файлы на месте"
-REMOTE_EOF
-echo "[SUCCESS] [${p.server}] Копирование завершено"
-""")
+                                int rc = runRemoteCopy(this, p)
                                 def statusObj = [
                                     server: p.server,
                                     netapp: p.netapp,
@@ -966,28 +847,14 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     
                     def domainName = ''
                     withVaultSshCredentials(this) {
-                        writeFile file: 'get_domain.sh', text: '''#!/bin/bash
-ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
-    "nslookup ''' + env.SERVER_ADDRESS_EFFECTIVE + ''' 2>/dev/null | grep 'name =' | awk '{print \\$4}' | sed 's/\\.$//' || echo ''" 2>/dev/null
-'''
-                        sh 'chmod +x get_domain.sh'
-                        domainName = sh(script: './get_domain.sh', returnStdout: true).trim()
-                        sh 'rm -f get_domain.sh'
+                        domainName = getRemoteDomain(this, env.SERVER_ADDRESS_EFFECTIVE)
                     }
                     if (domainName == '') {
                         domainName = env.SERVER_ADDRESS_EFFECTIVE
                     }
                     def serverIp = ''
                     withVaultSshCredentials(this) {
-                        writeFile file: 'get_ip.sh', text: '''#!/bin/bash
-ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
-    "hostname -I | awk '{print \\$1}' || echo ''' + (env.SERVER_ADDRESS_EFFECTIVE ?: '') + '''" 2>/dev/null
-'''
-                        sh 'chmod +x get_ip.sh'
-                        serverIp = sh(script: './get_ip.sh', returnStdout: true).trim()
-                        sh 'rm -f get_ip.sh'
+                        serverIp = getRemoteIp(this, env.SERVER_ADDRESS_EFFECTIVE)
                     }
                     echo "================================================"
                     echo "[SUCCESS] Развертывание мониторинговой системы завершено!"
