@@ -1025,12 +1025,14 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
             echo "================================================"
         }
         always {
-            if (env.DEPLOY_STATUS_SUMMARY?.trim()) {
-                echo env.DEPLOY_STATUS_SUMMARY
-            } else {
-                echo "================================================"
-                echo "📋 СВОДКА ПО СЕРВЕРАМ: недоступна (ветки не стартовали)"
-                echo "================================================"
+            script {
+                if (env.DEPLOY_STATUS_SUMMARY?.trim()) {
+                    echo env.DEPLOY_STATUS_SUMMARY
+                } else {
+                    echo "================================================"
+                    echo "📋 СВОДКА ПО СЕРВЕРАМ: недоступна (ветки не стартовали)"
+                    echo "================================================"
+                }
             }
             echo "Время выполнения: ${currentBuild.durationString}"
         }
