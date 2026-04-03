@@ -121,187 +121,79 @@ rm -f "$ASKPASS_SCRIPT"
 def runRemoteRpmPhaseInstall(scriptContext, Map pair, String phaseName) {
     return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
 set -e
-ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${scriptContext.env.SSH_USER}"@"${pair.server}" RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
-set -e
-DEPLOY_DIR="${scriptContext.env.DEPLOY_PATH}"
-REMOTE_SCRIPT_PATH="\$DEPLOY_DIR/install-monitoring-stack.sh"
-CRED_JSON_FILE="${pair.credJsonFile}"
-TARGET_NETAPP="${pair.netapp}"
-
-if [ ! -f "\$REMOTE_SCRIPT_PATH" ]; then
-  echo "[ERROR] Скрипт \$REMOTE_SCRIPT_PATH не найден" && exit 1
-fi
-
-cd "\$DEPLOY_DIR"
-chmod +x "\$REMOTE_SCRIPT_PATH"
-if command -v dos2unix >/dev/null 2>&1; then
-  dos2unix "\$REMOTE_SCRIPT_PATH" || true
-else
-  sed -i 's/\\r\$//' "\$REMOTE_SCRIPT_PATH" || true
-fi
-
-RPM_GRAFANA=\$(jq -r '.rpm_url.grafana // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_PROMETHEUS=\$(jq -r '.rpm_url.prometheus // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_HARVEST=\$(jq -r '.rpm_url.harvest // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_NODE_EXPORTER=\$(jq -r '.rpm_url.node_exporter // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-
-case "${phaseName}" in
-  "Grafana")
-    [[ -z "\$RPM_GRAFANA" ]] && echo "[ERROR] Пустой RPM URL для Grafana" && exit 1
-    ;;
-  "Prometheus")
-    [[ -z "\$RPM_PROMETHEUS" ]] && echo "[ERROR] Пустой RPM URL для Prometheus" && exit 1
-    ;;
-  "Harvest")
-    [[ -z "\$RPM_HARVEST" ]] && echo "[ERROR] Пустой RPM URL для Harvest" && exit 1
-    ;;
-esac
-
-env \\
-  SEC_MAN_ADDR="${scriptContext.params.SEC_MAN_ADDR ?: ''}" \\
-  NAMESPACE_CI="${scriptContext.params.NAMESPACE_CI ?: ''}" \\
-  RLM_API_URL="${scriptContext.params.RLM_API_URL ?: ''}" \\
-  RLM_TOKEN="\$RLM_TOKEN" \\
-  DEPLOY_TARGET_SERVER="${pair.server}" \\
-  DEPLOY_TARGET_NETAPP="${pair.netapp}" \\
-  NETAPP_API_ADDR="\$TARGET_NETAPP" \\
-  GRAFANA_PORT="${scriptContext.params.GRAFANA_PORT ?: '3000'}" \\
-  PROMETHEUS_PORT="${scriptContext.params.PROMETHEUS_PORT ?: '9090'}" \\
-  RPM_URL_KV="${scriptContext.params.RPM_URL_KV ?: ''}" \\
-  NETAPP_SSH_KV="${scriptContext.params.NETAPP_SSH_KV ?: ''}" \\
-  GRAFANA_WEB_KV="${scriptContext.params.GRAFANA_WEB_KV ?: ''}" \\
-  SBERCA_CERT_KV="${scriptContext.params.SBERCA_CERT_KV ?: ''}" \\
-  ADMIN_EMAIL="${scriptContext.params.ADMIN_EMAIL ?: ''}" \\
-  VICTORIA_METRICS_REMOTE_WRITE_URL="${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}" \\
-  RENEW_CERTIFICATES_ONLY="false" \\
-  USE_SIMPLIFIED_CERT_FLOW="${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}" \\
-  SKIP_RPM_INSTALL="false" \\
-  SKIP_IPTABLES="true" \\
-  RUN_SERVICES_AS_MON_CI="${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}" \\
-  GRAFANA_URL="\$RPM_GRAFANA" \\
-  PROMETHEUS_URL="\$RPM_PROMETHEUS" \\
-  HARVEST_URL="\$RPM_HARVEST" \\
-  NODE_EXPORTER_URL="\$RPM_NODE_EXPORTER" \\
-  DEPLOY_VERSION="${scriptContext.env.VERSION_SHORT ?: 'unknown'}" \\
-  DEPLOY_GIT_COMMIT="${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}" \\
-  DEPLOY_BUILD_DATE="${scriptContext.env.VERSION_BUILD_DATE ?: 'unknown'}" \\
-  WRAPPERS_DIR="\$DEPLOY_DIR/wrappers" \\
-  CRED_JSON_PATH="\$DEPLOY_DIR/\$CRED_JSON_FILE" \\
-  RLM_PHASE_ONLY="true" \\
-  RLM_PACKAGE_FILTER="${phaseName}" \\
-  /bin/bash "\$REMOTE_SCRIPT_PATH"
-REMOTE_EOF
-echo "[SYNC-RPM] [${pair.server}] ${phaseName}: локальный success, ожидаем остальные серверы..."
-sleep 5
+chmod +x tools/remote_rpm_phase.sh
+SSH_USER='${scriptContext.env.SSH_USER}' \
+TARGET_SERVER='${pair.server}' \
+DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
+CRED_JSON_FILE='${pair.credJsonFile}' \
+TARGET_NETAPP='${pair.netapp}' \
+RLM_TOKEN="\$RLM_TOKEN" \
+PHASE_NAME='${phaseName}' \
+SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
+NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
+RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
+GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3000'}' \
+PROMETHEUS_PORT='${scriptContext.params.PROMETHEUS_PORT ?: '9090'}' \
+RPM_URL_KV='${scriptContext.params.RPM_URL_KV ?: ''}' \
+NETAPP_SSH_KV='${scriptContext.params.NETAPP_SSH_KV ?: ''}' \
+GRAFANA_WEB_KV='${scriptContext.params.GRAFANA_WEB_KV ?: ''}' \
+SBERCA_CERT_KV='${scriptContext.params.SBERCA_CERT_KV ?: ''}' \
+ADMIN_EMAIL='${scriptContext.params.ADMIN_EMAIL ?: ''}' \
+VICTORIA_METRICS_REMOTE_WRITE_URL='${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}' \
+USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}' \
+RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
+DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
+DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
+DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_DATE ?: 'unknown'}' \
+./tools/remote_rpm_phase.sh
 """)
 }
 
 def runRemoteFullDeploy(scriptContext, Map pair, String effectiveSkipRpm) {
     return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
 set -e
-ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${scriptContext.env.SSH_USER}"@"${pair.server}" RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
-set -e
-DEPLOY_DIR="${scriptContext.env.DEPLOY_PATH}"
-REMOTE_SCRIPT_PATH="\$DEPLOY_DIR/install-monitoring-stack.sh"
-CRED_JSON_FILE="${pair.credJsonFile}"
-TARGET_NETAPP="${pair.netapp}"
-
-if [ ! -f "\$REMOTE_SCRIPT_PATH" ]; then
-  echo "[ERROR] Скрипт \$REMOTE_SCRIPT_PATH не найден" && exit 1
-fi
-
-cd "\$DEPLOY_DIR"
-chmod +x "\$REMOTE_SCRIPT_PATH"
-if command -v dos2unix >/dev/null 2>&1; then
-  dos2unix "\$REMOTE_SCRIPT_PATH" || true
-else
-  sed -i 's/\\r\$//' "\$REMOTE_SCRIPT_PATH" || true
-fi
-
-RPM_GRAFANA=\$(jq -r '.rpm_url.grafana // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_PROMETHEUS=\$(jq -r '.rpm_url.prometheus // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_HARVEST=\$(jq -r '.rpm_url.harvest // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_NODE_EXPORTER=\$(jq -r '.rpm_url.node_exporter // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-
-if [[ -z "\$RPM_GRAFANA" || -z "\$RPM_PROMETHEUS" || -z "\$RPM_HARVEST" ]]; then
-  echo "[ERROR] Один или несколько RPM URLs пусты для \$CRED_JSON_FILE"
-  exit 1
-fi
-
-env \\
-  SEC_MAN_ADDR="${scriptContext.params.SEC_MAN_ADDR ?: ''}" \\
-  NAMESPACE_CI="${scriptContext.params.NAMESPACE_CI ?: ''}" \\
-  RLM_API_URL="${scriptContext.params.RLM_API_URL ?: ''}" \\
-  RLM_TOKEN="\$RLM_TOKEN" \\
-  DEPLOY_TARGET_SERVER="${pair.server}" \\
-  DEPLOY_TARGET_NETAPP="${pair.netapp}" \\
-  NETAPP_API_ADDR="\$TARGET_NETAPP" \\
-  GRAFANA_PORT="${scriptContext.params.GRAFANA_PORT ?: '3000'}" \\
-  PROMETHEUS_PORT="${scriptContext.params.PROMETHEUS_PORT ?: '9090'}" \\
-  RPM_URL_KV="${scriptContext.params.RPM_URL_KV ?: ''}" \\
-  NETAPP_SSH_KV="${scriptContext.params.NETAPP_SSH_KV ?: ''}" \\
-  GRAFANA_WEB_KV="${scriptContext.params.GRAFANA_WEB_KV ?: ''}" \\
-  SBERCA_CERT_KV="${scriptContext.params.SBERCA_CERT_KV ?: ''}" \\
-  ADMIN_EMAIL="${scriptContext.params.ADMIN_EMAIL ?: ''}" \\
-  VICTORIA_METRICS_REMOTE_WRITE_URL="${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}" \\
-  RENEW_CERTIFICATES_ONLY="${scriptContext.params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}" \\
-  USE_SIMPLIFIED_CERT_FLOW="${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}" \\
-  SKIP_RPM_INSTALL="${effectiveSkipRpm}" \\
-  SKIP_IPTABLES="${scriptContext.params.SKIP_IPTABLES ? 'true' : 'false'}" \\
-  RUN_SERVICES_AS_MON_CI="${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}" \\
-  GRAFANA_URL="\$RPM_GRAFANA" \\
-  PROMETHEUS_URL="\$RPM_PROMETHEUS" \\
-  HARVEST_URL="\$RPM_HARVEST" \\
-  NODE_EXPORTER_URL="\$RPM_NODE_EXPORTER" \\
-  DEPLOY_VERSION="${scriptContext.env.VERSION_SHORT ?: 'unknown'}" \\
-  DEPLOY_GIT_COMMIT="${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}" \\
-  DEPLOY_BUILD_DATE="${scriptContext.env.VERSION_BUILD_DATE ?: 'unknown'}" \\
-  WRAPPERS_DIR="\$DEPLOY_DIR/wrappers" \\
-  CRED_JSON_PATH="\$DEPLOY_DIR/\$CRED_JSON_FILE" \\
-  /bin/bash "\$REMOTE_SCRIPT_PATH"
-REMOTE_EOF
+chmod +x tools/remote_full_deploy.sh
+SSH_USER='${scriptContext.env.SSH_USER}' \
+TARGET_SERVER='${pair.server}' \
+DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
+CRED_JSON_FILE='${pair.credJsonFile}' \
+TARGET_NETAPP='${pair.netapp}' \
+RLM_TOKEN="\$RLM_TOKEN" \
+SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
+NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
+RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
+GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3000'}' \
+PROMETHEUS_PORT='${scriptContext.params.PROMETHEUS_PORT ?: '9090'}' \
+RPM_URL_KV='${scriptContext.params.RPM_URL_KV ?: ''}' \
+NETAPP_SSH_KV='${scriptContext.params.NETAPP_SSH_KV ?: ''}' \
+GRAFANA_WEB_KV='${scriptContext.params.GRAFANA_WEB_KV ?: ''}' \
+SBERCA_CERT_KV='${scriptContext.params.SBERCA_CERT_KV ?: ''}' \
+ADMIN_EMAIL='${scriptContext.params.ADMIN_EMAIL ?: ''}' \
+VICTORIA_METRICS_REMOTE_WRITE_URL='${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}' \
+RENEW_CERTIFICATES_ONLY='${scriptContext.params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}' \
+USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}' \
+EFFECTIVE_SKIP_RPM='${effectiveSkipRpm}' \
+SKIP_IPTABLES='${scriptContext.params.SKIP_IPTABLES ? 'true' : 'false'}' \
+RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
+DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
+DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
+DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_DATE ?: 'unknown'}' \
+./tools/remote_full_deploy.sh
 """)
 }
 
 def runRemoteVerification(scriptContext, Map pair) {
-    def runAsMonCi = scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'
-    def runtimeUser = scriptContext.params.RUN_SERVICES_AS_MON_CI ? scriptContext.env.DEPLOY_USER : scriptContext.env.MON_SYS_USER
-    def promPort = scriptContext.params.PROMETHEUS_PORT ?: '9090'
-    def grafanaPort = scriptContext.params.GRAFANA_PORT ?: '3300'
     return scriptContext.sh(script: """#!/bin/bash
-ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "${scriptContext.env.SSH_USER}"@"${pair.server}" 2>/dev/null << 'ENDSSH'
-echo "================================================"
-echo "СЕРВЕР: ${pair.server}"
-echo "ПРОВЕРКА СЕРВИСОВ (USER UNITS):"
-echo "================================================"
-
-if [ "${runAsMonCi}" = "true" ]; then
-    RUNTIME_USER="${scriptContext.env.DEPLOY_USER}"
-else
-    RUNTIME_USER="${scriptContext.env.MON_SYS_USER}"
-fi
-RUNTIME_UID=\$(id -u "\$RUNTIME_USER" 2>/dev/null || echo "")
-
-if [ -n "\$RUNTIME_UID" ]; then
-    echo "[INFO] Проверка user-юнитов для \$RUNTIME_USER (UID: \$RUNTIME_UID)..."
-    sudo -u "\$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/\$RUNTIME_UID" systemctl --user is-active monitoring-prometheus.service && echo "[OK] Prometheus активен" || echo "[FAIL] Prometheus не активен"
-    sudo -u "\$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/\$RUNTIME_UID" systemctl --user is-active monitoring-grafana.service && echo "[OK] Grafana активна" || echo "[FAIL] Grafana не активна"
-    sudo -u "\$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/\$RUNTIME_UID" systemctl --user is-active monitoring-harvest-unix.service && echo "[OK] Harvest Unix активен" || echo "[FAIL] Harvest Unix не активен"
-    sudo -u "\$RUNTIME_USER" env XDG_RUNTIME_DIR="/run/user/\$RUNTIME_UID" systemctl --user is-active monitoring-harvest-netapp.service && echo "[OK] Harvest NetApp активен" || echo "[FAIL] Harvest NetApp не активен"
-else
-    echo "[ERROR] Не удалось определить UID для ${runtimeUser}"
-fi
-
-echo ""
-echo "================================================"
-echo "ПРОВЕРКА ПОРТОВ:"
-echo "================================================"
-ss -tln | grep -q ":${promPort} " && echo "[OK] Порт ${promPort} (Prometheus) открыт" || echo "[FAIL] Порт ${promPort} не открыт"
-ss -tln | grep -q ":${grafanaPort} " && echo "[OK] Порт ${grafanaPort} (Grafana) открыт" || echo "[FAIL] Порт ${grafanaPort} не открыт"
-ss -tln | grep -q ":12996 " && echo "[OK] Порт 12996 (Harvest-NetApp) открыт" || echo "[FAIL] Порт 12996 не открыт"
-ss -tln | grep -q ":12995 " && echo "[OK] Порт 12995 (Harvest-Unix) открыт" || echo "[FAIL] Порт 12995 не открыт"
-ENDSSH
+set -e
+chmod +x tools/remote_verify.sh
+SSH_USER='${scriptContext.env.SSH_USER}' \
+TARGET_SERVER='${pair.server}' \
+RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
+DEPLOY_USER='${scriptContext.env.DEPLOY_USER}' \
+MON_SYS_USER='${scriptContext.env.MON_SYS_USER}' \
+PROMETHEUS_PORT='${scriptContext.params.PROMETHEUS_PORT ?: '9090'}' \
+GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3300'}' \
+./tools/remote_verify.sh
 """, returnStdout: true).trim()
 }
 
