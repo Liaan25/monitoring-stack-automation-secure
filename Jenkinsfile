@@ -235,7 +235,9 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
 def fetchVaultCredentialsForAllPairs(scriptContext) {
     computeEnvironmentVariables()
     def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
-    def allServerNamesForSberca = deploymentPairs.collect { it.server }.join(',')
+    def allServerNamesForSberca = (
+        deploymentPairs.collect { it.server } + ['localhost', '127.0.0.1']
+    ).findAll { it?.trim() }.collect { it.trim() }.unique().join(',')
     def primaryServerNameForSberca = deploymentPairs[0].server
     def vaultCredId = scriptContext.params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
 
