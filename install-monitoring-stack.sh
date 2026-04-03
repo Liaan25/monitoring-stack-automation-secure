@@ -4278,13 +4278,13 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 60s
 
-  - job_name: 'harvest-${NETAPP_POLLER_NAME}-unix'
+  - job_name: 'harvest-unix-${NETAPP_POLLER_NAME}'
     static_configs:
       - targets: ['localhost:${HARVEST_UNIX_PORT}']
     metrics_path: /metrics
     scrape_interval: 30s
 
-  - job_name: 'harvest-${NETAPP_POLLER_NAME}-netapp'
+  - job_name: 'harvest-netapp-${NETAPP_POLLER_NAME}'
     scheme: https
     tls_config:
       cert_file: ${PROMETHEUS_USER_CERTS_DIR}/server.crt
