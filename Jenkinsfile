@@ -144,7 +144,7 @@ USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'tru
 RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
 DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
 DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
-DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_DATE ?: 'unknown'}' \
+DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_TIMESTAMP ?: 'unknown'}' \
 ./tools/remote_rpm_phase.sh
 """)
 }
@@ -177,7 +177,7 @@ SKIP_IPTABLES='${scriptContext.params.SKIP_IPTABLES ? 'true' : 'false'}' \
 RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
 DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
 DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
-DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_DATE ?: 'unknown'}' \
+DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_TIMESTAMP ?: 'unknown'}' \
 ./tools/remote_full_deploy.sh
 """)
 }
