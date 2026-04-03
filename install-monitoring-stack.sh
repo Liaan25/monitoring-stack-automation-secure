@@ -3588,16 +3588,28 @@ create_rlm_install_tasks() {
     local target_server="${DEPLOY_TARGET_SERVER:-${SERVER_DOMAIN:-unknown-server}}"
     local target_netapp="${DEPLOY_TARGET_NETAPP:-${NETAPP_API_ADDR:-unknown-netapp}}"
 
-    # Создание задач для всех RPM пакетов
+    # Опциональный фильтр по конкретному пакету (для фазового lockstep режима Jenkins)
+    local package_filter="${RLM_PACKAGE_FILTER:-}"
+    if [[ -n "$package_filter" ]]; then
+        print_info "RLM package filter активен: $package_filter"
+        write_diagnostic "RLM package filter: $package_filter"
+    fi
+
+    # Создание задач для RPM пакетов
     local packages=(
         "$GRAFANA_URL|Grafana"
         "$PROMETHEUS_URL|Prometheus"
         "$HARVEST_URL|Harvest"
         "$NODE_EXPORTER_URL|Node Exporter"
     )
+    local processed_packages=0
 
     for package in "${packages[@]}"; do
         IFS='|' read -r url name <<< "$package"
+        if [[ -n "$package_filter" && "$name" != "$package_filter" ]]; then
+            continue
+        fi
+        processed_packages=$((processed_packages + 1))
         local optional_package=false
         if [[ "$name" == "Node Exporter" ]]; then
             optional_package=true
@@ -3750,6 +3762,11 @@ create_rlm_install_tasks() {
         # Пауза 3 секунды после успешной задачи
         sleep 3
     done
+
+    if [[ "$processed_packages" -eq 0 ]]; then
+        print_error "RLM_PACKAGE_FILTER='$package_filter' не совпал ни с одним пакетом (Grafana|Prometheus|Harvest|Node Exporter)"
+        exit 1
+    fi
 
     echo ""
     echo "╔════════════════════════════════════════════════════════════╗"
@@ -7585,6 +7602,26 @@ main() {
         log_debug "Certificate renewal completed successfully"
         
         print_success "Обновление сертификатов завершено успешно!"
+        return 0
+    fi
+
+    # ============================================================
+    # РЕЖИМ: Только установка одного RPM через RLM (для lockstep-этапов Jenkins)
+    # ============================================================
+    if [[ "${RLM_PHASE_ONLY:-false}" == "true" ]]; then
+        echo "[MAIN] ========================================" | tee /dev/stderr
+        echo "[MAIN] РЕЖИМ: RLM_PHASE_ONLY (только RPM фаза)" | tee /dev/stderr
+        echo "[MAIN] RLM_PACKAGE_FILTER=${RLM_PACKAGE_FILTER:-<не задан>}" | tee /dev/stderr
+        echo "[MAIN] ========================================" | tee /dev/stderr
+        write_diagnostic "РЕЖИМ: RLM_PHASE_ONLY, package=${RLM_PACKAGE_FILTER:-<not set>}"
+
+        check_sudo
+        check_dependencies
+        detect_network_info
+        load_config_from_json
+        create_rlm_install_tasks
+
+        print_success "RLM_PHASE_ONLY выполнен успешно для пакета: ${RLM_PACKAGE_FILTER:-<all>}"
         return 0
     fi
     
