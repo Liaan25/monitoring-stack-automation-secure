@@ -690,127 +690,6 @@ echo "[SUCCESS] [${p.server}] Копирование завершено"
             }
         }
 
-        stage('CDL: Выполнение развертывания') {
-            agent { label "masterLin&&sbel8&&!static" }
-            when {
-                expression { params.SKIP_DEPLOYMENT != true && params.SYNC_RPM_PHASES != true }
-            }
-            steps {
-                script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    sh 'mkdir -p .deploy-status'
-                    
-                    echo "[STEP] Запуск развертывания на удаленных серверах..."
-                    echo "[INFO] Режим: БЕЗ SUDO (User Units Only)"
-                    
-                    // Восстанавливаем credentials из stash (если нужно)
-                    unstash 'vault-credentials'
-                    
-                    withCredentials([
-                        string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
-                    ]) {
-                        withVaultSshCredentials(this) {
-                            def parallelDeploy = [:]
-                            deploymentPairs.each { pair ->
-                                def p = pair
-                                parallelDeploy["deploy-${p.server}"] = {
-                                    int rc = sh(returnStatus: true, script: """#!/bin/bash
-set -e
-ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${env.SSH_USER}"@"${p.server}" RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
-set -e
-DEPLOY_DIR="${env.DEPLOY_PATH}"
-REMOTE_SCRIPT_PATH="\$DEPLOY_DIR/install-monitoring-stack.sh"
-CRED_JSON_FILE="${p.credJsonFile}"
-TARGET_NETAPP="${p.netapp}"
-
-if [ ! -f "\$REMOTE_SCRIPT_PATH" ]; then
-  echo "[ERROR] Скрипт \$REMOTE_SCRIPT_PATH не найден" && exit 1
-fi
-
-cd "\$DEPLOY_DIR"
-chmod +x "\$REMOTE_SCRIPT_PATH"
-if command -v dos2unix >/dev/null 2>&1; then
-  dos2unix "\$REMOTE_SCRIPT_PATH" || true
-else
-  sed -i 's/\\r\$//' "\$REMOTE_SCRIPT_PATH" || true
-fi
-
-RPM_GRAFANA=\$(jq -r '.rpm_url.grafana // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_PROMETHEUS=\$(jq -r '.rpm_url.prometheus // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_HARVEST=\$(jq -r '.rpm_url.harvest // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_NODE_EXPORTER=\$(jq -r '.rpm_url.node_exporter // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
-
-if [[ -z "\$RPM_GRAFANA" || -z "\$RPM_PROMETHEUS" || -z "\$RPM_HARVEST" ]]; then
-  echo "[ERROR] Один или несколько RPM URLs пусты для \$CRED_JSON_FILE"
-  exit 1
-fi
-
-env \
-  SEC_MAN_ADDR="${params.SEC_MAN_ADDR ?: ''}" \
-  NAMESPACE_CI="${params.NAMESPACE_CI ?: ''}" \
-  RLM_API_URL="${params.RLM_API_URL ?: ''}" \
-  RLM_TOKEN="\$RLM_TOKEN" \
-  DEPLOY_TARGET_SERVER="${p.server}" \
-  DEPLOY_TARGET_NETAPP="${p.netapp}" \
-  NETAPP_API_ADDR="\$TARGET_NETAPP" \
-  GRAFANA_PORT="${params.GRAFANA_PORT ?: '3000'}" \
-  PROMETHEUS_PORT="${params.PROMETHEUS_PORT ?: '9090'}" \
-  RPM_URL_KV="${params.RPM_URL_KV ?: ''}" \
-  NETAPP_SSH_KV="${params.NETAPP_SSH_KV ?: ''}" \
-  GRAFANA_WEB_KV="${params.GRAFANA_WEB_KV ?: ''}" \
-  SBERCA_CERT_KV="${params.SBERCA_CERT_KV ?: ''}" \
-  ADMIN_EMAIL="${params.ADMIN_EMAIL ?: ''}" \
-  VICTORIA_METRICS_REMOTE_WRITE_URL="${params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}" \
-  RENEW_CERTIFICATES_ONLY="${params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}" \
-  USE_SIMPLIFIED_CERT_FLOW="${params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}" \
-  SKIP_RPM_INSTALL="${params.SKIP_RPM_INSTALL ? 'true' : 'false'}" \
-  SKIP_IPTABLES="${params.SKIP_IPTABLES ? 'true' : 'false'}" \
-  RUN_SERVICES_AS_MON_CI="${params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}" \
-  GRAFANA_URL="\$RPM_GRAFANA" \
-  PROMETHEUS_URL="\$RPM_PROMETHEUS" \
-  HARVEST_URL="\$RPM_HARVEST" \
-  NODE_EXPORTER_URL="\$RPM_NODE_EXPORTER" \
-  DEPLOY_VERSION="${env.VERSION_SHORT ?: 'unknown'}" \
-  DEPLOY_GIT_COMMIT="${env.VERSION_GIT_COMMIT ?: 'unknown'}" \
-  DEPLOY_BUILD_DATE="${env.VERSION_BUILD_DATE ?: 'unknown'}" \
-  WRAPPERS_DIR="\$DEPLOY_DIR/wrappers" \
-  CRED_JSON_PATH="\$DEPLOY_DIR/\$CRED_JSON_FILE" \
-  /bin/bash "\$REMOTE_SCRIPT_PATH"
-REMOTE_EOF
-""")
-                                    def statusObj = [
-                                        server: p.server,
-                                        netapp: p.netapp,
-                                        stage: 'deploy',
-                                        status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
-                                        reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
-                                    ]
-                                    writeFile file: ".deploy-status/deploy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
-                                }
-                            }
-                            parallel parallelDeploy
-                        }
-                    }
-                    def deployRows = []
-                    deploymentPairs.each { p ->
-                        def f = ".deploy-status/deploy_${p.serverPrefixSafe}.json"
-                        if (fileExists(f)) {
-                            deployRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                        } else {
-                            deployRows << [server: p.server, netapp: p.netapp, stage: 'deploy', status: 'FAILED', reason: 'no_status_file']
-                        }
-                    }
-                    def deploySummary = renderDeploySummary("СВОДКА DEPLOY", deployRows)
-                    echo deploySummary
-                    env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + deploySummary) : deploySummary)
-                    if (deployRows.any { it.status != 'SUCCESS' }) {
-                        error("❌ Ошибка развертывания на одном или нескольких серверах")
-                    }
-                }
-            }
-        }
-
         stage('CDL: Синхронная фазовая установка RPM') {
             agent { label "masterLin&&sbel8&&!static" }
             when {
@@ -952,19 +831,24 @@ sleep 5
             }
         }
 
-        stage('CDL: Выполнение развертывания (после sync RPM)') {
+        stage('CDL: Выполнение развертывания') {
             agent { label "masterLin&&sbel8&&!static" }
             when {
-                expression { params.SKIP_DEPLOYMENT != true && params.SYNC_RPM_PHASES == true }
+                expression { params.SKIP_DEPLOYMENT != true }
             }
             steps {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     sh 'mkdir -p .deploy-status'
+                    def effectiveSkipRpm = params.SYNC_RPM_PHASES ? 'true' : (params.SKIP_RPM_INSTALL ? 'true' : 'false')
 
-                    echo "[STEP] Запуск полного конфигурирования на удаленных серверах (RPM уже синхронно установлены)"
-                    echo "[INFO] Режим: SKIP_RPM_INSTALL=true (только конфигурация/сервисы)"
+                    echo "[STEP] Запуск развертывания на удаленных серверах..."
+                    if (params.SYNC_RPM_PHASES) {
+                        echo "[INFO] Режим: SKIP_RPM_INSTALL=true (RPM уже установлены в lockstep-фазах)"
+                    } else {
+                        echo "[INFO] Режим: стандартный (учитываем параметр SKIP_RPM_INSTALL=${effectiveSkipRpm})"
+                    }
 
                     unstash 'vault-credentials'
                     withCredentials([
@@ -974,7 +858,7 @@ sleep 5
                             def parallelDeploy = [:]
                             deploymentPairs.each { pair ->
                                 def p = pair
-                                parallelDeploy["deploy-postsync-${p.server}"] = {
+                                parallelDeploy["deploy-${p.server}"] = {
                                     int rc = sh(returnStatus: true, script: """#!/bin/bash
 set -e
 ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${env.SSH_USER}"@"${p.server}" RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
@@ -1024,7 +908,7 @@ env \
   VICTORIA_METRICS_REMOTE_WRITE_URL="${params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}" \
   RENEW_CERTIFICATES_ONLY="${params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}" \
   USE_SIMPLIFIED_CERT_FLOW="${params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}" \
-  SKIP_RPM_INSTALL="true" \
+  SKIP_RPM_INSTALL="${effectiveSkipRpm}" \
   SKIP_IPTABLES="${params.SKIP_IPTABLES ? 'true' : 'false'}" \
   RUN_SERVICES_AS_MON_CI="${params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}" \
   GRAFANA_URL="\$RPM_GRAFANA" \
@@ -1042,11 +926,11 @@ REMOTE_EOF
                                     def statusObj = [
                                         server: p.server,
                                         netapp: p.netapp,
-                                        stage: 'deploy-postsync',
+                                        stage: 'deploy',
                                         status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
                                         reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
                                     ]
-                                    writeFile file: ".deploy-status/deploy_postsync_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
+                                    writeFile file: ".deploy-status/deploy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
                                 }
                             }
                             parallel parallelDeploy
@@ -1055,18 +939,18 @@ REMOTE_EOF
 
                     def deployRows = []
                     deploymentPairs.each { p ->
-                        def f = ".deploy-status/deploy_postsync_${p.serverPrefixSafe}.json"
+                        def f = ".deploy-status/deploy_${p.serverPrefixSafe}.json"
                         if (fileExists(f)) {
                             deployRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
                         } else {
-                            deployRows << [server: p.server, netapp: p.netapp, stage: 'deploy-postsync', status: 'FAILED', reason: 'no_status_file']
+                            deployRows << [server: p.server, netapp: p.netapp, stage: 'deploy', status: 'FAILED', reason: 'no_status_file']
                         }
                     }
-                    def deploySummary = renderDeploySummary("СВОДКА DEPLOY (POST-SYNC)", deployRows)
+                    def deploySummary = renderDeploySummary("СВОДКА DEPLOY", deployRows)
                     echo deploySummary
                     env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + deploySummary) : deploySummary)
                     if (deployRows.any { it.status != 'SUCCESS' }) {
-                        error("❌ Ошибка конфигурирования на одном или нескольких серверах (post-sync)")
+                        error("❌ Ошибка развертывания на одном или нескольких серверах")
                     }
                 }
             }
