@@ -26,6 +26,45 @@ def computeEnvironmentVariables() {
     env.NETAPP_API_ADDR_EFFECTIVE = netappAddr.tokenize(';') ? netappAddr.tokenize(';')[0].trim() : ''
 }
 
+@NonCPS
+def buildDeploymentPairs(String serverAddressesRaw, String netappAddressesRaw) {
+    def servers = (serverAddressesRaw ?: '').split(';').collect { it.trim() }.findAll { it }
+    def netapps = (netappAddressesRaw ?: '').split(';').collect { it.trim() }.findAll { it }
+
+    if (servers.isEmpty()) {
+        throw new IllegalArgumentException("❌ Не указан SERVER_ADDRESS")
+    }
+    if (netapps.isEmpty()) {
+        throw new IllegalArgumentException("❌ Не указан NETAPP_API_ADDR")
+    }
+    if (servers.size() != netapps.size()) {
+        throw new IllegalArgumentException("❌ Количество SERVER_ADDRESS (${servers.size()}) не равно количеству NETAPP_API_ADDR (${netapps.size()})")
+    }
+
+    def pairs = []
+    for (int i = 0; i < servers.size(); i++) {
+        def server = servers[i]
+        def netapp = netapps[i]
+        def netappHost = netapp.tokenize('.') ? netapp.tokenize('.')[0] : ''
+        def poller = netappHost ? (netappHost.substring(0, 1).toUpperCase() + netappHost.substring(1).toLowerCase()) : 'Unknown'
+        def pollerSafe = poller.replaceAll(/[^A-Za-z0-9_-]/, '_')
+        def serverPrefix = server.tokenize('.') ? server.tokenize('.')[0] : "server${i + 1}"
+        def serverPrefixSafe = serverPrefix.replaceAll(/[^A-Za-z0-9_-]/, '_')
+        def credJsonFile = "temp_data_cred_${pollerSafe}_${serverPrefixSafe}.json"
+
+        pairs << [
+            index: i + 1,
+            server: server,
+            netapp: netapp,
+            poller: poller,
+            pollerSafe: pollerSafe,
+            serverPrefixSafe: serverPrefixSafe,
+            credJsonFile: credJsonFile
+        ]
+    }
+    return pairs
+}
+
 def withVaultSshCredentials(scriptContext, Closure body) {
     def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
     if (!sshCredentialsId) {
@@ -264,6 +303,7 @@ pipeline {
             steps {
                 script {
                     computeEnvironmentVariables()
+                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     
                     echo "[STEP] Получение секретов из Vault..."
                     
@@ -306,6 +346,13 @@ pipeline {
                             "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
                         ]
                         writeFile file: env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(emptyData)
+                        deploymentPairs.each { pair ->
+                            if (pair.credJsonFile != env.CRED_JSON_FILE) {
+                                sh """#!/bin/bash
+                                    cp -f "${env.CRED_JSON_FILE}" "${pair.credJsonFile}"
+                                """
+                            }
+                        }
                     } else {
                         try {
                             // ВАЖНО: Используем withVault() плагин (как в v3.x), а не withCredentials()
@@ -495,6 +542,13 @@ rm -f "${FETCH_RESP_FILE}"
                                      "server_bundle_pem=${serverBundlePem ? 'yes' : 'no'}, " +
                                      "ca_chain_crt=${caChainCrt ? 'yes' : 'no'}, " +
                                      "grafana_client_pem=${grafanaClientPem ? 'yes' : 'no'}"
+                                deploymentPairs.each { pair ->
+                                    if (pair.credJsonFile != env.CRED_JSON_FILE) {
+                                        sh """#!/bin/bash
+                                            cp -f "${env.CRED_JSON_FILE}" "${pair.credJsonFile}"
+                                        """
+                                    }
+                                }
                             }
                         } catch (Exception e) {
                             echo "[ERROR] Ошибка Vault: ${e.message}"
@@ -503,16 +557,17 @@ rm -f "${FETCH_RESP_FILE}"
                     }
                     
                     // Проверка файла
-                    sh """#!/bin/bash
-                        [ ! -f "${env.CRED_JSON_FILE}" ] && echo "[ERROR] Файл ${env.CRED_JSON_FILE} не создан!" && exit 1
-
-                        if command -v jq >/dev/null 2>&1; then
-                            jq empty "${env.CRED_JSON_FILE}" 2>/dev/null || { echo "[ERROR] Невалидный JSON: ${env.CRED_JSON_FILE}!"; exit 1; }
-                        fi
-                    """
+                    deploymentPairs.each { pair ->
+                        sh """#!/bin/bash
+                            [ ! -f "${pair.credJsonFile}" ] && echo "[ERROR] Файл ${pair.credJsonFile} не создан!" && exit 1
+                            if command -v jq >/dev/null 2>&1; then
+                                jq empty "${pair.credJsonFile}" 2>/dev/null || { echo "[ERROR] Невалидный JSON: ${pair.credJsonFile}!"; exit 1; }
+                            fi
+                        """
+                    }
                     
                     // Сохраняем для CDL этапа
-                    stash name: 'vault-credentials', includes: env.CRED_JSON_FILE
+                    stash name: 'vault-credentials', includes: 'temp_data_cred_*.json,temp_data_cred.json'
                     
                     echo "[SUCCESS] Данные из Vault получены"
                 }
@@ -531,185 +586,65 @@ rm -f "${FETCH_RESP_FILE}"
             steps {
                 script {
                     computeEnvironmentVariables()
-                    def credJsonFile = env.CRED_JSON_FILE
+                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     
                     echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
                     
-                    // Восстанавливаем файл с credentials из stash
+                    // Восстанавливаем credentials-файлы из stash
                     unstash 'vault-credentials'
                     
                     echo "[STEP] Копирование скрипта и файлов на сервер..."
-                    sh """#!/bin/bash
-                        # Проверка необходимых файлов
+                    sh '''
                         [ ! -f "install-monitoring-stack.sh" ] && echo "[ERROR] install-monitoring-stack.sh не найден!" && exit 1
                         [ ! -d "wrappers" ] && echo "[ERROR] Папка wrappers не найдена!" && exit 1
-                        [ ! -f "${credJsonFile}" ] && echo "[ERROR] ${credJsonFile} не найден!" && exit 1
-                        echo "[OK] Все файлы на месте"
-                    """
+                        if [ -f wrappers/build-integrity-checkers.sh ]; then
+                          /bin/bash wrappers/build-integrity-checkers.sh
+                        fi
+                    '''
                     
                     withVaultSshCredentials(this) {
                         def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
                         echo '[INFO] Подключение под пользователем настроено (ожидается: ' + expectedSshUser + ')'
-                        
-                        // Генерируем лаунчеры
-                        writeFile file: 'prep_clone.sh', text: '''#!/bin/bash
+                        def parallelCopies = [:]
+                        deploymentPairs.each { pair ->
+                            def p = pair
+                            parallelCopies["copy-${p.server}"] = {
+                                sh """#!/bin/bash
 set -e
-
-# Автоматически генерируем лаунчеры
-if [ -f wrappers/build-integrity-checkers.sh ]; then
-  /bin/bash wrappers/build-integrity-checkers.sh
-fi
-'''
-
-                        // Создаем scp_script.sh для копирования в домашний каталог (БЕЗ sudo)
-                        writeFile file: 'scp_script.sh', text: '''#!/bin/bash
-set -e
-
-# 1. ТЕСТИРУЕМ SSH ПОДКЛЮЧЕНИЕ
-echo ""
-echo "[INFO] Тестируем SSH подключение к серверу..."
-
 SSH_OPTS="-q -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o TCPKeepAlive=yes -o LogLevel=ERROR"
+[ ! -f "${p.credJsonFile}" ] && echo "[ERROR] ${p.credJsonFile} не найден!" && exit 1
 
-if ssh $SSH_OPTS \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
-    "echo '[OK] SSH подключение успешно'" 2>/dev/null; then
-    echo "[OK] SSH подключение работает"
-else
-    echo "[ERROR] SSH подключение к серверу ''' + env.SERVER_ADDRESS_EFFECTIVE + ''' не удалось"
-    echo "[INFO] Проверьте доступность SSH сервиса и сетевое подключение"
-    exit 1
-fi
+echo "[INFO] [${p.server}] Тестируем SSH подключение..."
+ssh \$SSH_OPTS "${env.SSH_USER}@${p.server}" "echo '[OK] SSH подключение успешно'" 2>/dev/null
 
-# 2. ДИАГНОСТИКА И СОЗДАНИЕ ДИРЕКТОРИИ
-echo ""
-echo "[INFO] Проверка home директории пользователя..."
+echo "[INFO] [${p.server}] Создаем рабочую директорию ${env.DEPLOY_PATH}..."
+ssh \$SSH_OPTS "${env.SSH_USER}@${p.server}" "mkdir -p '${env.DEPLOY_PATH}'" 2>/dev/null
 
-# Проверяем существование home директории
-ssh $SSH_OPTS \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' << 'DIAG_EOF'
-set -e
-
-HOME_DIR="$HOME"
-echo "[INFO] HOME переменная: $HOME_DIR"
-
-# Проверяем существование home директории
-if [ ! -d "$HOME_DIR" ]; then
-    echo "[ERROR] Home директория $HOME_DIR не существует!"
-    echo "[INFO] Пользователь: $(whoami)"
-    echo "[INFO] UID/GID: $(id)"
-    echo "[ERROR] Необходимо создать home директорию для пользователя"
-    echo "[SOLUTION] Выполните на сервере: sudo mkhomedir_helper $(whoami)"
-    exit 1
-fi
-
-# Проверяем права на запись
-if [ ! -w "$HOME_DIR" ]; then
-    echo "[ERROR] Нет прав на запись в $HOME_DIR"
-    ls -ld "$HOME_DIR"
-    exit 1
-fi
-
-echo "[OK] Home директория существует и доступна для записи"
-DIAG_EOF
-
-# Создаем рабочую директорию
-echo ""
-echo "[INFO] Создание рабочей директории: ''' + env.DEPLOY_PATH + '''..."
-
-if ssh $SSH_OPTS \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
-    "mkdir -p ''' + env.DEPLOY_PATH + '''" 2>/dev/null; then
-    echo "[OK] Директория создана"
-else
-    echo "[ERROR] Не удалось создать директорию"
-    exit 1
-fi
-
-# 3. КОПИРУЕМ ФАЙЛЫ (БЕЗ sudo - в домашний каталог)
-echo ""
-echo "[INFO] Копирование файлов на сервер..."
-
-if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+echo "[INFO] [${p.server}] Копируем скрипт, wrappers и credentials..."
+scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     install-monitoring-stack.sh \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''':''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh 2>/dev/null; then
-    echo "[OK] Скрипт скопирован"
-else
-    echo "[ERROR] Не удалось скопировать скрипт"
-    exit 1
-fi
-
-if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
+    "${env.SSH_USER}@${p.server}:${env.DEPLOY_PATH}/install-monitoring-stack.sh" 2>/dev/null
+scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
     wrappers \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''':''' + env.DEPLOY_PATH + '''/ 2>/dev/null; then
-    echo "[OK] Wrappers скопированы"
-else
-    echo "[ERROR] Не удалось скопировать wrappers"
-    exit 1
-fi
-
-if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    ''' + credJsonFile + ''' \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''':''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' 2>/dev/null; then
-    echo "[OK] Credentials скопированы"
-else
-    echo "[ERROR] Не удалось скопировать credentials"
-    exit 1
-fi
-
-echo ""
-echo "[SUCCESS] Все файлы скопированы на сервер"
-'''
-
-                        // Создаем verify_script.sh
-                        writeFile file: 'verify_script.sh', text: '''#!/bin/bash
-set -e
-
-echo "[INFO] Проверка скопированных файлов..."
+    "${env.SSH_USER}@${p.server}:${env.DEPLOY_PATH}/" 2>/dev/null
+scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+    "${p.credJsonFile}" \
+    "${env.SSH_USER}@${p.server}:${env.DEPLOY_PATH}/${p.credJsonFile}" 2>/dev/null
 
 ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' 2>/dev/null << 'REMOTE_EOF'
-
-[ ! -f "''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh" ] && echo "[ERROR] Скрипт не найден!" && exit 1
-[ ! -d "''' + env.DEPLOY_PATH + '''/wrappers" ] && echo "[ERROR] Wrappers не найдены!" && exit 1
-[ ! -f "''' + env.DEPLOY_PATH + '''/''' + credJsonFile + '''" ] && echo "[ERROR] Credentials не найдены!" && exit 1
-
+    "${env.SSH_USER}@${p.server}" 2>/dev/null << 'REMOTE_EOF'
+[ ! -f "${env.DEPLOY_PATH}/install-monitoring-stack.sh" ] && echo "[ERROR] Скрипт не найден!" && exit 1
+[ ! -d "${env.DEPLOY_PATH}/wrappers" ] && echo "[ERROR] Wrappers не найдены!" && exit 1
+[ ! -f "${env.DEPLOY_PATH}/${p.credJsonFile}" ] && echo "[ERROR] Credentials не найдены!" && exit 1
 echo "[OK] Все файлы на месте"
 REMOTE_EOF
-'''
-                        sh 'chmod +x prep_clone.sh scp_script.sh verify_script.sh'
-                        
-                        sh './prep_clone.sh'
-                        
-                        // Retry логика
-                        def maxRetries = 3
-                        def retryDelay = 10
-                        def lastError = null
-                        
-                        for (def attempt = 1; attempt <= maxRetries; attempt++) {
-                            try {
-                                if (attempt > 1) echo "[INFO] Попытка $attempt из $maxRetries..."
-                                sh './scp_script.sh'
-                                lastError = null
-                                break
-                            } catch (Exception e) {
-                                lastError = e
-                                if (attempt < maxRetries) {
-                                    echo "[WARNING] Попытка не удалась, повтор через $retryDelay сек..."
-                                    sleep(time: retryDelay, unit: 'SECONDS')
-                                }
+echo "[SUCCESS] [${p.server}] Копирование завершено"
+"""
                             }
                         }
-                        
-                        if (lastError) {
-                            error("Ошибка копирования после $maxRetries попыток: ${lastError.message}")
-                        }
-                        
-                        sh './verify_script.sh'
-                        
-                        sh 'rm -f prep_clone.sh scp_script.sh verify_script.sh'
+                        parallel parallelCopies
                     }
-                    echo "[SUCCESS] Репозиторий успешно скопирован на сервер ${env.SERVER_ADDRESS_EFFECTIVE}"
+                    echo "[SUCCESS] Копирование завершено для всех серверов"
                 }
             }
         }
@@ -722,9 +657,9 @@ REMOTE_EOF
             steps {
                 script {
                     computeEnvironmentVariables()
-                    def credJsonFile = env.CRED_JSON_FILE
+                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     
-                    echo "[STEP] Запуск развертывания на удаленном сервере..."
+                    echo "[STEP] Запуск развертывания на удаленных серверах..."
                     echo "[INFO] Режим: БЕЗ SUDO (User Units Only)"
                     
                     // Восстанавливаем credentials из stash (если нужно)
@@ -734,113 +669,75 @@ REMOTE_EOF
                         string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
                     ]) {
                         withVaultSshCredentials(this) {
-                        def scriptTpl = '''#!/bin/bash
-ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "$SSH_USER"@__SERVER_ADDRESS__ RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
+                            def parallelDeploy = [:]
+                            deploymentPairs.each { pair ->
+                                def p = pair
+                                parallelDeploy["deploy-${p.server}"] = {
+                                    sh """#!/bin/bash
 set -e
-USERNAME=$(whoami)
-DEPLOY_DIR="__DEPLOY_PATH__"
-REMOTE_SCRIPT_PATH="$DEPLOY_DIR/install-monitoring-stack.sh"
+ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${env.SSH_USER}"@"${p.server}" RLM_TOKEN="$RLM_TOKEN" /bin/bash -s <<'REMOTE_EOF'
+set -e
+DEPLOY_DIR="${env.DEPLOY_PATH}"
+REMOTE_SCRIPT_PATH="\$DEPLOY_DIR/install-monitoring-stack.sh"
+CRED_JSON_FILE="${p.credJsonFile}"
+TARGET_NETAPP="${p.netapp}"
 
-if [ ! -f "$REMOTE_SCRIPT_PATH" ]; then
-    echo "[ERROR] Скрипт $REMOTE_SCRIPT_PATH не найден" && exit 1
+if [ ! -f "\$REMOTE_SCRIPT_PATH" ]; then
+  echo "[ERROR] Скрипт \$REMOTE_SCRIPT_PATH не найден" && exit 1
 fi
 
-cd "$DEPLOY_DIR"
-chmod +x "$REMOTE_SCRIPT_PATH"
-
-echo "[INFO] sha256sum $REMOTE_SCRIPT_PATH:"
-sha256sum "$REMOTE_SCRIPT_PATH" || echo "[WARNING] Не удалось вычислить sha256sum"
-
-echo "[INFO] Нормализация перевода строк (CRLF -> LF)..."
+cd "\$DEPLOY_DIR"
+chmod +x "\$REMOTE_SCRIPT_PATH"
 if command -v dos2unix >/dev/null 2>&1; then
-    dos2unix "$REMOTE_SCRIPT_PATH" || true
+  dos2unix "\$REMOTE_SCRIPT_PATH" || true
 else
-    sed -i 's/\r$//' "$REMOTE_SCRIPT_PATH" || true
+  sed -i 's/\\r\$//' "\$REMOTE_SCRIPT_PATH" || true
 fi
 
-# Извлекаем RPM URLs из файла credentials
-CRED_JSON_FILE="''' + credJsonFile + '''"
-RPM_GRAFANA=$(jq -r '.rpm_url.grafana // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_PROMETHEUS=$(jq -r '.rpm_url.prometheus // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_HARVEST=$(jq -r '.rpm_url.harvest // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
-RPM_NODE_EXPORTER=$(jq -r '.rpm_url.node_exporter // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_GRAFANA=\$(jq -r '.rpm_url.grafana // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_PROMETHEUS=\$(jq -r '.rpm_url.prometheus // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_HARVEST=\$(jq -r '.rpm_url.harvest // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_NODE_EXPORTER=\$(jq -r '.rpm_url.node_exporter // empty' "\$DEPLOY_DIR/\$CRED_JSON_FILE" 2>/dev/null || echo "")
 
-echo "[INFO] RPM URLs из Vault:"
-echo "  Grafana: $RPM_GRAFANA"
-echo "  Prometheus: $RPM_PROMETHEUS"
-echo "  Harvest: $RPM_HARVEST"
-echo "  Node Exporter: $RPM_NODE_EXPORTER"
-
-if [[ -z "$RPM_GRAFANA" || -z "$RPM_PROMETHEUS" || -z "$RPM_HARVEST" ]]; then
-    echo "[ERROR] Один или несколько RPM URLs пусты!"
-    echo "[ERROR] Содержимое $CRED_JSON_FILE:"
-    cat "$DEPLOY_DIR/$CRED_JSON_FILE" | jq '.' || cat "$DEPLOY_DIR/$CRED_JSON_FILE"
-    exit 1
+if [[ -z "\$RPM_GRAFANA" || -z "\$RPM_PROMETHEUS" || -z "\$RPM_HARVEST" ]]; then
+  echo "[ERROR] Один или несколько RPM URLs пусты для \$CRED_JSON_FILE"
+  exit 1
 fi
 
-if [[ -z "$RPM_NODE_EXPORTER" ]]; then
-    echo "[WARNING] RPM URL для node_exporter пустой. Пакет опциональный, продолжаем без него."
-fi
-
-echo "[INFO] Запуск скрипта (БЕЗ sudo - под CI-пользователем)..."
 env \
-  SEC_MAN_ADDR="__SEC_MAN_ADDR__" \
-  NAMESPACE_CI="__NAMESPACE_CI__" \
-  RLM_API_URL="__RLM_API_URL__" \
-  RLM_TOKEN="$RLM_TOKEN" \
-  NETAPP_API_ADDR="__NETAPP_API_ADDR__" \
-  GRAFANA_PORT="__GRAFANA_PORT__" \
-  PROMETHEUS_PORT="__PROMETHEUS_PORT__" \
-  RPM_URL_KV="__RPM_URL_KV__" \
-  NETAPP_SSH_KV="__NETAPP_SSH_KV__" \
-  GRAFANA_WEB_KV="__GRAFANA_WEB_KV__" \
-  SBERCA_CERT_KV="__SBERCA_CERT_KV__" \
-  ADMIN_EMAIL="__ADMIN_EMAIL__" \
-  VICTORIA_METRICS_REMOTE_WRITE_URL="__VICTORIA_METRICS_REMOTE_WRITE_URL__" \
-  RENEW_CERTIFICATES_ONLY="__RENEW_CERTIFICATES_ONLY__" \
-  USE_SIMPLIFIED_CERT_FLOW="__USE_SIMPLIFIED_CERT_FLOW__" \
-  SKIP_RPM_INSTALL="__SKIP_RPM_INSTALL__" \
-  SKIP_IPTABLES="__SKIP_IPTABLES__" \
-  RUN_SERVICES_AS_MON_CI="__RUN_SERVICES_AS_MON_CI__" \
-  GRAFANA_URL="$RPM_GRAFANA" \
-  PROMETHEUS_URL="$RPM_PROMETHEUS" \
-  HARVEST_URL="$RPM_HARVEST" \
-  NODE_EXPORTER_URL="$RPM_NODE_EXPORTER" \
-  DEPLOY_VERSION="__DEPLOY_VERSION__" \
-  DEPLOY_GIT_COMMIT="__DEPLOY_GIT_COMMIT__" \
-  DEPLOY_BUILD_DATE="__DEPLOY_BUILD_DATE__" \
-  WRAPPERS_DIR="$DEPLOY_DIR/wrappers" \
-  CRED_JSON_PATH="$DEPLOY_DIR/$CRED_JSON_FILE" \
-  /bin/bash "$REMOTE_SCRIPT_PATH"
+  SEC_MAN_ADDR="${params.SEC_MAN_ADDR ?: ''}" \
+  NAMESPACE_CI="${params.NAMESPACE_CI ?: ''}" \
+  RLM_API_URL="${params.RLM_API_URL ?: ''}" \
+  RLM_TOKEN="\$RLM_TOKEN" \
+  NETAPP_API_ADDR="\$TARGET_NETAPP" \
+  GRAFANA_PORT="${params.GRAFANA_PORT ?: '3000'}" \
+  PROMETHEUS_PORT="${params.PROMETHEUS_PORT ?: '9090'}" \
+  RPM_URL_KV="${params.RPM_URL_KV ?: ''}" \
+  NETAPP_SSH_KV="${params.NETAPP_SSH_KV ?: ''}" \
+  GRAFANA_WEB_KV="${params.GRAFANA_WEB_KV ?: ''}" \
+  SBERCA_CERT_KV="${params.SBERCA_CERT_KV ?: ''}" \
+  ADMIN_EMAIL="${params.ADMIN_EMAIL ?: ''}" \
+  VICTORIA_METRICS_REMOTE_WRITE_URL="${params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}" \
+  RENEW_CERTIFICATES_ONLY="${params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}" \
+  USE_SIMPLIFIED_CERT_FLOW="${params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}" \
+  SKIP_RPM_INSTALL="${params.SKIP_RPM_INSTALL ? 'true' : 'false'}" \
+  SKIP_IPTABLES="${params.SKIP_IPTABLES ? 'true' : 'false'}" \
+  RUN_SERVICES_AS_MON_CI="${params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}" \
+  GRAFANA_URL="\$RPM_GRAFANA" \
+  PROMETHEUS_URL="\$RPM_PROMETHEUS" \
+  HARVEST_URL="\$RPM_HARVEST" \
+  NODE_EXPORTER_URL="\$RPM_NODE_EXPORTER" \
+  DEPLOY_VERSION="${env.VERSION_SHORT ?: 'unknown'}" \
+  DEPLOY_GIT_COMMIT="${env.VERSION_GIT_COMMIT ?: 'unknown'}" \
+  DEPLOY_BUILD_DATE="${env.VERSION_BUILD_DATE ?: 'unknown'}" \
+  WRAPPERS_DIR="\$DEPLOY_DIR/wrappers" \
+  CRED_JSON_PATH="\$DEPLOY_DIR/\$CRED_JSON_FILE" \
+  /bin/bash "\$REMOTE_SCRIPT_PATH"
 REMOTE_EOF
-'''
-                        def finalScript = scriptTpl
-                            .replace('__SERVER_ADDRESS__',     env.SERVER_ADDRESS_EFFECTIVE ?: '')
-                            .replace('__DEPLOY_PATH__',        env.DEPLOY_PATH           ?: '')
-                            .replace('__SEC_MAN_ADDR__',       params.SEC_MAN_ADDR       ?: '')
-                            .replace('__NAMESPACE_CI__',       params.NAMESPACE_CI       ?: '')
-                            .replace('__RLM_API_URL__',        params.RLM_API_URL        ?: '')
-                            .replace('__NETAPP_API_ADDR__',    env.NETAPP_API_ADDR_EFFECTIVE ?: '')
-                            .replace('__GRAFANA_PORT__',       params.GRAFANA_PORT       ?: '3000')
-                            .replace('__PROMETHEUS_PORT__',    params.PROMETHEUS_PORT    ?: '9090')
-                            .replace('__RPM_URL_KV__',         params.RPM_URL_KV         ?: '')
-                            .replace('__NETAPP_SSH_KV__',      params.NETAPP_SSH_KV      ?: '')
-                            .replace('__GRAFANA_WEB_KV__',     params.GRAFANA_WEB_KV     ?: '')
-                            .replace('__SBERCA_CERT_KV__',     params.SBERCA_CERT_KV     ?: '')
-                            .replace('__ADMIN_EMAIL__',               params.ADMIN_EMAIL             ?: '')
-                            .replace('__VICTORIA_METRICS_REMOTE_WRITE_URL__', params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: '')
-                            .replace('__RENEW_CERTIFICATES_ONLY__',  params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')
-                            .replace('__USE_SIMPLIFIED_CERT_FLOW__', params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')
-                            .replace('__SKIP_RPM_INSTALL__',         params.SKIP_RPM_INSTALL        ? 'true' : 'false')
-                            .replace('__SKIP_IPTABLES__',            params.SKIP_IPTABLES           ? 'true' : 'false')
-                            .replace('__RUN_SERVICES_AS_MON_CI__',   params.RUN_SERVICES_AS_MON_CI  ? 'true' : 'false')
-                            .replace('__DEPLOY_VERSION__',     env.VERSION_SHORT         ?: 'unknown')
-                            .replace('__DEPLOY_GIT_COMMIT__',  env.VERSION_GIT_COMMIT    ?: 'unknown')
-                            .replace('__DEPLOY_BUILD_DATE__',  env.VERSION_BUILD_DATE    ?: 'unknown')
-                        writeFile file: 'deploy_script.sh', text: finalScript
-                        sh 'chmod +x deploy_script.sh'
-                        sh './deploy_script.sh'
-                        sh 'rm -f deploy_script.sh'
+"""
+                                }
+                            }
+                            parallel parallelDeploy
                         }
                     }
                 }
@@ -855,14 +752,19 @@ REMOTE_EOF
             steps {
                 script {
                     computeEnvironmentVariables()
-                    def credJsonFile = env.CRED_JSON_FILE
+                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     
                     echo "[STEP] Проверка результатов развертывания (User Units)..."
                     withVaultSshCredentials(this) {
-                        writeFile file: 'check_results.sh', text: '''#!/bin/bash
+                        def parallelChecks = [:]
+                        deploymentPairs.each { pair ->
+                            def p = pair
+                            parallelChecks["check-${p.server}"] = {
+                                writeFile file: "check_results_${p.serverPrefixSafe}.sh", text: '''#!/bin/bash
 ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' 2>/dev/null << 'ENDSSH'
+    "$SSH_USER"@''' + p.server + ''' 2>/dev/null << 'ENDSSH'
 echo "================================================"
+echo "СЕРВЕР: ''' + p.server + '''"
 echo "ПРОВЕРКА СЕРВИСОВ (USER UNITS):"
 echo "================================================"
 
@@ -908,11 +810,13 @@ ss -tln | grep -q ":12995 " && echo "[OK] Порт 12995 (Harvest-Unix) откр
 exit 0
 ENDSSH
 '''
-                        sh 'chmod +x check_results.sh'
-                        def result
-                        result = sh(script: './check_results.sh', returnStdout: true).trim()
-                        sh 'rm -f check_results.sh'
-                        echo result
+                                sh "chmod +x check_results_${p.serverPrefixSafe}.sh"
+                                def result = sh(script: "./check_results_${p.serverPrefixSafe}.sh", returnStdout: true).trim()
+                                sh "rm -f check_results_${p.serverPrefixSafe}.sh"
+                                echo result
+                            }
+                        }
+                        parallel parallelChecks
                     }
                 }
             }
@@ -926,19 +830,23 @@ ENDSSH
             steps {
                 script {
                     computeEnvironmentVariables()
-                    def credJsonFile = env.CRED_JSON_FILE
+                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     
                     echo "[STEP] Очистка временных файлов..."
-                    sh "rm -rf ${credJsonFile} temp_data_cred.json temp_data_cred_*.json"
+                    sh "rm -rf temp_data_cred.json temp_data_cred_*.json"
                     withVaultSshCredentials(this) {
-                        writeFile file: 'cleanup_script.sh', text: '''#!/bin/bash
+                        def parallelCleanup = [:]
+                        deploymentPairs.each { pair ->
+                            def p = pair
+                            parallelCleanup["cleanup-${p.server}"] = {
+                                sh """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
-    "rm -rf ''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' ''' + env.DEPLOY_PATH + '''/temp_data_cred.json ''' + env.DEPLOY_PATH + '''/temp_data_cred_*.json" 2>/dev/null || true
-'''
-                        sh 'chmod +x cleanup_script.sh'
-                        sh './cleanup_script.sh'
-                        sh 'rm -f cleanup_script.sh'
+    "${env.SSH_USER}"@"${p.server}" \
+    "rm -rf ${env.DEPLOY_PATH}/${p.credJsonFile} ${env.DEPLOY_PATH}/temp_data_cred.json ${env.DEPLOY_PATH}/temp_data_cred_*.json" 2>/dev/null || true
+"""
+                            }
+                        }
+                        parallel parallelCleanup
                     }
                     echo "[SUCCESS] Очистка завершена"
                 }
