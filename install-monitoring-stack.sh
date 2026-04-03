@@ -40,6 +40,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${SKIP_IPTABLES:=true}"
 : "${RUN_SERVICES_AS_MON_CI:=true}"
 : "${FORCE_FRESH_INSTALL:=true}"
+: "${ALLOW_LINGER_FAILURE:=true}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -1384,9 +1385,14 @@ ensure_monitoring_users_in_as_admin() {
         if [[ "$mon_ci_linger_after" == "yes" || -f "/var/lib/systemd/linger/$mon_ci_user" ]]; then
             print_success "✅ Linger подтвержден для ${mon_ci_user}"
         else
-            print_error "❌ Не удалось включить linger для ${mon_ci_user}"
-            print_error "Проверьте права на linuxadm-enable-linger и sudo -n для текущего пользователя"
-            exit 1
+            if [[ "${ALLOW_LINGER_FAILURE:-true}" == "true" ]]; then
+                print_warning "❗ Не удалось включить linger для ${mon_ci_user}, продолжаем из-за ALLOW_LINGER_FAILURE=true"
+                print_warning "⚠️ User-юниты могут остановиться после logout пользователя ${mon_ci_user}"
+            else
+                print_error "❌ Не удалось включить linger для ${mon_ci_user}"
+                print_error "Проверьте права на linuxadm-enable-linger и sudo -n для текущего пользователя"
+                exit 1
+            fi
         fi
     fi
 }
@@ -3631,7 +3637,11 @@ create_rlm_install_tasks() {
         print_info "📦 Устанавливаемый RPM: $url"
 
         # Мониторинг статуса задачи RLM для установки RPM
+        # ВРЕМЕННО: для Node Exporter сокращаем ожидание до 2 попыток.
         local max_attempts=120
+        if [[ "$name" == "Node Exporter" ]]; then
+            max_attempts=2
+        fi
         local attempt=1
         local start_ts
         local interval_sec=10

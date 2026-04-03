@@ -30,7 +30,7 @@ validate_json_file() {
         "$HOME"  # Для Secure Edition: файлы в домашней директории пользователя
     )
     
-    # Разрешенные имена файлов
+    # Разрешенные имена файлов (включая per-target формат temp_data_cred_<poller>_<server>.json)
     local allowed_names=(
         "data_sec.json"
         "temp_data_cred.json"
@@ -57,6 +57,9 @@ validate_json_file() {
             break
         fi
     done
+    if [[ "$name_allowed" == false && "$file_name" == temp_data_cred_*.json ]]; then
+        name_allowed=true
+    fi
     
     if [[ "$dir_allowed" == false ]]; then
         fail "JSON файл не в разрешенной директории: $file_dir (разрешены: ${allowed_dirs[*]})"

@@ -304,6 +304,8 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
+                    def allServerNamesForSberca = deploymentPairs.collect { it.server }.join(',')
+                    def primaryServerNameForSberca = deploymentPairs[0].server
                     
                     echo "[STEP] Получение секретов из Vault..."
                     
@@ -403,10 +405,10 @@ pipeline {
                                     }
 
                                     def certRequestPayload = groovy.json.JsonOutput.toJson([
-                                        common_name: (env.SERVER_ADDRESS_EFFECTIVE ?: '').trim(),
+                                        common_name: (primaryServerNameForSberca ?: '').trim(),
                                         email: (params.ADMIN_EMAIL?.trim() ?: 'noreply@sberbank.ru'),
                                         format: 'pem',
-                                        alt_names: (env.SERVER_ADDRESS_EFFECTIVE ?: '').trim()
+                                        alt_names: (allServerNamesForSberca ?: '').trim()
                                     ])
                                     writeFile file: 'sberca_request_payload.json', text: certRequestPayload
                                     writeFile file: 'sberca_api_path.txt', text: apiPath
