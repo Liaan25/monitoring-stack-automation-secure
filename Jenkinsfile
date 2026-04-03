@@ -22,6 +22,8 @@ def computeEnvironmentVariables() {
 
     env.NETAPP_POLLER_NAME = netappPoller
     env.CRED_JSON_FILE = "temp_data_cred_${netappPollerSafe}_${serverPrefixSafe}.json"
+    env.SERVER_ADDRESS_EFFECTIVE = serverAddr.tokenize(';') ? serverAddr.tokenize(';')[0].trim() : ''
+    env.NETAPP_API_ADDR_EFFECTIVE = netappAddr.tokenize(';') ? netappAddr.tokenize(';')[0].trim() : ''
 }
 
 def withVaultSshCredentials(scriptContext, Closure body) {
@@ -207,9 +209,9 @@ pipeline {
                     }
                     
                     echo "[OK] Параметры проверены"
-                    echo "[INFO] Сервер: ${params.SERVER_ADDRESS}"
+                    echo "[INFO] Сервер: ${env.SERVER_ADDRESS_EFFECTIVE}"
                     echo "[INFO] KAE: ${env.KAE}"
-                    echo "[INFO] Подключение: ${env.DEPLOY_USER}@${params.SERVER_ADDRESS}"
+                    echo "[INFO] Подключение: ${env.DEPLOY_USER}@${env.SERVER_ADDRESS_EFFECTIVE}"
                     echo "[SECURITY] Архитектура: User Units Only, Min Privileges"
                 }
             }
@@ -248,10 +250,10 @@ pipeline {
                     echo "================================================"
                     echo "=== ДИАГНОСТИКА СЕТИ ==="
                     echo "================================================"
-                    echo "[INFO] Проверка подключения к ${params.SERVER_ADDRESS}..."
+                    echo "[INFO] Проверка подключения к ${env.SERVER_ADDRESS_EFFECTIVE}..."
                     
                     sh """
-                        ping -c 3 ${params.SERVER_ADDRESS} || echo "[WARNING] Ping не прошел, но SSH может работать"
+                        ping -c 3 ${env.SERVER_ADDRESS_EFFECTIVE} || echo "[WARNING] Ping не прошел, но SSH может работать"
                     """
                 }
             }
@@ -354,10 +356,10 @@ pipeline {
                                     }
 
                                     def certRequestPayload = groovy.json.JsonOutput.toJson([
-                                        common_name: (params.SERVER_ADDRESS ?: '').trim(),
+                                        common_name: (env.SERVER_ADDRESS_EFFECTIVE ?: '').trim(),
                                         email: (params.ADMIN_EMAIL?.trim() ?: 'noreply@sberbank.ru'),
                                         format: 'pem',
-                                        alt_names: (params.SERVER_ADDRESS ?: '').trim()
+                                        alt_names: (env.SERVER_ADDRESS_EFFECTIVE ?: '').trim()
                                     ])
                                     writeFile file: 'sberca_request_payload.json', text: certRequestPayload
                                     writeFile file: 'sberca_api_path.txt', text: apiPath
@@ -531,32 +533,7 @@ rm -f "${FETCH_RESP_FILE}"
                     computeEnvironmentVariables()
                     def credJsonFile = env.CRED_JSON_FILE
                     
-                    // КРИТИЧЕСКИ ВАЖНО: Принудительно обновляем репозиторий
-                    echo "[INFO] Обновление кода из Git (принудительно)..."
-                    
-                    // Используем checkout с опциями для принудительной очистки
-                    checkout([
-                        $class: 'GitSCM',
-                        branches: scm.branches,
-                        extensions: [
-                            [$class: 'CleanBeforeCheckout'],
-                            [$class: 'CleanCheckout']
-                        ],
-                        userRemoteConfigs: scm.userRemoteConfigs
-                    ])
-                    
-                    // Проверяем версию
-                    echo "[INFO] Текущая версия репозитория:"
-                    sh '''
-                        echo "========================================="
-                        echo "ВЕРИФИКАЦИЯ ВЕРСИИ КОДА"
-                        echo "========================================="
-                        git log -1 --oneline
-                        echo ""
-                        echo "[INFO] Последние 5 коммитов:"
-                        git log --oneline -5
-                        echo "========================================="
-                    '''
+                    echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
                     
                     // Восстанавливаем файл с credentials из stash
                     unstash 'vault-credentials'
@@ -595,11 +572,11 @@ echo "[INFO] Тестируем SSH подключение к серверу..."
 SSH_OPTS="-q -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o TCPKeepAlive=yes -o LogLevel=ERROR"
 
 if ssh $SSH_OPTS \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' \
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
     "echo '[OK] SSH подключение успешно'" 2>/dev/null; then
     echo "[OK] SSH подключение работает"
 else
-    echo "[ERROR] SSH подключение к серверу ''' + params.SERVER_ADDRESS + ''' не удалось"
+    echo "[ERROR] SSH подключение к серверу ''' + env.SERVER_ADDRESS_EFFECTIVE + ''' не удалось"
     echo "[INFO] Проверьте доступность SSH сервиса и сетевое подключение"
     exit 1
 fi
@@ -610,7 +587,7 @@ echo "[INFO] Проверка home директории пользователя
 
 # Проверяем существование home директории
 ssh $SSH_OPTS \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' << 'DIAG_EOF'
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' << 'DIAG_EOF'
 set -e
 
 HOME_DIR="$HOME"
@@ -641,7 +618,7 @@ echo ""
 echo "[INFO] Создание рабочей директории: ''' + env.DEPLOY_PATH + '''..."
 
 if ssh $SSH_OPTS \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' \
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
     "mkdir -p ''' + env.DEPLOY_PATH + '''" 2>/dev/null; then
     echo "[OK] Директория создана"
 else
@@ -655,7 +632,7 @@ echo "[INFO] Копирование файлов на сервер..."
 
 if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     install-monitoring-stack.sh \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh 2>/dev/null; then
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''':''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh 2>/dev/null; then
     echo "[OK] Скрипт скопирован"
 else
     echo "[ERROR] Не удалось скопировать скрипт"
@@ -664,7 +641,7 @@ fi
 
 if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
     wrappers \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/ 2>/dev/null; then
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''':''' + env.DEPLOY_PATH + '''/ 2>/dev/null; then
     echo "[OK] Wrappers скопированы"
 else
     echo "[ERROR] Не удалось скопировать wrappers"
@@ -673,7 +650,7 @@ fi
 
 if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     ''' + credJsonFile + ''' \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' 2>/dev/null; then
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''':''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' 2>/dev/null; then
     echo "[OK] Credentials скопированы"
 else
     echo "[ERROR] Не удалось скопировать credentials"
@@ -691,7 +668,7 @@ set -e
 echo "[INFO] Проверка скопированных файлов..."
 
 ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''' 2>/dev/null << 'REMOTE_EOF'
+    "''' + env.SSH_USER + '''"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' 2>/dev/null << 'REMOTE_EOF'
 
 [ ! -f "''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh" ] && echo "[ERROR] Скрипт не найден!" && exit 1
 [ ! -d "''' + env.DEPLOY_PATH + '''/wrappers" ] && echo "[ERROR] Wrappers не найдены!" && exit 1
@@ -732,7 +709,7 @@ REMOTE_EOF
                         
                         sh 'rm -f prep_clone.sh scp_script.sh verify_script.sh'
                     }
-                    echo "[SUCCESS] Репозиторий успешно скопирован на сервер ${params.SERVER_ADDRESS}"
+                    echo "[SUCCESS] Репозиторий успешно скопирован на сервер ${env.SERVER_ADDRESS_EFFECTIVE}"
                 }
             }
         }
@@ -838,12 +815,12 @@ env \
 REMOTE_EOF
 '''
                         def finalScript = scriptTpl
-                            .replace('__SERVER_ADDRESS__',     params.SERVER_ADDRESS     ?: '')
+                            .replace('__SERVER_ADDRESS__',     env.SERVER_ADDRESS_EFFECTIVE ?: '')
                             .replace('__DEPLOY_PATH__',        env.DEPLOY_PATH           ?: '')
                             .replace('__SEC_MAN_ADDR__',       params.SEC_MAN_ADDR       ?: '')
                             .replace('__NAMESPACE_CI__',       params.NAMESPACE_CI       ?: '')
                             .replace('__RLM_API_URL__',        params.RLM_API_URL        ?: '')
-                            .replace('__NETAPP_API_ADDR__',    params.NETAPP_API_ADDR    ?: '')
+                            .replace('__NETAPP_API_ADDR__',    env.NETAPP_API_ADDR_EFFECTIVE ?: '')
                             .replace('__GRAFANA_PORT__',       params.GRAFANA_PORT       ?: '3000')
                             .replace('__PROMETHEUS_PORT__',    params.PROMETHEUS_PORT    ?: '9090')
                             .replace('__RPM_URL_KV__',         params.RPM_URL_KV         ?: '')
@@ -884,7 +861,7 @@ REMOTE_EOF
                     withVaultSshCredentials(this) {
                         writeFile file: 'check_results.sh', text: '''#!/bin/bash
 ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' 2>/dev/null << 'ENDSSH'
+    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' 2>/dev/null << 'ENDSSH'
 echo "================================================"
 echo "ПРОВЕРКА СЕРВИСОВ (USER UNITS):"
 echo "================================================"
@@ -949,13 +926,14 @@ ENDSSH
             steps {
                 script {
                     computeEnvironmentVariables()
+                    def credJsonFile = env.CRED_JSON_FILE
                     
                     echo "[STEP] Очистка временных файлов..."
                     sh "rm -rf ${credJsonFile} temp_data_cred.json temp_data_cred_*.json"
                     withVaultSshCredentials(this) {
                         writeFile file: 'cleanup_script.sh', text: '''#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
+    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
     "rm -rf ''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' ''' + env.DEPLOY_PATH + '''/temp_data_cred.json ''' + env.DEPLOY_PATH + '''/temp_data_cred_*.json" 2>/dev/null || true
 '''
                         sh 'chmod +x cleanup_script.sh'
@@ -980,22 +958,22 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                     withVaultSshCredentials(this) {
                         writeFile file: 'get_domain.sh', text: '''#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
-    "nslookup ''' + params.SERVER_ADDRESS + ''' 2>/dev/null | grep 'name =' | awk '{print \\$4}' | sed 's/\\.$//' || echo ''" 2>/dev/null
+    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
+    "nslookup ''' + env.SERVER_ADDRESS_EFFECTIVE + ''' 2>/dev/null | grep 'name =' | awk '{print \\$4}' | sed 's/\\.$//' || echo ''" 2>/dev/null
 '''
                         sh 'chmod +x get_domain.sh'
                         domainName = sh(script: './get_domain.sh', returnStdout: true).trim()
                         sh 'rm -f get_domain.sh'
                     }
                     if (domainName == '') {
-                        domainName = params.SERVER_ADDRESS
+                        domainName = env.SERVER_ADDRESS_EFFECTIVE
                     }
                     def serverIp = ''
                     withVaultSshCredentials(this) {
                         writeFile file: 'get_ip.sh', text: '''#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
-    "hostname -I | awk '{print \\$1}' || echo ''' + (params.SERVER_ADDRESS ?: '') + '''" 2>/dev/null
+    "$SSH_USER"@''' + env.SERVER_ADDRESS_EFFECTIVE + ''' \
+    "hostname -I | awk '{print \\$1}' || echo ''' + (env.SERVER_ADDRESS_EFFECTIVE ?: '') + '''" 2>/dev/null
 '''
                         sh 'chmod +x get_ip.sh'
                         serverIp = sh(script: './get_ip.sh', returnStdout: true).trim()
