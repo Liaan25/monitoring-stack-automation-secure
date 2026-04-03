@@ -35,6 +35,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${GRAFANA_PORT:=}"
 : "${PROMETHEUS_PORT:=}"
 : "${NETAPP_POLLER_NAME:=}"
+: "${CRED_JSON_PATH:=}"
 : "${USE_SIMPLIFIED_CERT_FLOW:=true}"
 : "${SKIP_IPTABLES:=true}"
 : "${RUN_SERVICES_AS_MON_CI:=true}"
@@ -75,7 +76,7 @@ VAULT_AGENT_HCL="${VAULT_CONF_DIR}/agent.hcl"
 VAULT_ROLE_ID_FILE="${VAULT_CONF_DIR}/role_id.txt"
 VAULT_SECRET_ID_FILE="${VAULT_CONF_DIR}/secret_id.txt"
 VAULT_DATA_CRED_JS="${VAULT_CONF_DIR}/data_cred.js"
-LOCAL_CRED_JSON="/tmp/temp_data_cred.json"
+LOCAL_CRED_JSON="${CRED_JSON_PATH:-/tmp/temp_data_cred.json}"
 
 # URLs для загрузки пакетов (берутся из параметров Jenkins)
 PROMETHEUS_URL="${PROMETHEUS_URL:-}"
@@ -2011,7 +2012,17 @@ setup_vault_config() {
    mkdir -p "$VAULT_CONF_DIR" "$VAULT_LOG_DIR" "$VAULT_CERTS_DIR"
     # Ищем временный JSON с cred в известных местах (учитываем запуск под sudo)
    local cred_json_path=""
-   for candidate in "$LOCAL_CRED_JSON" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/home/${SUDO_USER:-}/temp_data_cred.json" "/tmp/temp_data_cred.json"; do
+   for candidate in \
+       "${CRED_JSON_PATH:-}" \
+       "$LOCAL_CRED_JSON" \
+       "$PWD/temp_data_cred.json" \
+       "$PWD"/temp_data_cred_*.json \
+       "$(dirname "$0")/temp_data_cred.json" \
+       "$(dirname "$0")"/temp_data_cred_*.json \
+       "/home/${SUDO_USER:-}/temp_data_cred.json" \
+       "/home/${SUDO_USER:-}"/temp_data_cred_*.json \
+       "/tmp/temp_data_cred.json" \
+       "/tmp"/temp_data_cred_*.json; do
        if [[ -n "$candidate" && -f "$candidate" ]]; then
            cred_json_path="$candidate"
            break
@@ -4233,7 +4244,7 @@ global:
   scrape_timeout: 30s
 
 scrape_configs:
-  - job_name: 'prometheus'
+  - job_name: 'prometheus-${NETAPP_POLLER_NAME}'
     scheme: https
     tls_config:
       cert_file: ${PROMETHEUS_USER_CERTS_DIR}/server.crt
@@ -4245,13 +4256,13 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 60s
 
-  - job_name: 'harvest-unix'
+  - job_name: 'harvest-${NETAPP_POLLER_NAME}'
     static_configs:
       - targets: ['localhost:${HARVEST_UNIX_PORT}']
     metrics_path: /metrics
     scrape_interval: 30s
 
-  - job_name: 'harvest-netapp-https'
+  - job_name: 'harvest-${NETAPP_POLLER_NAME}'
     scheme: https
     tls_config:
       cert_file: ${PROMETHEUS_USER_CERTS_DIR}/server.crt
@@ -4905,7 +4916,7 @@ setup_grafana_datasource_and_dashboards() {
     else
         print_error "Файл с учетными данными не найден (проверены temp_data_cred.json и legacy data_sec.json)"
         print_info "Поиск альтернативных файлов..."
-        find /opt/vault "$HOME" /tmp -maxdepth 4 -type f \( -name "data_sec.json" -o -name "temp_data_cred.json" \) 2>/dev/null | head -10
+        find /opt/vault "$HOME" /tmp -maxdepth 4 -type f \( -name "data_sec.json" -o -name "temp_data_cred.json" -o -name "temp_data_cred_*.json" \) 2>/dev/null | head -10
         return 1
     fi
     
@@ -7239,7 +7250,17 @@ get_certificates_from_jenkins() {
     
     # Проверяем наличие temp_data_cred.json
     local cred_json_path=""
-    for candidate in "$LOCAL_CRED_JSON" "$PWD/temp_data_cred.json" "$(dirname "$0")/temp_data_cred.json" "/home/${SUDO_USER:-$(whoami)}/temp_data_cred.json" "$HOME/monitoring-deployment/temp_data_cred.json"; do
+    for candidate in \
+        "${CRED_JSON_PATH:-}" \
+        "$LOCAL_CRED_JSON" \
+        "$PWD/temp_data_cred.json" \
+        "$PWD"/temp_data_cred_*.json \
+        "$(dirname "$0")/temp_data_cred.json" \
+        "$(dirname "$0")"/temp_data_cred_*.json \
+        "/home/${SUDO_USER:-$(whoami)}/temp_data_cred.json" \
+        "/home/${SUDO_USER:-$(whoami)}"/temp_data_cred_*.json \
+        "$HOME/monitoring-deployment/temp_data_cred.json" \
+        "$HOME/monitoring-deployment"/temp_data_cred_*.json; do
         if [[ -n "$candidate" && -f "$candidate" ]]; then
             cred_json_path="$candidate"
             break

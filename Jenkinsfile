@@ -11,6 +11,17 @@ def computeEnvironmentVariables() {
         env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
         env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
     }
+    def netappAddr = params.NETAPP_API_ADDR?.trim() ?: ''
+    def netappHost = netappAddr.tokenize('.') ? netappAddr.tokenize('.')[0] : ''
+    def netappPoller = netappHost ? (netappHost.substring(0, 1).toUpperCase() + netappHost.substring(1).toLowerCase()) : 'Unknown'
+    def netappPollerSafe = netappPoller.replaceAll(/[^A-Za-z0-9_-]/, '_')
+
+    def serverAddr = params.SERVER_ADDRESS?.trim() ?: ''
+    def serverPrefix = serverAddr.tokenize('.') ? serverAddr.tokenize('.')[0] : 'server'
+    def serverPrefixSafe = serverPrefix.replaceAll(/[^A-Za-z0-9_-]/, '_')
+
+    env.NETAPP_POLLER_NAME = netappPoller
+    env.CRED_JSON_FILE = "temp_data_cred_${netappPollerSafe}_${serverPrefixSafe}.json"
 }
 
 def withVaultSshCredentials(scriptContext, Closure body) {
@@ -158,7 +169,7 @@ pipeline {
                     sh '''
                         # Удаляем старые временные файлы
                         rm -f prep_clone*.sh scp_script*.sh verify_script*.sh deploy_script*.sh check_results*.sh cleanup_script*.sh get_domain*.sh get_ip*.sh 2>/dev/null || true
-                        rm -f temp_data_cred.json 2>/dev/null || true
+                        rm -f temp_data_cred*.json 2>/dev/null || true
                     '''
                     echo "[SUCCESS] Workspace очищен"
                 }
@@ -292,7 +303,7 @@ pipeline {
                             "grafana_web": [user: '', pass: ''],
                             "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
                         ]
-                        writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(emptyData)
+                        writeFile file: env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(emptyData)
                     } else {
                         try {
                             // ВАЖНО: Используем withVault() плагин (как в v3.x), а не withCredentials()
@@ -476,8 +487,9 @@ rm -f "${FETCH_RESP_FILE}"
                                     ]
                                 ]
                                 
-                                writeFile file: 'temp_data_cred.json', text: groovy.json.JsonOutput.toJson(data)
-                                echo "[INFO] certificates in temp_data_cred.json: " +
+                                writeFile file: env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(data)
+                                echo "[INFO] credentials file: ${env.CRED_JSON_FILE}"
+                                echo "[INFO] certificates in ${env.CRED_JSON_FILE}: " +
                                      "server_bundle_pem=${serverBundlePem ? 'yes' : 'no'}, " +
                                      "ca_chain_crt=${caChainCrt ? 'yes' : 'no'}, " +
                                      "grafana_client_pem=${grafanaClientPem ? 'yes' : 'no'}"
@@ -489,16 +501,16 @@ rm -f "${FETCH_RESP_FILE}"
                     }
                     
                     // Проверка файла
-                    sh '''
-                        [ ! -f "temp_data_cred.json" ] && echo "[ERROR] Файл не создан!" && exit 1
-                        
+                    sh """#!/bin/bash
+                        [ ! -f "${env.CRED_JSON_FILE}" ] && echo "[ERROR] Файл ${env.CRED_JSON_FILE} не создан!" && exit 1
+
                         if command -v jq >/dev/null 2>&1; then
-                            jq empty temp_data_cred.json 2>/dev/null || { echo "[ERROR] Невалидный JSON!"; exit 1; }
+                            jq empty "${env.CRED_JSON_FILE}" 2>/dev/null || { echo "[ERROR] Невалидный JSON: ${env.CRED_JSON_FILE}!"; exit 1; }
                         fi
-                    '''
+                    """
                     
                     // Сохраняем для CDL этапа
-                    stash name: 'vault-credentials', includes: 'temp_data_cred.json'
+                    stash name: 'vault-credentials', includes: env.CRED_JSON_FILE
                     
                     echo "[SUCCESS] Данные из Vault получены"
                 }
@@ -517,6 +529,7 @@ rm -f "${FETCH_RESP_FILE}"
             steps {
                 script {
                     computeEnvironmentVariables()
+                    def credJsonFile = env.CRED_JSON_FILE
                     
                     // КРИТИЧЕСКИ ВАЖНО: Принудительно обновляем репозиторий
                     echo "[INFO] Обновление кода из Git (принудительно)..."
@@ -549,13 +562,13 @@ rm -f "${FETCH_RESP_FILE}"
                     unstash 'vault-credentials'
                     
                     echo "[STEP] Копирование скрипта и файлов на сервер..."
-                    sh '''
+                    sh """#!/bin/bash
                         # Проверка необходимых файлов
                         [ ! -f "install-monitoring-stack.sh" ] && echo "[ERROR] install-monitoring-stack.sh не найден!" && exit 1
                         [ ! -d "wrappers" ] && echo "[ERROR] Папка wrappers не найдена!" && exit 1
-                        [ ! -f "temp_data_cred.json" ] && echo "[ERROR] temp_data_cred.json не найден!" && exit 1
+                        [ ! -f "${credJsonFile}" ] && echo "[ERROR] ${credJsonFile} не найден!" && exit 1
                         echo "[OK] Все файлы на месте"
-                    '''
+                    """
                     
                     withVaultSshCredentials(this) {
                         def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
@@ -659,8 +672,8 @@ else
 fi
 
 if scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    temp_data_cred.json \
-    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/temp_data_cred.json 2>/dev/null; then
+    ''' + credJsonFile + ''' \
+    "''' + env.SSH_USER + '''"@''' + params.SERVER_ADDRESS + ''':''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' 2>/dev/null; then
     echo "[OK] Credentials скопированы"
 else
     echo "[ERROR] Не удалось скопировать credentials"
@@ -682,7 +695,7 @@ ssh -q -T -o StrictHostKeyChecking=no -o LogLevel=ERROR \
 
 [ ! -f "''' + env.DEPLOY_PATH + '''/install-monitoring-stack.sh" ] && echo "[ERROR] Скрипт не найден!" && exit 1
 [ ! -d "''' + env.DEPLOY_PATH + '''/wrappers" ] && echo "[ERROR] Wrappers не найдены!" && exit 1
-[ ! -f "''' + env.DEPLOY_PATH + '''/temp_data_cred.json" ] && echo "[ERROR] Credentials не найдены!" && exit 1
+[ ! -f "''' + env.DEPLOY_PATH + '''/''' + credJsonFile + '''" ] && echo "[ERROR] Credentials не найдены!" && exit 1
 
 echo "[OK] Все файлы на месте"
 REMOTE_EOF
@@ -732,6 +745,7 @@ REMOTE_EOF
             steps {
                 script {
                     computeEnvironmentVariables()
+                    def credJsonFile = env.CRED_JSON_FILE
                     
                     echo "[STEP] Запуск развертывания на удаленном сервере..."
                     echo "[INFO] Режим: БЕЗ SUDO (User Units Only)"
@@ -767,11 +781,12 @@ else
     sed -i 's/\r$//' "$REMOTE_SCRIPT_PATH" || true
 fi
 
-# Извлекаем RPM URLs из temp_data_cred.json
-RPM_GRAFANA=$(jq -r '.rpm_url.grafana // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
-RPM_PROMETHEUS=$(jq -r '.rpm_url.prometheus // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
-RPM_HARVEST=$(jq -r '.rpm_url.harvest // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
-RPM_NODE_EXPORTER=$(jq -r '.rpm_url.node_exporter // empty' "$DEPLOY_DIR/temp_data_cred.json" 2>/dev/null || echo "")
+# Извлекаем RPM URLs из файла credentials
+CRED_JSON_FILE="''' + credJsonFile + '''"
+RPM_GRAFANA=$(jq -r '.rpm_url.grafana // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_PROMETHEUS=$(jq -r '.rpm_url.prometheus // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_HARVEST=$(jq -r '.rpm_url.harvest // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
+RPM_NODE_EXPORTER=$(jq -r '.rpm_url.node_exporter // empty' "$DEPLOY_DIR/$CRED_JSON_FILE" 2>/dev/null || echo "")
 
 echo "[INFO] RPM URLs из Vault:"
 echo "  Grafana: $RPM_GRAFANA"
@@ -781,8 +796,8 @@ echo "  Node Exporter: $RPM_NODE_EXPORTER"
 
 if [[ -z "$RPM_GRAFANA" || -z "$RPM_PROMETHEUS" || -z "$RPM_HARVEST" ]]; then
     echo "[ERROR] Один или несколько RPM URLs пусты!"
-    echo "[ERROR] Содержимое temp_data_cred.json:"
-    cat "$DEPLOY_DIR/temp_data_cred.json" | jq '.' || cat "$DEPLOY_DIR/temp_data_cred.json"
+    echo "[ERROR] Содержимое $CRED_JSON_FILE:"
+    cat "$DEPLOY_DIR/$CRED_JSON_FILE" | jq '.' || cat "$DEPLOY_DIR/$CRED_JSON_FILE"
     exit 1
 fi
 
@@ -818,7 +833,7 @@ env \
   DEPLOY_GIT_COMMIT="__DEPLOY_GIT_COMMIT__" \
   DEPLOY_BUILD_DATE="__DEPLOY_BUILD_DATE__" \
   WRAPPERS_DIR="$DEPLOY_DIR/wrappers" \
-  CRED_JSON_PATH="$DEPLOY_DIR/temp_data_cred.json" \
+  CRED_JSON_PATH="$DEPLOY_DIR/$CRED_JSON_FILE" \
   /bin/bash "$REMOTE_SCRIPT_PATH"
 REMOTE_EOF
 '''
@@ -863,6 +878,7 @@ REMOTE_EOF
             steps {
                 script {
                     computeEnvironmentVariables()
+                    def credJsonFile = env.CRED_JSON_FILE
                     
                     echo "[STEP] Проверка результатов развертывания (User Units)..."
                     withVaultSshCredentials(this) {
@@ -935,12 +951,12 @@ ENDSSH
                     computeEnvironmentVariables()
                     
                     echo "[STEP] Очистка временных файлов..."
-                    sh "rm -rf temp_data_cred.json"
+                    sh "rm -rf ${credJsonFile} temp_data_cred.json temp_data_cred_*.json"
                     withVaultSshCredentials(this) {
                         writeFile file: 'cleanup_script.sh', text: '''#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
     "$SSH_USER"@''' + params.SERVER_ADDRESS + ''' \
-    "rm -rf ''' + env.DEPLOY_PATH + '''/temp_data_cred.json" 2>/dev/null || true
+    "rm -rf ''' + env.DEPLOY_PATH + '''/''' + credJsonFile + ''' ''' + env.DEPLOY_PATH + '''/temp_data_cred.json ''' + env.DEPLOY_PATH + '''/temp_data_cred_*.json" 2>/dev/null || true
 '''
                         sh 'chmod +x cleanup_script.sh'
                         sh './cleanup_script.sh'
