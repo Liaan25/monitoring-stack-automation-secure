@@ -3821,11 +3821,14 @@ create_rlm_install_tasks() {
                 print_warning "Не удалось создать задачу для $name (опционально), продолжаем."
                 print_info "Ответ RLM: $response"
                 print_info "URL пакета: ${url:-не задан}"
+                print_info "RLM payload (debug): $(echo "$payload" | jq -c . 2>/dev/null || echo "$payload")"
                 write_diagnostic "$name RLM: SKIPPED (optional, task create failed): $response"
                 continue
             fi
             print_error "❌ Ошибка при создании задачи для $name: $response"
             print_error "❌ URL пакета: ${url:-не задан}"
+            print_error "❌ RLM payload (debug): $(echo "$payload" | jq -c . 2>/dev/null || echo "$payload")"
+            print_error "❌ RLM API URL (debug): ${RLM_API_URL}/api/tasks.json"
             exit 1
         fi
         print_success "✅ Задача создана для $name. ID: $task_id"
@@ -3850,9 +3853,11 @@ create_rlm_install_tasks() {
         echo "└────────────────────────────────────────────────────────────┘"
         echo ""
 
+        local last_status_response=""
         while [[ $attempt -le $max_attempts ]]; do
             local status_response
             status_response=$("$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" get_rpm_status "$RLM_API_URL" "$RLM_TOKEN" "$task_id") || true
+            last_status_response="$status_response"
 
             local current_status
             current_status=$(echo "$status_response" | jq -r '.status // empty' 2>/dev/null || echo "in_progress")
@@ -3906,11 +3911,15 @@ create_rlm_install_tasks() {
                 if [[ "$optional_package" == "true" ]]; then
                     print_warning "$name: ошибка установки (опционально), продолжаем"
                     print_info "Ответ RLM: $status_response"
+                    print_info "RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
+                    print_info "RLM status parsed (debug): $(echo "$status_response" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
                     write_diagnostic "$name RLM: FAILED (optional) - $status_response"
                     break
                 fi
                 print_error "❌ $name: ОШИБКА УСТАНОВКИ"
                 print_error "📋 Ответ RLM: $status_response"
+                print_error "❌ RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
+                print_error "❌ RLM status parsed (debug): $(echo "$status_response" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
                 write_diagnostic "$name RLM: FAILED - $status_response"
                 exit 1
             fi
@@ -3923,10 +3932,16 @@ create_rlm_install_tasks() {
             echo ""
             if [[ "$optional_package" == "true" ]]; then
                 print_warning "$name: таймаут установки (опционально), продолжаем"
+                print_info "RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
+                print_info "Последний ответ RLM (debug): ${last_status_response:-<empty>}"
+                print_info "Последний parsed статус (debug): $(echo "${last_status_response:-}" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
                 write_diagnostic "$name RLM: TIMEOUT (optional) after ${max_attempts} attempts"
                 continue
             fi
             print_error "⏰ $name: ТАЙМАУТ после ${max_attempts} попыток (~$((max_attempts * interval_sec / 60)) минут)"
+            print_error "❌ RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
+            print_error "❌ Последний ответ RLM (debug): ${last_status_response:-<empty>}"
+            print_error "❌ Последний parsed статус (debug): $(echo "${last_status_response:-}" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
             exit 1
         fi
 
