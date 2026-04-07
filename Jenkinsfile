@@ -480,9 +480,9 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
                     ]]) {
                         def certPayloadEscaped = certRequestPayload.replace("'", "'\"'\"'")
                         def certResponseRaw = scriptContext.withEnv([
-                            "SBERCA_URL=https://${scriptContext.params.SEC_MAN_ADDR}",
-                            "SBERCA_API_PATH=${apiPath}",
-                            "SBERCA_REQUEST_PAYLOAD=${certPayloadEscaped}"
+                            'SBERCA_URL=https://' + (scriptContext.params.SEC_MAN_ADDR ?: ''),
+                            'SBERCA_API_PATH=' + apiPath,
+                            'SBERCA_REQUEST_PAYLOAD=' + certPayloadEscaped
                         ]) {
                             scriptContext.sh(
                             script: '''#!/bin/bash
@@ -712,6 +712,235 @@ def runVerifyStage(scriptContext) {
     persistDeployStatus(scriptContext)
 }
 
+def runCiVersionStage(scriptContext) {
+    computeEnvironmentVariables()
+    scriptContext.echo "================================================"
+    scriptContext.echo "=== ВЕРСИЯ ПРОЕКТА - SECURE EDITION ==="
+    scriptContext.echo "================================================"
+    scriptContext.sh 'chmod +x tools/get-version.sh || true'
+    def versionBanner = scriptContext.sh(script: './tools/get-version.sh banner', returnStdout: true).trim()
+    scriptContext.echo versionBanner
+    def versionEnv = scriptContext.sh(script: './tools/get-version.sh env', returnStdout: true).trim()
+    versionEnv.split('\n').each { line ->
+        def parts = line.split('=', 2)
+        if (parts.size() == 2) {
+            scriptContext.env."${parts[0]}" = parts[1]
+        }
+    }
+    scriptContext.env.VERSION_SHORT = scriptContext.sh(script: './tools/get-version.sh short', returnStdout: true).trim()
+    scriptContext.echo "[INFO] Версия проекта: ${scriptContext.env.VERSION_SHORT}"
+    scriptContext.echo "[INFO] Git commit: ${scriptContext.env.VERSION_GIT_COMMIT}"
+    scriptContext.echo "[INFO] Git branch: ${scriptContext.env.VERSION_GIT_BRANCH}"
+    scriptContext.echo "[INFO] Build timestamp: ${scriptContext.env.VERSION_BUILD_TIMESTAMP}"
+    scriptContext.echo "================================================"
+    scriptContext.echo "[INFO] Архитектура: Secure Edition (v4.0+)"
+    scriptContext.echo "[INFO] KAE: ${scriptContext.env.KAE}"
+    scriptContext.echo "[INFO] CI-пользователь: ${scriptContext.env.DEPLOY_USER}"
+    scriptContext.echo "[INFO] Sys-пользователь: ${scriptContext.env.MON_SYS_USER}"
+    scriptContext.echo "[INFO] Путь развертывания: ${scriptContext.env.DEPLOY_PATH}"
+    scriptContext.echo "================================================"
+}
+
+def runCiWorkspaceCleanupStage(scriptContext) {
+    computeEnvironmentVariables()
+    scriptContext.env.DATE_INSTALL = scriptContext.sh(script: "date '+%Y%m%d_%H%M%S'", returnStdout: true).trim()
+    scriptContext.echo "================================================"
+    scriptContext.echo "=== НАЧАЛО ПАЙПЛАЙНА (SECURE MODE) ==="
+    scriptContext.echo "================================================"
+    scriptContext.echo "[INFO] Версия: ${scriptContext.env.VERSION_SHORT ?: 'unknown'}"
+    scriptContext.echo "[INFO] Билд: ${scriptContext.env.BUILD_NUMBER ?: 'N/A'}"
+    scriptContext.echo "[INFO] DATE_INSTALL: ${scriptContext.env.DATE_INSTALL}"
+    scriptContext.echo "[INFO] KAE: ${scriptContext.env.KAE}"
+    scriptContext.echo "[INFO] CI-пользователь: ${scriptContext.env.DEPLOY_USER}"
+    scriptContext.echo "[INFO] Очистка workspace..."
+    scriptContext.sh '''
+        rm -f prep_clone*.sh scp_script*.sh verify_script*.sh deploy_script*.sh check_results*.sh cleanup_script*.sh get_domain*.sh get_ip*.sh 2>/dev/null || true
+        rm -f temp_data_cred*.json 2>/dev/null || true
+    '''
+    scriptContext.echo "[SUCCESS] Workspace очищен"
+}
+
+def runCiParamsDebugStage(scriptContext) {
+    computeEnvironmentVariables()
+    scriptContext.echo "================================================"
+    scriptContext.echo "=== ПРОВЕРКА ПАРАМЕТРОВ (SECURE EDITION) ==="
+    scriptContext.echo "================================================"
+    if (!scriptContext.params.SERVER_ADDRESS?.trim()) { scriptContext.error("❌ Не указан SERVER_ADDRESS") }
+    if (!scriptContext.params.SSH_CREDENTIALS_ID?.trim()) { scriptContext.error("❌ Не указан SSH_CREDENTIALS_ID") }
+    if (!scriptContext.params.SSH_LOGIN?.trim()) { scriptContext.error("❌ Не указан SSH_LOGIN") }
+    if (!scriptContext.params.RLM_TOKEN_CREDENTIAL_ID?.trim()) { scriptContext.error("❌ Не указан RLM_TOKEN_CREDENTIAL_ID") }
+    if (!scriptContext.params.NAMESPACE_CI?.trim()) { scriptContext.error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)") }
+    if (!scriptContext.params.MONITORING_MOUNT_NAME?.trim() || !(scriptContext.params.MONITORING_MOUNT_NAME ==~ /[A-Za-z0-9._-]+/)) {
+        scriptContext.error("❌ MONITORING_MOUNT_NAME должен быть непустым и содержать только [A-Za-z0-9._-] (без /)")
+    }
+    if (!scriptContext.params.MONITORING_FS_EXTEND_GB?.trim()) { scriptContext.error("❌ MONITORING_FS_EXTEND_GB не задан") }
+    if (!(scriptContext.params.MONITORING_FS_EXTEND_GB ==~ /[0-9]+/) || scriptContext.params.MONITORING_FS_EXTEND_GB.toInteger() <= 0) {
+        scriptContext.error("❌ MONITORING_FS_EXTEND_GB должен быть положительным целым числом")
+    }
+    scriptContext.echo "[INFO] FS mount: /${scriptContext.params.MONITORING_MOUNT_NAME}, size=${scriptContext.params.MONITORING_FS_EXTEND_GB}GB, force=${scriptContext.params.FORCE_RLM_FS_APPLY}, table_id=${scriptContext.params.RLM_FS_TABLE_ID}"
+    scriptContext.echo "[OK] Параметры проверены"
+    scriptContext.echo "[INFO] Сервер: ${scriptContext.env.SERVER_ADDRESS_EFFECTIVE}"
+    scriptContext.echo "[INFO] KAE: ${scriptContext.env.KAE}"
+    scriptContext.echo "[INFO] Подключение: ${scriptContext.env.DEPLOY_USER}@${scriptContext.env.SERVER_ADDRESS_EFFECTIVE}"
+    scriptContext.echo "[SECURITY] Архитектура: User Units Only, Min Privileges"
+}
+
+def runCiCodeInfoStage(scriptContext) {
+    computeEnvironmentVariables()
+    scriptContext.echo "[INFO] === ИНФОРМАЦИЯ О КОДЕ ==="
+    scriptContext.echo "[INFO] Версия проекта: ${scriptContext.env.VERSION_SHORT}"
+    scriptContext.echo "[INFO] Git commit: ${scriptContext.env.VERSION_GIT_COMMIT_FULL}"
+    scriptContext.echo "[INFO] Git branch: ${scriptContext.env.VERSION_GIT_BRANCH}"
+    scriptContext.sh '''
+        echo "[INFO] Последние 3 коммита:"
+        git log --oneline -3 2>/dev/null || echo "[INFO] Git история недоступна"
+    '''
+}
+
+def runCiNetworkDiagnosticsStage(scriptContext) {
+    computeEnvironmentVariables()
+    scriptContext.echo "================================================"
+    scriptContext.echo "=== ДИАГНОСТИКА СЕТИ ==="
+    scriptContext.echo "================================================"
+    scriptContext.echo "[INFO] Проверка подключения к ${scriptContext.env.SERVER_ADDRESS_EFFECTIVE}..."
+    scriptContext.sh """
+        ping -c 3 ${scriptContext.env.SERVER_ADDRESS_EFFECTIVE} || echo "[WARNING] Ping не прошел, но SSH может работать"
+    """
+}
+
+def runFsMountStage(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    restoreDeployStatus(scriptContext)
+    scriptContext.echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
+    scriptContext.echo "[INFO] mount=/${scriptContext.params.MONITORING_MOUNT_NAME}, size_gb=${scriptContext.params.MONITORING_FS_EXTEND_GB}, table_id=${scriptContext.params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${scriptContext.params.MONITORING_MOUNT_NAME}, force=${scriptContext.params.FORCE_RLM_FS_APPLY}"
+    scriptContext.withCredentials([[string(credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')]]) {
+        withVaultSshCredentials(scriptContext) {
+            def parallelFs = [:]
+            deploymentPairs.each { pair ->
+                def p = pair
+                parallelFs["fs-${p.server}"] = {
+                    def fsResult = runRlmMonitoringFsTask(scriptContext, p)
+                    int rc = (fsResult.rc == null ? 1 : (fsResult.rc as int))
+                    String reason = fsResult.reason ?: (rc == 0 ? 'ok' : "exit_code_${rc}")
+                    def statusObj = [server: p.server, netapp: p.netapp, stage: 'fs-mount', status: (rc == 0 ? 'SUCCESS' : 'FAILED'), reason: reason]
+                    scriptContext.writeFile file: ".deploy-status/fs_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
+                }
+            }
+            scriptContext.parallel parallelFs
+        }
+    }
+    def fsRows = []
+    deploymentPairs.each { p ->
+        def f = ".deploy-status/fs_${p.serverPrefixSafe}.json"
+        if (scriptContext.fileExists(f)) {
+            fsRows << new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(f))
+        } else {
+            fsRows << [server: p.server, netapp: p.netapp, stage: 'fs-mount', status: 'FAILED', reason: 'no_status_file']
+        }
+    }
+    def fsSummary = renderDeploySummary("СВОДКА RLM FS /monitoring", fsRows)
+    scriptContext.echo fsSummary
+    scriptContext.env.DEPLOY_STATUS_SUMMARY = (scriptContext.env.DEPLOY_STATUS_SUMMARY ? (scriptContext.env.DEPLOY_STATUS_SUMMARY + "\n" + fsSummary) : fsSummary)
+    persistDeployStatus(scriptContext)
+    if (fsRows.any { it.status != 'SUCCESS' }) {
+        scriptContext.error("❌ Этап RLM FS mount завершился с ошибками")
+    }
+    scriptContext.echo "[SUCCESS] RLM FS mount успешно выполнен на всех серверах"
+}
+
+def runCopyStage(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    restoreDeployStatus(scriptContext)
+    scriptContext.echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
+    scriptContext.unstash 'vault-credentials'
+    scriptContext.echo "[STEP] Копирование скрипта и файлов на сервер..."
+    scriptContext.sh '''
+        [ ! -f "install-monitoring-stack.sh" ] && echo "[ERROR] install-monitoring-stack.sh не найден!" && exit 1
+        [ ! -d "wrappers" ] && echo "[ERROR] Папка wrappers не найдена!" && exit 1
+        if [ -f wrappers/build-integrity-checkers.sh ]; then
+          /bin/bash wrappers/build-integrity-checkers.sh
+        fi
+    '''
+    withVaultSshCredentials(scriptContext) {
+        def expectedSshUser = scriptContext.params.SSH_LOGIN?.trim() ? scriptContext.params.SSH_LOGIN.trim() : scriptContext.env.DEPLOY_USER
+        scriptContext.echo '[INFO] Подключение под пользователем настроено (ожидается: ' + expectedSshUser + ')'
+        def parallelCopies = [:]
+        deploymentPairs.each { pair ->
+            def p = pair
+            parallelCopies["copy-${p.server}"] = {
+                int rc = runRemoteCopy(scriptContext, p)
+                def statusObj = [server: p.server, netapp: p.netapp, stage: 'copy', status: (rc == 0 ? 'SUCCESS' : 'FAILED'), reason: (rc == 0 ? 'ok' : "exit_code_${rc}")]
+                scriptContext.writeFile file: ".deploy-status/copy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
+            }
+        }
+        scriptContext.parallel parallelCopies
+    }
+    def copyRows = []
+    deploymentPairs.each { p ->
+        def f = ".deploy-status/copy_${p.serverPrefixSafe}.json"
+        if (scriptContext.fileExists(f)) {
+            copyRows << new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(f))
+        } else {
+            copyRows << [server: p.server, netapp: p.netapp, stage: 'copy', status: 'FAILED', reason: 'no_status_file']
+        }
+    }
+    def copySummary = renderDeploySummary("СВОДКА COPY", copyRows)
+    scriptContext.echo copySummary
+    scriptContext.env.DEPLOY_STATUS_SUMMARY = copySummary
+    persistDeployStatus(scriptContext)
+    if (copyRows.any { it.status != 'SUCCESS' }) {
+        scriptContext.error("❌ Ошибка копирования на одном или нескольких серверах")
+    }
+    scriptContext.echo "[SUCCESS] Копирование завершено для всех серверов"
+}
+
+def runCleanupStage(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    restoreDeployStatus(scriptContext)
+    scriptContext.echo "[STEP] Очистка временных файлов..."
+    scriptContext.sh "rm -rf temp_data_cred.json temp_data_cred_*.json"
+    withVaultSshCredentials(scriptContext) {
+        def parallelCleanup = [:]
+        deploymentPairs.each { pair ->
+            def p = pair
+            parallelCleanup["cleanup-${p.server}"] = {
+                scriptContext.sh """#!/bin/bash
+ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+    "\$SSH_USER"@"${p.server}" \
+    "rm -rf ${scriptContext.env.DEPLOY_PATH}/${p.credJsonFile} ${scriptContext.env.DEPLOY_PATH}/temp_data_cred.json ${scriptContext.env.DEPLOY_PATH}/temp_data_cred_*.json" 2>/dev/null || true
+"""
+            }
+        }
+        scriptContext.parallel parallelCleanup
+    }
+    scriptContext.echo "[SUCCESS] Очистка завершена"
+    persistDeployStatus(scriptContext)
+}
+
+def runFinalInfoStage(scriptContext) {
+    computeEnvironmentVariables()
+    restoreDeployStatus(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    def reports = []
+    deploymentPairs.each { p ->
+        def f = ".deploy-status/verify_${p.serverPrefixSafe}.json"
+        if (scriptContext.fileExists(f)) {
+            reports << new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(f))
+        } else {
+            reports << buildVerifyFallbackReport(
+                p,
+                scriptContext.env.DEPLOY_USER ?: '',
+                (scriptContext.params.PROMETHEUS_PORT ?: '9090').toString(),
+                (scriptContext.params.GRAFANA_PORT ?: '3300').toString()
+            )
+        }
+    }
+    printFinalDeploymentReport(scriptContext, reports)
+}
+
 pipeline {
     agent none
 
@@ -759,43 +988,7 @@ pipeline {
             agent { label "clearAgent&&sbel8&&!static" }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    
-                    // Получаем информацию о версии
-                    echo "================================================"
-                    echo "=== ВЕРСИЯ ПРОЕКТА - SECURE EDITION ==="
-                    echo "================================================"
-                    
-                    // Делаем скрипт исполняемым (на Linux агенте)
-                    sh 'chmod +x tools/get-version.sh || true'
-                    
-                    // Получаем и отображаем версию в виде баннера
-                    def versionBanner = sh(script: './tools/get-version.sh banner', returnStdout: true).trim()
-                    echo versionBanner
-                    
-                    // Сохраняем версионную информацию в переменные окружения
-                    def versionEnv = sh(script: './tools/get-version.sh env', returnStdout: true).trim()
-                    versionEnv.split('\n').each { line ->
-                        def parts = line.split('=', 2)
-                        if (parts.size() == 2) {
-                            env."${parts[0]}" = parts[1]
-                        }
-                    }
-                    
-                    // Получаем короткую версию для использования в других местах
-                    env.VERSION_SHORT = sh(script: './tools/get-version.sh short', returnStdout: true).trim()
-                    
-                    echo "[INFO] Версия проекта: ${env.VERSION_SHORT}"
-                    echo "[INFO] Git commit: ${env.VERSION_GIT_COMMIT}"
-                    echo "[INFO] Git branch: ${env.VERSION_GIT_BRANCH}"
-                    echo "[INFO] Build timestamp: ${env.VERSION_BUILD_TIMESTAMP}"
-                    echo "================================================"
-                    echo "[INFO] Архитектура: Secure Edition (v4.0+)"
-                    echo "[INFO] KAE: ${env.KAE}"
-                    echo "[INFO] CI-пользователь: ${env.DEPLOY_USER}"
-                    echo "[INFO] Sys-пользователь: ${env.MON_SYS_USER}"
-                    echo "[INFO] Путь развертывания: ${env.DEPLOY_PATH}"
-                    echo "================================================"
+                    runCiVersionStage(this)
                 }
             }
         }
@@ -807,28 +1000,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    
-                    // Вычисляем DATE_INSTALL здесь, где есть контекст агента
-                    env.DATE_INSTALL = sh(script: "date '+%Y%m%d_%H%M%S'", returnStdout: true).trim()
-                    
-                    echo "================================================"
-                    echo "=== НАЧАЛО ПАЙПЛАЙНА (SECURE MODE) ==="
-                    echo "================================================"
-                    echo "[INFO] Версия: ${env.VERSION_SHORT ?: 'unknown'}"
-                    echo "[INFO] Билд: ${currentBuild.number}"
-                    echo "[INFO] DATE_INSTALL: ${env.DATE_INSTALL}"
-                    echo "[INFO] KAE: ${env.KAE}"
-                    echo "[INFO] CI-пользователь: ${env.DEPLOY_USER}"
-                    
-                    // Очистка workspace от старых временных файлов
-                    echo "[INFO] Очистка workspace..."
-                    sh '''
-                        # Удаляем старые временные файлы
-                        rm -f prep_clone*.sh scp_script*.sh verify_script*.sh deploy_script*.sh check_results*.sh cleanup_script*.sh get_domain*.sh get_ip*.sh 2>/dev/null || true
-                        rm -f temp_data_cred*.json 2>/dev/null || true
-                    '''
-                    echo "[SUCCESS] Workspace очищен"
+                    runCiWorkspaceCleanupStage(this)
                 }
             }
         }
@@ -840,44 +1012,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    
-                    echo "================================================"
-                    echo "=== ПРОВЕРКА ПАРАМЕТРОВ (SECURE EDITION) ==="
-                    echo "================================================"
-                    
-                    // Проверка обязательных параметров
-                    if (!params.SERVER_ADDRESS?.trim()) {
-                        error("❌ Не указан SERVER_ADDRESS")
-                    }
-                    if (!params.SSH_CREDENTIALS_ID?.trim()) {
-                        error("❌ Не указан SSH_CREDENTIALS_ID")
-                    }
-                    if (!params.SSH_LOGIN?.trim()) {
-                        error("❌ Не указан SSH_LOGIN")
-                    }
-                    if (!params.RLM_TOKEN_CREDENTIAL_ID?.trim()) {
-                        error("❌ Не указан RLM_TOKEN_CREDENTIAL_ID")
-                    }
-                    if (!params.NAMESPACE_CI?.trim()) {
-                        error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)")
-                    }
-                    if (!params.MONITORING_MOUNT_NAME?.trim() || !(params.MONITORING_MOUNT_NAME ==~ /[A-Za-z0-9._-]+/)) {
-                        error("❌ MONITORING_MOUNT_NAME должен быть непустым и содержать только [A-Za-z0-9._-] (без /)")
-                    }
-                    if (!params.MONITORING_FS_EXTEND_GB?.trim()) {
-                        error("❌ MONITORING_FS_EXTEND_GB не задан")
-                    }
-                    if (!(params.MONITORING_FS_EXTEND_GB ==~ /[0-9]+/) || params.MONITORING_FS_EXTEND_GB.toInteger() <= 0) {
-                        error("❌ MONITORING_FS_EXTEND_GB должен быть положительным целым числом")
-                    }
-                    echo "[INFO] FS mount: /${params.MONITORING_MOUNT_NAME}, size=${params.MONITORING_FS_EXTEND_GB}GB, force=${params.FORCE_RLM_FS_APPLY}, table_id=${params.RLM_FS_TABLE_ID}"
-                    
-                    echo "[OK] Параметры проверены"
-                    echo "[INFO] Сервер: ${env.SERVER_ADDRESS_EFFECTIVE}"
-                    echo "[INFO] KAE: ${env.KAE}"
-                    echo "[INFO] Подключение: ${env.DEPLOY_USER}@${env.SERVER_ADDRESS_EFFECTIVE}"
-                    echo "[SECURITY] Архитектура: User Units Only, Min Privileges"
+                    runCiParamsDebugStage(this)
                 }
             }
         }
@@ -889,16 +1024,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    
-                    echo "[INFO] === ИНФОРМАЦИЯ О КОДЕ ==="
-                    echo "[INFO] Версия проекта: ${env.VERSION_SHORT}"
-                    echo "[INFO] Git commit: ${env.VERSION_GIT_COMMIT_FULL}"
-                    echo "[INFO] Git branch: ${env.VERSION_GIT_BRANCH}"
-                    sh '''
-                        echo "[INFO] Последние 3 коммита:"
-                        git log --oneline -3 2>/dev/null || echo "[INFO] Git история недоступна"
-                    '''
+                    runCiCodeInfoStage(this)
                 }
             }
         }
@@ -910,16 +1036,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    
-                    echo "================================================"
-                    echo "=== ДИАГНОСТИКА СЕТИ ==="
-                    echo "================================================"
-                    echo "[INFO] Проверка подключения к ${env.SERVER_ADDRESS_EFFECTIVE}..."
-                    
-                    sh """
-                        ping -c 3 ${env.SERVER_ADDRESS_EFFECTIVE} || echo "[WARNING] Ping не прошел, но SSH может работать"
-                    """
+                    runCiNetworkDiagnosticsStage(this)
                 }
             }
         }
@@ -944,55 +1061,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    restoreDeployStatus(this)
-
-                    echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
-                    echo "[INFO] mount=/${params.MONITORING_MOUNT_NAME}, size_gb=${params.MONITORING_FS_EXTEND_GB}, table_id=${params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${params.MONITORING_MOUNT_NAME}, force=${params.FORCE_RLM_FS_APPLY}"
-
-                    withCredentials([
-                        string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
-                    ]) {
-                        withVaultSshCredentials(this) {
-                            def parallelFs = [:]
-                            deploymentPairs.each { pair ->
-                                def p = pair
-                                parallelFs["fs-${p.server}"] = {
-                                    def fsResult = runRlmMonitoringFsTask(this, p)
-                                    int rc = (fsResult.rc == null ? 1 : (fsResult.rc as int))
-                                    String reason = fsResult.reason ?: (rc == 0 ? 'ok' : "exit_code_${rc}")
-                                    def statusObj = [
-                                        server: p.server,
-                                        netapp: p.netapp,
-                                        stage: 'fs-mount',
-                                        status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
-                                        reason: reason
-                                    ]
-                                    writeFile file: ".deploy-status/fs_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
-                                }
-                            }
-                            parallel parallelFs
-                        }
-                    }
-
-                    def fsRows = []
-                    deploymentPairs.each { p ->
-                        def f = ".deploy-status/fs_${p.serverPrefixSafe}.json"
-                        if (fileExists(f)) {
-                            fsRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                        } else {
-                            fsRows << [server: p.server, netapp: p.netapp, stage: 'fs-mount', status: 'FAILED', reason: 'no_status_file']
-                        }
-                    }
-                    def fsSummary = renderDeploySummary("СВОДКА RLM FS /monitoring", fsRows)
-                    echo fsSummary
-                    env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + fsSummary) : fsSummary)
-                    persistDeployStatus(this)
-                    if (fsRows.any { it.status != 'SUCCESS' }) {
-                        error("❌ Этап RLM FS mount завершился с ошибками")
-                    }
-                    echo "[SUCCESS] RLM FS mount успешно выполнен на всех серверах"
+                    runFsMountStage(this)
                 }
             }
         }
@@ -1004,61 +1073,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    restoreDeployStatus(this)
-                    
-                    echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
-                    
-                    // Восстанавливаем credentials-файлы из stash
-                    unstash 'vault-credentials'
-                    
-                    echo "[STEP] Копирование скрипта и файлов на сервер..."
-                    sh '''
-                        [ ! -f "install-monitoring-stack.sh" ] && echo "[ERROR] install-monitoring-stack.sh не найден!" && exit 1
-                        [ ! -d "wrappers" ] && echo "[ERROR] Папка wrappers не найдена!" && exit 1
-                        if [ -f wrappers/build-integrity-checkers.sh ]; then
-                          /bin/bash wrappers/build-integrity-checkers.sh
-                        fi
-                    '''
-                    
-                    withVaultSshCredentials(this) {
-                        def expectedSshUser = params.SSH_LOGIN?.trim() ? params.SSH_LOGIN.trim() : env.DEPLOY_USER
-                        echo '[INFO] Подключение под пользователем настроено (ожидается: ' + expectedSshUser + ')'
-                        def parallelCopies = [:]
-                        deploymentPairs.each { pair ->
-                            def p = pair
-                            parallelCopies["copy-${p.server}"] = {
-                                int rc = runRemoteCopy(this, p)
-                                def statusObj = [
-                                    server: p.server,
-                                    netapp: p.netapp,
-                                    stage: 'copy',
-                                    status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
-                                    reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
-                                ]
-                                writeFile file: ".deploy-status/copy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
-                            }
-                        }
-                        parallel parallelCopies
-                    }
-                    def copyRows = []
-                    deploymentPairs.each { p ->
-                        def f = ".deploy-status/copy_${p.serverPrefixSafe}.json"
-                        if (fileExists(f)) {
-                            copyRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                        } else {
-                            copyRows << [server: p.server, netapp: p.netapp, stage: 'copy', status: 'FAILED', reason: 'no_status_file']
-                        }
-                    }
-                    def copySummary = renderDeploySummary("СВОДКА COPY", copyRows)
-                    echo copySummary
-                    env.DEPLOY_STATUS_SUMMARY = copySummary
-                    persistDeployStatus(this)
-                    if (copyRows.any { it.status != 'SUCCESS' }) {
-                        error("❌ Ошибка копирования на одном или нескольких серверах")
-                    }
-                    echo "[SUCCESS] Копирование завершено для всех серверов"
+                    runCopyStage(this)
                 }
             }
         }
@@ -1106,28 +1121,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    restoreDeployStatus(this)
-                    
-                    echo "[STEP] Очистка временных файлов..."
-                    sh "rm -rf temp_data_cred.json temp_data_cred_*.json"
-                    withVaultSshCredentials(this) {
-                        def parallelCleanup = [:]
-                        deploymentPairs.each { pair ->
-                            def p = pair
-                            parallelCleanup["cleanup-${p.server}"] = {
-                                sh """#!/bin/bash
-ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "\$SSH_USER"@"${p.server}" \
-    "rm -rf ${env.DEPLOY_PATH}/${p.credJsonFile} ${env.DEPLOY_PATH}/temp_data_cred.json ${env.DEPLOY_PATH}/temp_data_cred_*.json" 2>/dev/null || true
-"""
-                            }
-                        }
-                        parallel parallelCleanup
-                    }
-                    echo "[SUCCESS] Очистка завершена"
-                    persistDeployStatus(this)
+                    runCleanupStage(this)
                 }
             }
         }
@@ -1139,24 +1133,7 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    restoreDeployStatus(this)
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    def reports = []
-                    deploymentPairs.each { p ->
-                        def f = ".deploy-status/verify_${p.serverPrefixSafe}.json"
-                        if (fileExists(f)) {
-                            reports << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                        } else {
-                            reports << buildVerifyFallbackReport(
-                                p,
-                                env.DEPLOY_USER ?: '',
-                                (params.PROMETHEUS_PORT ?: '9090').toString(),
-                                (params.GRAFANA_PORT ?: '3300').toString()
-                            )
-                        }
-                    }
-                    printFinalDeploymentReport(this, reports)
+                    runFinalInfoStage(this)
                 }
             }
         }

@@ -191,6 +191,23 @@ write_diagnostic() {
 # РАСШИРЕННОЕ DEBUG ЛОГИРОВАНИЕ
 # ============================================
 
+# Гарантирует, что путь debug-лога существует.
+# Если mounted FS временно недоступен, переключаемся на /tmp чтобы не ломать основной поток.
+ensure_debug_log_target() {
+    local log_dir summary_dir
+    log_dir="$(dirname "$DEBUG_LOG")"
+    summary_dir="$(dirname "$DEBUG_SUMMARY")"
+
+    mkdir -p "$log_dir" "$summary_dir" 2>/dev/null || true
+    if [[ ! -d "$log_dir" || ! -w "$log_dir" ]]; then
+        DEBUG_LOG="/tmp/monitoring_deployment_debug_${DATE_INSTALL}.log"
+        DEBUG_SUMMARY="/tmp/monitoring_deployment_summary.log"
+        log_dir="$(dirname "$DEBUG_LOG")"
+        summary_dir="$(dirname "$DEBUG_SUMMARY")"
+        mkdir -p "$log_dir" "$summary_dir" 2>/dev/null || true
+    fi
+}
+
 # Инициализация DEBUG лога с полной диагностикой
 init_debug_log() {
     echo "[init_debug_log] START" >&2
@@ -199,6 +216,8 @@ init_debug_log() {
     set +e
     set +u
     set +o pipefail
+
+    ensure_debug_log_target
     
     echo "[init_debug_log] Creating file: $DEBUG_LOG" >&2
     
@@ -231,6 +250,7 @@ init_debug_log() {
 # Функция записи в DEBUG лог
 log_debug() {
     local timestamp
+    ensure_debug_log_target
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $*" >> "$DEBUG_LOG" 2>/dev/null || true
 }
