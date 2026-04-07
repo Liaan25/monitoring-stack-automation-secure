@@ -62,55 +62,59 @@ case "${PHASE_NAME}" in
     ;;
 esac
 
-env \
-  MONITORING_MOUNT_NAME="${MONITORING_MOUNT_NAME:-monitoring}" \
-  MONITORING_STACK_DIR_NAME="${MONITORING_STACK_DIR_NAME:-mon-harvest-prometheus-grafana}" \
-  SUPPRESS_LOCAL_FINAL_SUMMARY="true" \
-  SEC_MAN_ADDR="${SEC_MAN_ADDR}" \
-  NAMESPACE_CI="${NAMESPACE_CI}" \
-  RLM_API_URL="${RLM_API_URL}" \
-  RLM_TOKEN="${RLM_TOKEN}" \
-  DEPLOY_TARGET_SERVER="${TARGET_SERVER}" \
-  DEPLOY_TARGET_NETAPP="${TARGET_NETAPP}" \
-  NETAPP_API_ADDR="${TARGET_NETAPP}" \
-  GRAFANA_PORT="${GRAFANA_PORT}" \
-  PROMETHEUS_PORT="${PROMETHEUS_PORT}" \
-  RPM_URL_KV="${RPM_URL_KV}" \
-  NETAPP_SSH_KV="${NETAPP_SSH_KV}" \
-  GRAFANA_WEB_KV="${GRAFANA_WEB_KV}" \
-  SBERCA_CERT_KV="${SBERCA_CERT_KV}" \
-  ADMIN_EMAIL="${ADMIN_EMAIL}" \
-  VICTORIA_METRICS_REMOTE_WRITE_URL="${VICTORIA_METRICS_REMOTE_WRITE_URL}" \
-  RENEW_CERTIFICATES_ONLY="false" \
-  USE_SIMPLIFIED_CERT_FLOW="${USE_SIMPLIFIED_CERT_FLOW}" \
-  SKIP_RPM_INSTALL="false" \
-  SKIP_IPTABLES="true" \
-  RUN_SERVICES_AS_MON_CI="${RUN_SERVICES_AS_MON_CI}" \
-  GRAFANA_URL="${RPM_GRAFANA}" \
-  PROMETHEUS_URL="${RPM_PROMETHEUS}" \
-  HARVEST_URL="${RPM_HARVEST}" \
-  NODE_EXPORTER_URL="${RPM_NODE_EXPORTER}" \
-  DEPLOY_VERSION="${DEPLOY_VERSION}" \
-  DEPLOY_GIT_COMMIT="${DEPLOY_GIT_COMMIT}" \
-  DEPLOY_BUILD_DATE="${DEPLOY_BUILD_DATE}" \
-  WRAPPERS_DIR="${DEPLOY_DIR}/wrappers" \
-  CRED_JSON_PATH="${DEPLOY_DIR}/${CRED_JSON_FILE}" \
-  RLM_PHASE_ONLY="true" \
-  RLM_PACKAGE_FILTER="${PHASE_NAME}" \
-  if [[ "${LOG_LEVEL:-normal}" == "debug" ]]; then
+run_remote_phase() {
+  env \
+    MONITORING_MOUNT_NAME="${MONITORING_MOUNT_NAME:-monitoring}" \
+    MONITORING_STACK_DIR_NAME="${MONITORING_STACK_DIR_NAME:-mon-harvest-prometheus-grafana}" \
+    SUPPRESS_LOCAL_FINAL_SUMMARY="true" \
+    SEC_MAN_ADDR="${SEC_MAN_ADDR}" \
+    NAMESPACE_CI="${NAMESPACE_CI}" \
+    RLM_API_URL="${RLM_API_URL}" \
+    RLM_TOKEN="${RLM_TOKEN}" \
+    DEPLOY_TARGET_SERVER="${TARGET_SERVER}" \
+    DEPLOY_TARGET_NETAPP="${TARGET_NETAPP}" \
+    NETAPP_API_ADDR="${TARGET_NETAPP}" \
+    GRAFANA_PORT="${GRAFANA_PORT}" \
+    PROMETHEUS_PORT="${PROMETHEUS_PORT}" \
+    RPM_URL_KV="${RPM_URL_KV}" \
+    NETAPP_SSH_KV="${NETAPP_SSH_KV}" \
+    GRAFANA_WEB_KV="${GRAFANA_WEB_KV}" \
+    SBERCA_CERT_KV="${SBERCA_CERT_KV}" \
+    ADMIN_EMAIL="${ADMIN_EMAIL}" \
+    VICTORIA_METRICS_REMOTE_WRITE_URL="${VICTORIA_METRICS_REMOTE_WRITE_URL}" \
+    RENEW_CERTIFICATES_ONLY="false" \
+    USE_SIMPLIFIED_CERT_FLOW="${USE_SIMPLIFIED_CERT_FLOW}" \
+    SKIP_RPM_INSTALL="false" \
+    SKIP_IPTABLES="true" \
+    RUN_SERVICES_AS_MON_CI="${RUN_SERVICES_AS_MON_CI}" \
+    GRAFANA_URL="${RPM_GRAFANA}" \
+    PROMETHEUS_URL="${RPM_PROMETHEUS}" \
+    HARVEST_URL="${RPM_HARVEST}" \
+    NODE_EXPORTER_URL="${RPM_NODE_EXPORTER}" \
+    DEPLOY_VERSION="${DEPLOY_VERSION}" \
+    DEPLOY_GIT_COMMIT="${DEPLOY_GIT_COMMIT}" \
+    DEPLOY_BUILD_DATE="${DEPLOY_BUILD_DATE}" \
+    WRAPPERS_DIR="${DEPLOY_DIR}/wrappers" \
+    CRED_JSON_PATH="${DEPLOY_DIR}/${CRED_JSON_FILE}" \
+    RLM_PHASE_ONLY="true" \
+    RLM_PACKAGE_FILTER="${PHASE_NAME}" \
     /bin/bash "${REMOTE_SCRIPT_PATH}"
-  else
-    /bin/bash "${REMOTE_SCRIPT_PATH}" 2>&1 | awk '
-      /^DEBUG_/ { next }
-      /^\[MAIN\]/ { next }
-      /^\[SCRIPT_START\]/ { next }
-      /^\[SCRIPT\] Reached end of script definitions/ { next }
-      /^\[SCRIPT\] DEBUG_LOG will be:/ { next }
-      /^\[INFO\]   \[untar\] / { next }
-      { print }
-    '
-    exit ${PIPESTATUS[0]}
-  fi
+}
+
+if [[ "${LOG_LEVEL:-normal}" == "debug" ]]; then
+  run_remote_phase
+else
+  run_remote_phase 2>&1 | awk '
+    /^DEBUG_/ { next }
+    /^\[MAIN\]/ { next }
+    /^\[SCRIPT_START\]/ { next }
+    /^\[SCRIPT\] Reached end of script definitions/ { next }
+    /^\[SCRIPT\] DEBUG_LOG will be:/ { next }
+    /^\[INFO\]   \[untar\] / { next }
+    { print }
+  '
+  exit ${PIPESTATUS[0]}
+fi
 REMOTE_EOF
 
 echo "[SYNC-RPM] [${TARGET_SERVER}] ${PHASE_NAME}: локальный success, ожидаем остальные серверы..."
