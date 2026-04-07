@@ -8206,7 +8206,9 @@ main() {
         print_info "Запустите скрипт отладки: sudo ./debug_grafana.sh"
     else
         print_success "Grafana доступна, начинаем настройку datasource и дашбордов"
-        setup_grafana_datasource_and_dashboards
+        if ! setup_grafana_datasource_and_dashboards; then
+            print_warning "Настройка Grafana datasource/дашбордов завершилась с ошибкой (non-fatal), продолжаем deployment"
+        fi
     fi
 
     # Явная очистка чувствительных переменных окружения после операций с RLM и Grafana
