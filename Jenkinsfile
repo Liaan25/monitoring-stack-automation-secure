@@ -125,7 +125,6 @@ def runRemoteRpmPhaseInstall(scriptContext, Map pair, String phaseName) {
     return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
 set -e
 chmod +x tools/remote_rpm_phase.sh
-SSH_USER='${scriptContext.env.SSH_USER}' \
 TARGET_SERVER='${pair.server}' \
 DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
 CRED_JSON_FILE='${pair.credJsonFile}' \
@@ -158,7 +157,6 @@ def runRemoteFullDeploy(scriptContext, Map pair, String effectiveSkipRpm) {
     return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
 set -e
 chmod +x tools/remote_full_deploy.sh
-SSH_USER='${scriptContext.env.SSH_USER}' \
 TARGET_SERVER='${pair.server}' \
 DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
 CRED_JSON_FILE='${pair.credJsonFile}' \
@@ -193,7 +191,6 @@ def runRemoteVerification(scriptContext, Map pair) {
     return scriptContext.sh(script: """#!/bin/bash
 set -e
 chmod +x tools/remote_verify.sh
-SSH_USER='${scriptContext.env.SSH_USER}' \
 TARGET_SERVER='${pair.server}' \
 RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
 DEPLOY_USER='${scriptContext.env.DEPLOY_USER}' \
@@ -208,7 +205,6 @@ def runRemoteCopy(scriptContext, Map pair) {
     return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
 set -e
 chmod +x tools/remote_copy.sh
-SSH_USER='${scriptContext.env.SSH_USER}' \
 TARGET_SERVER='${pair.server}' \
 DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
 CRED_JSON_FILE='${pair.credJsonFile}' \
@@ -236,7 +232,7 @@ SIZE_GB='${scriptContext.params.MONITORING_FS_EXTEND_GB ?: '0'}' \
 FORCE_FS_APPLY='${scriptContext.params.FORCE_RLM_FS_APPLY ? 'true' : 'false'}' \
 RLM_MAX_ATTEMPTS='120' \
 RLM_SLEEP_SEC='10' \
-SSH_USER='${scriptContext.env.SSH_USER ?: ''}' \
+SSH_USER="${SSH_USER:-}" \
 ./tools/rlm_monitoring_fs.sh 2>&1
 )
 RC=\$?
@@ -258,7 +254,7 @@ def getRemoteDomain(scriptContext, String serverAddress) {
     return scriptContext.sh(
         script: """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-  "${scriptContext.env.SSH_USER}"@"${serverAddress}" \
+  "$SSH_USER"@"${serverAddress}" \
   "nslookup ${serverAddress} 2>/dev/null | grep 'name =' | awk '{print \\\$4}' | sed 's/\\.\$//' || echo ''" 2>/dev/null
 """,
         returnStdout: true
@@ -269,7 +265,7 @@ def getRemoteIp(scriptContext, String serverAddress) {
     return scriptContext.sh(
         script: """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-  "${scriptContext.env.SSH_USER}"@"${serverAddress}" \
+  "$SSH_USER"@"${serverAddress}" \
   "hostname -I | awk '{print \\\$1}' || echo ${serverAddress}" 2>/dev/null
 """,
         returnStdout: true
@@ -677,7 +673,7 @@ pipeline {
                                 def p = pair
                                 parallelFs["fs-${p.server}"] = {
                                     def fsResult = runRlmMonitoringFsTask(this, p)
-                                    int rc = (fsResult.rc ?: 1) as int
+                                    int rc = (fsResult.rc == null ? 1 : (fsResult.rc as int))
                                     String reason = fsResult.reason ?: (rc == 0 ? 'ok' : "exit_code_${rc}")
                                     def statusObj = [
                                         server: p.server,
@@ -952,7 +948,7 @@ pipeline {
                             parallelCleanup["cleanup-${p.server}"] = {
                                 sh """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "${env.SSH_USER}"@"${p.server}" \
+    "$SSH_USER"@"${p.server}" \
     "rm -rf ${env.DEPLOY_PATH}/${p.credJsonFile} ${env.DEPLOY_PATH}/temp_data_cred.json ${env.DEPLOY_PATH}/temp_data_cred_*.json" 2>/dev/null || true
 """
                             }
