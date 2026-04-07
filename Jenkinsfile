@@ -232,7 +232,7 @@ SIZE_GB='${scriptContext.params.MONITORING_FS_EXTEND_GB ?: '0'}' \
 FORCE_FS_APPLY='${scriptContext.params.FORCE_RLM_FS_APPLY ? 'true' : 'false'}' \
 RLM_MAX_ATTEMPTS='120' \
 RLM_SLEEP_SEC='10' \
-SSH_USER="${SSH_USER:-}" \
+SSH_USER="\$SSH_USER" \
 ./tools/rlm_monitoring_fs.sh 2>&1
 )
 RC=\$?
@@ -254,7 +254,7 @@ def getRemoteDomain(scriptContext, String serverAddress) {
     return scriptContext.sh(
         script: """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-  "$SSH_USER"@"${serverAddress}" \
+  "\$SSH_USER"@"${serverAddress}" \
   "nslookup ${serverAddress} 2>/dev/null | grep 'name =' | awk '{print \\\$4}' | sed 's/\\.\$//' || echo ''" 2>/dev/null
 """,
         returnStdout: true
@@ -265,7 +265,7 @@ def getRemoteIp(scriptContext, String serverAddress) {
     return scriptContext.sh(
         script: """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-  "$SSH_USER"@"${serverAddress}" \
+  "\$SSH_USER"@"${serverAddress}" \
   "hostname -I | awk '{print \\\$1}' || echo ${serverAddress}" 2>/dev/null
 """,
         returnStdout: true
@@ -948,7 +948,7 @@ pipeline {
                             parallelCleanup["cleanup-${p.server}"] = {
                                 sh """#!/bin/bash
 ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    "$SSH_USER"@"${p.server}" \
+    "\$SSH_USER"@"${p.server}" \
     "rm -rf ${env.DEPLOY_PATH}/${p.credJsonFile} ${env.DEPLOY_PATH}/temp_data_cred.json ${env.DEPLOY_PATH}/temp_data_cred_*.json" 2>/dev/null || true
 """
                             }
