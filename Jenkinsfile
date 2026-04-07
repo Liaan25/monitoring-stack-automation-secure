@@ -975,6 +975,7 @@ pipeline {
                     def verifySummary = renderDeploySummary("СВОДКА VERIFY", verifyRows)
                     echo verifySummary
                     env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + verifySummary) : verifySummary)
+                    stash name: 'deploy-status-verify', includes: '.deploy-status/verify_*.json', allowEmpty: true
                 }
             }
         }
@@ -1018,6 +1019,11 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
             steps {
                 script {
                     computeEnvironmentVariables()
+                    try {
+                        unstash 'deploy-status-verify'
+                    } catch (ignored) {
+                        echo "[INFO] verify status stash не найден, используем локальные/дефолтные данные"
+                    }
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     def reports = []
                     deploymentPairs.each { p ->
@@ -1101,9 +1107,9 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
         }
         always {
             script {
-                if (env.DEPLOY_STATUS_SUMMARY?.trim()) {
+                if (currentBuild.currentResult != 'SUCCESS' && env.DEPLOY_STATUS_SUMMARY?.trim()) {
                     echo env.DEPLOY_STATUS_SUMMARY
-                } else {
+                } else if (currentBuild.currentResult != 'SUCCESS') {
                     echo "================================================"
                     echo "📋 СВОДКА ПО СЕРВЕРАМ: недоступна (ветки не стартовали)"
                     echo "================================================"

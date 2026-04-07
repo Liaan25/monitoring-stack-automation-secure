@@ -39,7 +39,24 @@ fi
 
 get_http_code() {
   local url="$1"
-  curl -k -sS -o /dev/null -w "%{http_code}" --max-time 8 "$url" 2>/dev/null || echo "000"
+  local code
+  code="$(curl -k -sS -o /dev/null -w "%{http_code}" --max-time 8 "$url" 2>/dev/null || true)"
+  if [[ "${code}" =~ ^[0-9]{3}$ ]]; then
+    printf '%s' "${code}"
+  else
+    printf '000'
+  fi
+}
+
+get_http_code_fallback() {
+  local primary_url="$1"
+  local fallback_url="$2"
+  local code
+  code="$(get_http_code "${primary_url}")"
+  if [[ "${code}" == "000" && -n "${fallback_url}" ]]; then
+    code="$(get_http_code "${fallback_url}")"
+  fi
+  printf '%s' "${code}"
 }
 
 status_text() {
@@ -47,9 +64,9 @@ status_text() {
   [[ "$code" =~ ^2[0-9][0-9]$ ]] && echo "ok" || echo "fail"
 }
 
-prom_code="$(get_http_code "https://127.0.0.1:${PROMETHEUS_PORT}/-/ready")"
-graf_code="$(get_http_code "https://127.0.0.1:${GRAFANA_PORT}/api/health")"
-harv_n_code="$(get_http_code "https://127.0.0.1:${HARVEST_NETAPP_PORT}/metrics")"
+prom_code="$(get_http_code_fallback "https://127.0.0.1:${PROMETHEUS_PORT}/-/ready" "https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/-/ready")"
+graf_code="$(get_http_code_fallback "https://127.0.0.1:${GRAFANA_PORT}/api/health" "https://${SERVER_DOMAIN}:${GRAFANA_PORT}/api/health")"
+harv_n_code="$(get_http_code_fallback "https://127.0.0.1:${HARVEST_NETAPP_PORT}/metrics" "https://${SERVER_DOMAIN}:${HARVEST_NETAPP_PORT}/metrics")"
 harv_u_code="$(get_http_code "http://127.0.0.1:${HARVEST_UNIX_PORT}/metrics")"
 
 prom_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' prometheus 2>/dev/null || echo 'N/A')"
