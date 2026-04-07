@@ -81,6 +81,20 @@ def renderDeploySummary(String title, List<Map> rows) {
     return header.join('\n')
 }
 
+def restoreDeployStatus(scriptContext) {
+    scriptContext.sh 'mkdir -p .deploy-status'
+    try {
+        scriptContext.unstash('deploy-status-all')
+    } catch (ignored) {
+        scriptContext.echo "[INFO] deploy-status stash не найден, продолжаем с пустым локальным статусом"
+    }
+}
+
+def persistDeployStatus(scriptContext) {
+    scriptContext.sh 'mkdir -p .deploy-status'
+    scriptContext.stash name: 'deploy-status-all', includes: '.deploy-status/*.json', allowEmpty: true
+}
+
 def withVaultSshCredentials(scriptContext, Closure body) {
     def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
     if (!sshCredentialsId) {
@@ -669,7 +683,7 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    sh 'mkdir -p .deploy-status'
+                    restoreDeployStatus(this)
 
                     echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
                     echo "[INFO] mount=/${params.MONITORING_MOUNT_NAME}, size_gb=${params.MONITORING_FS_EXTEND_GB}, table_id=${params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${params.MONITORING_MOUNT_NAME}, force=${params.FORCE_RLM_FS_APPLY}"
@@ -711,6 +725,7 @@ pipeline {
                     def fsSummary = renderDeploySummary("СВОДКА RLM FS /monitoring", fsRows)
                     echo fsSummary
                     env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + fsSummary) : fsSummary)
+                    persistDeployStatus(this)
                     if (fsRows.any { it.status != 'SUCCESS' }) {
                         error("❌ Этап RLM FS mount завершился с ошибками")
                     }
@@ -728,7 +743,7 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    sh 'mkdir -p .deploy-status'
+                    restoreDeployStatus(this)
                     
                     echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
                     
@@ -776,6 +791,7 @@ pipeline {
                     def copySummary = renderDeploySummary("СВОДКА COPY", copyRows)
                     echo copySummary
                     env.DEPLOY_STATUS_SUMMARY = copySummary
+                    persistDeployStatus(this)
                     if (copyRows.any { it.status != 'SUCCESS' }) {
                         error("❌ Ошибка копирования на одном или нескольких серверах")
                     }
@@ -793,7 +809,7 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    sh 'mkdir -p .deploy-status'
+                    restoreDeployStatus(this)
 
                     echo "[STEP] Синхронная lockstep установка RPM по всем серверам"
                     echo "[INFO] Принцип: Grafana -> Prometheus -> Harvest -> Node Exporter"
@@ -838,6 +854,7 @@ pipeline {
                                 def phaseSummary = renderDeploySummary("СВОДКА ${phaseName.toUpperCase()} (LOCKSTEP)", phaseRows)
                                 echo phaseSummary
                                 env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + phaseSummary) : phaseSummary)
+                                persistDeployStatus(this)
                                 if (phaseRows.any { it.status != 'SUCCESS' }) {
                                     error("❌ Фаза ${phaseName} завершилась с ошибками. Переход к следующей фазе остановлен.")
                                 }
@@ -860,7 +877,7 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    sh 'mkdir -p .deploy-status'
+                    restoreDeployStatus(this)
                     def effectiveSkipRpm = params.SYNC_RPM_PHASES ? 'true' : (params.SKIP_RPM_INSTALL ? 'true' : 'false')
 
                     echo "[STEP] Запуск развертывания на удаленных серверах..."
@@ -906,6 +923,7 @@ pipeline {
                     def deploySummary = renderDeploySummary("СВОДКА DEPLOY", deployRows)
                     echo deploySummary
                     env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + deploySummary) : deploySummary)
+                    persistDeployStatus(this)
                     if (deployRows.any { it.status != 'SUCCESS' }) {
                         error("❌ Ошибка развертывания на одном или нескольких серверах")
                     }
@@ -922,6 +940,7 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
+                    restoreDeployStatus(this)
                     
                     echo "[STEP] Проверка результатов развертывания (User Units)..."
                     withVaultSshCredentials(this) {
@@ -975,7 +994,7 @@ pipeline {
                     def verifySummary = renderDeploySummary("СВОДКА VERIFY", verifyRows)
                     echo verifySummary
                     env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + verifySummary) : verifySummary)
-                    stash name: 'deploy-status-verify', includes: '.deploy-status/verify_*.json', allowEmpty: true
+                    persistDeployStatus(this)
                 }
             }
         }
@@ -989,6 +1008,7 @@ pipeline {
                 script {
                     computeEnvironmentVariables()
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
+                    restoreDeployStatus(this)
                     
                     echo "[STEP] Очистка временных файлов..."
                     sh "rm -rf temp_data_cred.json temp_data_cred_*.json"
@@ -1007,6 +1027,7 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                         parallel parallelCleanup
                     }
                     echo "[SUCCESS] Очистка завершена"
+                    persistDeployStatus(this)
                 }
             }
         }
@@ -1019,11 +1040,7 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
             steps {
                 script {
                     computeEnvironmentVariables()
-                    try {
-                        unstash 'deploy-status-verify'
-                    } catch (ignored) {
-                        echo "[INFO] verify status stash не найден, используем локальные/дефолтные данные"
-                    }
+                    restoreDeployStatus(this)
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     def reports = []
                     deploymentPairs.each { p ->

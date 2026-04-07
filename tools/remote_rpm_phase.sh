@@ -107,9 +107,18 @@ else
   run_remote_phase 2>&1 | awk '
     /^DEBUG_/ { next }
     /^\[MAIN\]/ { next }
+    /^\[SCRIPT\] Calling main with args:/ { next }
+    /^\[SCRIPT\] main\(\) completed with exit code:/ { next }
+    /^\[SCRIPT\] Script finished$/ { next }
     /^\[SCRIPT_START\]/ { next }
     /^\[SCRIPT\] Reached end of script definitions/ { next }
     /^\[SCRIPT\] DEBUG_LOG will be:/ { next }
+    /^={20,}$/ { next }
+    /^     MONITORING STACK AUTOMATION - DEPLOYMENT SCRIPT$/ { next }
+    /^  Version:[[:space:]]/ { next }
+    /^  Git Commit:[[:space:]]/ { next }
+    /^  Build Date:[[:space:]]/ { next }
+    /^  Script Start:[[:space:]]/ { next }
     /^\[INFO\]   \[untar\] / { next }
     { print }
   '
