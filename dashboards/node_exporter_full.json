@@ -82,7 +82,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "targets": [
         {
@@ -91,7 +91,7 @@
           "refId": "A"
         }
       ],
-      "title": "Node Exporter Up",
+      "title": "Node Exporter Up ($instance)",
       "type": "stat"
     },
     {
@@ -127,7 +127,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "targets": [
         {
@@ -136,7 +136,7 @@
           "refId": "A"
         }
       ],
-      "title": "Scrape Duration",
+      "title": "Scrape Duration ($instance)",
       "type": "stat"
     },
     {
@@ -168,7 +168,7 @@
           "refId": "A"
         }
       ],
-      "title": "CPU Usage %",
+      "title": "CPU Usage % ($instance)",
       "type": "timeseries"
     },
     {
@@ -200,7 +200,7 @@
           "refId": "A"
         }
       ],
-      "title": "Memory Usage %",
+      "title": "Memory Usage % ($instance)",
       "type": "timeseries"
     },
     {
@@ -232,7 +232,7 @@
           "refId": "A"
         }
       ],
-      "title": "Filesystem Usage %",
+      "title": "Filesystem Usage % ($instance)",
       "type": "timeseries"
     },
     {
@@ -270,7 +270,7 @@
           "refId": "B"
         }
       ],
-      "title": "Network Throughput",
+      "title": "Network Throughput ($instance)",
       "type": "timeseries"
     },
     {
@@ -308,7 +308,7 @@
           "refId": "B"
         }
       ],
-      "title": "Disk IOPS",
+      "title": "Disk IOPS ($instance)",
       "type": "timeseries"
     },
     {
@@ -351,7 +351,7 @@
           "refId": "C"
         }
       ],
-      "title": "System Load",
+      "title": "System Load ($instance)",
       "type": "timeseries"
     },
     {
@@ -389,7 +389,7 @@
           "refId": "B"
         }
       ],
-      "title": "Process States",
+      "title": "Process States ($instance)",
       "type": "timeseries"
     },
     {
@@ -427,7 +427,7 @@
           "refId": "B"
         }
       ],
-      "title": "Context Switches / Interrupts",
+      "title": "Context Switches / Interrupts ($instance)",
       "type": "timeseries"
     }
   ],
