@@ -3982,10 +3982,25 @@ create_rlm_install_tasks() {
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
     echo "📊 Установленные пакеты:"
-    echo "  ✅ Grafana       - Task ID: ${RLM_ID_TASK_GRAFANA:-N/A}"
-    echo "  ✅ Prometheus    - Task ID: ${RLM_ID_TASK_PROMETHEUS:-N/A}"
-    echo "  ✅ Harvest       - Task ID: ${RLM_ID_TASK_HARVEST:-N/A}"
-    echo "  ✅ Node Exporter - Task ID: ${RLM_ID_TASK_NODE_EXPORTER:-N/A}"
+    if [[ -n "$package_filter" ]]; then
+        case "$package_filter" in
+            Grafana) echo "  ✅ Grafana       - Task ID: ${RLM_ID_TASK_GRAFANA:-N/A}" ;;
+            Prometheus) echo "  ✅ Prometheus    - Task ID: ${RLM_ID_TASK_PROMETHEUS:-N/A}" ;;
+            Harvest) echo "  ✅ Harvest       - Task ID: ${RLM_ID_TASK_HARVEST:-N/A}" ;;
+            NodeExporter) echo "  ✅ Node Exporter - Task ID: ${RLM_ID_TASK_NODE_EXPORTER:-N/A}" ;;
+            *)
+                echo "  ✅ Grafana       - Task ID: ${RLM_ID_TASK_GRAFANA:-N/A}"
+                echo "  ✅ Prometheus    - Task ID: ${RLM_ID_TASK_PROMETHEUS:-N/A}"
+                echo "  ✅ Harvest       - Task ID: ${RLM_ID_TASK_HARVEST:-N/A}"
+                echo "  ✅ Node Exporter - Task ID: ${RLM_ID_TASK_NODE_EXPORTER:-N/A}"
+                ;;
+        esac
+    else
+        echo "  ✅ Grafana       - Task ID: ${RLM_ID_TASK_GRAFANA:-N/A}"
+        echo "  ✅ Prometheus    - Task ID: ${RLM_ID_TASK_PROMETHEUS:-N/A}"
+        echo "  ✅ Harvest       - Task ID: ${RLM_ID_TASK_HARVEST:-N/A}"
+        echo "  ✅ Node Exporter - Task ID: ${RLM_ID_TASK_NODE_EXPORTER:-N/A}"
+    fi
     echo ""
 
     # Настройка PATH для Harvest
@@ -6757,6 +6772,54 @@ EOF_HEADER
         print_info "cd /opt/harvest && echo 'Y' | ./bin/harvest --config ./harvest.yml grafana import --addr $grafana_url --token <TOKEN> --insecure"
         print_info "Или импортируйте дашборды через UI Grafana"
     fi
+
+    import_node_exporter_dashboard_file() {
+        local dashboard_file=""
+        local candidate1="${DEPLOY_PATH:-}/dashboards/node_exporter_full.json"
+        local candidate2="${PWD}/dashboards/node_exporter_full.json"
+        local candidate3="./dashboards/node_exporter_full.json"
+
+        for cand in "$candidate1" "$candidate2" "$candidate3"; do
+            if [[ -n "$cand" && -f "$cand" ]]; then
+                dashboard_file="$cand"
+                break
+            fi
+        done
+
+        if [[ -z "$dashboard_file" ]]; then
+            print_warning "Node Exporter dashboard file не найден, пропускаем автoимпорт"
+            return 0
+        fi
+
+        if ! jq -e . "$dashboard_file" >/dev/null 2>&1; then
+            print_warning "Node Exporter dashboard JSON невалидный: $dashboard_file"
+            return 0
+        fi
+
+        print_info "Импорт Node Exporter dashboard из файла: $dashboard_file"
+        local payload_file="/tmp/grafana_node_dashboard_payload_$$.json"
+        jq -c '{dashboard: ., folderId: 0, overwrite: true}' "$dashboard_file" > "$payload_file"
+
+        local response code
+        response=$(curl -k -s -X POST \
+            -H "Authorization: Bearer $GRAFANA_BEARER_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@${payload_file}" \
+            -w $'\n''%{http_code}' \
+            "${grafana_url}/api/dashboards/db" 2>/dev/null || true)
+        code=$(echo "$response" | tail -1)
+
+        rm -f "$payload_file" >/dev/null 2>&1 || true
+
+        if [[ "$code" == "200" || "$code" == "201" ]]; then
+            print_success "Node Exporter dashboard импортирован (HTTP ${code})"
+        else
+            print_warning "Не удалось импортировать Node Exporter dashboard (HTTP ${code:-000})"
+        fi
+        return 0
+    }
+
+    import_node_exporter_dashboard_file
     
     print_success "Настройка Grafana завершена"
     return 0

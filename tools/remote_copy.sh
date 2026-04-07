@@ -18,6 +18,11 @@ scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
 scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
   wrappers \
   "${SSH_USER}@${TARGET_SERVER}:${DEPLOY_PATH}/" 2>/dev/null
+if [ -d dashboards ]; then
+  scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR -r \
+    dashboards \
+    "${SSH_USER}@${TARGET_SERVER}:${DEPLOY_PATH}/" 2>/dev/null
+fi
 scp -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
   "${CRED_JSON_FILE}" \
   "${SSH_USER}@${TARGET_SERVER}:${DEPLOY_PATH}/${CRED_JSON_FILE}" 2>/dev/null

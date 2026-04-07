@@ -964,7 +964,8 @@ pipeline {
                                             prometheus: [url: "https://${p.server}:${params.PROMETHEUS_PORT}", code: '000', status: 'fail'],
                                             grafana: [url: "https://${p.server}:${params.GRAFANA_PORT}", code: '000', status: 'fail'],
                                             harvest_netapp: [url: "https://${p.server}:12996/metrics", code: '000', status: 'fail'],
-                                            harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail']
+                                            harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail'],
+                                            node_exporter: [url: "http://${p.server}:9100/metrics", code: '000', status: 'fail']
                                         ]
                                     ])
                                 }
@@ -979,7 +980,7 @@ pipeline {
                         if (fileExists(f)) {
                             def row = new groovy.json.JsonSlurperClassic().parseText(readFile(f))
                             def svc = row.services ?: [:]
-                            def ok = [svc.prometheus, svc.grafana, svc.harvest_netapp].every { it?.status == 'ok' }
+                            def ok = [svc.prometheus, svc.grafana, svc.harvest_netapp, svc.node_exporter].every { it?.status == 'ok' }
                             verifyRows << [
                                 server: p.server,
                                 netapp: p.netapp,
@@ -1058,7 +1059,8 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                                     prometheus: [url: "https://${p.server}:${params.PROMETHEUS_PORT}", code: '000', status: 'fail'],
                                     grafana: [url: "https://${p.server}:${params.GRAFANA_PORT}", code: '000', status: 'fail'],
                                     harvest_netapp: [url: "https://${p.server}:12996/metrics", code: '000', status: 'fail'],
-                                    harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail']
+                                    harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail'],
+                                    node_exporter: [url: "http://${p.server}:9100/metrics", code: '000', status: 'fail']
                                 ]
                             ]
                         }
@@ -1091,6 +1093,7 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                         echo "  • Grafana:              ${s.grafana?.url ?: 'N/A'} (status: ${s.grafana?.code ?: '000'} - ${s.grafana?.status ?: 'fail'})"
                         echo "  • Harvest (NetApp):     ${s.harvest_netapp?.url ?: 'N/A'} (status: ${s.harvest_netapp?.code ?: '000'} - ${s.harvest_netapp?.status ?: 'fail'})"
                         echo "  • Harvest (Unix):       ${s.harvest_unix?.url ?: 'N/A'} (status: ${s.harvest_unix?.code ?: '000'} - ${s.harvest_unix?.status ?: 'fail'})"
+                        echo "  • Node Exporter:        ${s.node_exporter?.url ?: 'N/A'} (status: ${s.node_exporter?.code ?: '000'} - ${s.node_exporter?.status ?: 'fail'})"
                     }
                     echo "------------------------------------------------"
                     def mountName = (params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')

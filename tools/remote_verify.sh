@@ -41,6 +41,8 @@ get_http_code() {
   local url="$1"
   local code
   code="$(curl -k -sS -o /dev/null -w "%{http_code}" --max-time 8 "$url" 2>/dev/null || true)"
+  code="${code//[^0-9]/}"
+  code="${code:0:3}"
   if [[ "${code}" =~ ^[0-9]{3}$ ]]; then
     printf '%s' "${code}"
   else
@@ -68,6 +70,7 @@ prom_code="$(get_http_code_fallback "https://127.0.0.1:${PROMETHEUS_PORT}/-/read
 graf_code="$(get_http_code_fallback "https://127.0.0.1:${GRAFANA_PORT}/api/health" "https://${SERVER_DOMAIN}:${GRAFANA_PORT}/api/health")"
 harv_n_code="$(get_http_code_fallback "https://127.0.0.1:${HARVEST_NETAPP_PORT}/metrics" "https://${SERVER_DOMAIN}:${HARVEST_NETAPP_PORT}/metrics")"
 harv_u_code="$(get_http_code "http://127.0.0.1:${HARVEST_UNIX_PORT}/metrics")"
+node_code="$(get_http_code_fallback "http://127.0.0.1:${NODE_EXPORTER_PORT}/metrics" "http://${SERVER_DOMAIN}:${NODE_EXPORTER_PORT}/metrics")"
 
 prom_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' prometheus 2>/dev/null || echo 'N/A')"
 graf_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' grafana 2>/dev/null || echo 'N/A')"
@@ -90,10 +93,12 @@ json="$(jq -nc \
   --arg graf_code "${graf_code}" \
   --arg harv_n_code "${harv_n_code}" \
   --arg harv_u_code "${harv_u_code}" \
+  --arg node_code "${node_code}" \
   --arg prom_port "${PROMETHEUS_PORT}" \
   --arg graf_port "${GRAFANA_PORT}" \
   --arg harv_n_port "${HARVEST_NETAPP_PORT}" \
   --arg harv_u_port "${HARVEST_UNIX_PORT}" \
+  --arg node_port "${NODE_EXPORTER_PORT}" \
   '{
     server: $server,
     server_ip: $server_ip,
@@ -125,6 +130,11 @@ json="$(jq -nc \
         url: ("http://localhost:" + $harv_u_port + "/metrics"),
         code: $harv_u_code,
         status: (if ($harv_u_code|test("^2[0-9][0-9]$")) then "ok" else "fail" end)
+      },
+      node_exporter: {
+        url: ("http://" + $server_domain + ":" + $node_port + "/metrics"),
+        code: $node_code,
+        status: (if ($node_code|test("^2[0-9][0-9]$")) then "ok" else "fail" end)
       }
     }
   }')"
