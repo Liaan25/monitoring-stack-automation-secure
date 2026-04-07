@@ -45,6 +45,8 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${DEPLOY_TARGET_NETAPP:=}"
 : "${NODE_EXPORTER_REPO_USER:=}"
 : "${NODE_EXPORTER_REPO_PASS:=}"
+: "${MONITORING_MOUNT_NAME:=monitoring}"
+: "${MONITORING_STACK_DIR_NAME:=mon-harvest-prometheus-grafana}"
 
 # Версионная информация (передается из Jenkins)
 : "${DEPLOY_VERSION:=unknown}"
@@ -59,14 +61,20 @@ SCRIPT_START_TS=$(date +%s)
 # Конфигурация
 SEC_MAN_ADDR="${SEC_MAN_ADDR^^}"
 DATE_INSTALL=$(date '+%Y%m%d_%H%M%S')
-# SECURE EDITION: Используем пользовательскую директорию вместо /opt/ (без root)
-INSTALL_DIR="$HOME/monitoring/distrib/mon_rpm_${DATE_INSTALL}"
+# Пути мониторинга в смонтированном разделе + совместимый symlink в HOME.
+MONITORING_MOUNT_NAME="${MONITORING_MOUNT_NAME#/}"
+MONITORING_MOUNT_POINT="/${MONITORING_MOUNT_NAME}"
+MONITORING_PHYSICAL_BASE="${MONITORING_MOUNT_POINT}/${MONITORING_STACK_DIR_NAME}"
+MONITORING_BASE="$HOME/monitoring"
+
+# SECURE EDITION: runtime хранится в mounted FS (через $MONITORING_BASE -> symlink).
+INSTALL_DIR="$MONITORING_BASE/distrib/mon_rpm_${DATE_INSTALL}"
 LOG_FILE="$HOME/monitoring_deployment_${DATE_INSTALL}.log"
 DEBUG_LOG="$HOME/monitoring_deployment_debug_${DATE_INSTALL}.log"
 DEBUG_SUMMARY="$HOME/monitoring_deployment_summary.log"
 # Non-root по умолчанию: state-файл в user-space.
 # Legacy путь /var/lib сохраняем только как fallback при наличии прав.
-STATE_FILE="$HOME/monitoring/state/deployment_state"
+STATE_FILE="$MONITORING_BASE/state/deployment_state"
 
 echo "[SCRIPT_START] Variables initialized" >&2
 echo "[SCRIPT_START] DEBUG_LOG=$DEBUG_LOG" >&2
@@ -74,9 +82,9 @@ echo "[SCRIPT_START] LOG_FILE=$LOG_FILE" >&2
 ENV_FILE="/etc/environment.d/99-monitoring-vars.conf"
 HARVEST_CONFIG="/opt/harvest/harvest.yml"
 # SECURE EDITION: Vault в пользовательском пространстве (без root)
-VAULT_CONF_DIR="$HOME/monitoring/config/vault"
-VAULT_LOG_DIR="$HOME/monitoring/logs/vault"
-VAULT_CERTS_DIR="$HOME/monitoring/certs/vault"
+VAULT_CONF_DIR="$MONITORING_BASE/config/vault"
+VAULT_LOG_DIR="$MONITORING_BASE/logs/vault"
+VAULT_CERTS_DIR="$MONITORING_BASE/certs/vault"
 VAULT_AGENT_HCL="${VAULT_CONF_DIR}/agent.hcl"
 VAULT_ROLE_ID_FILE="${VAULT_CONF_DIR}/role_id.txt"
 VAULT_SECRET_ID_FILE="${VAULT_CONF_DIR}/secret_id.txt"
@@ -121,7 +129,7 @@ fi
 # ============================================
 # Согласно документации ИБ Сбербанка, все файлы должны быть в пользовательском пространстве
 # Базовая директория для всех данных мониторинга
-MONITORING_BASE="$HOME/monitoring"
+# (совместимый путь: $HOME/monitoring -> symlink на ${MONITORING_PHYSICAL_BASE})
 
 # Конфигурационные файлы (соответствует рекомендациям ИБ)
 MONITORING_CONFIG_DIR="$MONITORING_BASE/config"
@@ -1547,6 +1555,36 @@ ensure_working_directory() {
     local current_dir
     current_dir=$(pwd)
     print_info "Текущая рабочая директория: $current_dir"
+}
+
+ensure_monitoring_runtime_on_mounted_fs() {
+    print_step "Проверка mounted FS для runtime мониторинга"
+    ensure_working_directory
+
+    if ! findmnt "$MONITORING_MOUNT_POINT" >/dev/null 2>&1; then
+        print_error "Mount point $MONITORING_MOUNT_POINT не смонтирован. Останов."
+        print_error "Сначала должен выполниться Jenkins stage подготовки FS через RLM."
+        exit 1
+    fi
+
+    mkdir -p "$MONITORING_PHYSICAL_BASE"
+
+    if [[ -e "$MONITORING_BASE" && ! -L "$MONITORING_BASE" ]]; then
+        print_warning "Найден legacy путь $MONITORING_BASE (не symlink), переносим в mounted FS"
+        shopt -s dotglob nullglob
+        mv "$MONITORING_BASE"/* "$MONITORING_PHYSICAL_BASE"/ 2>/dev/null || true
+        shopt -u dotglob nullglob
+        rmdir "$MONITORING_BASE" 2>/dev/null || true
+    fi
+
+    ln -sfn "$MONITORING_PHYSICAL_BASE" "$MONITORING_BASE"
+
+    print_success "Runtime мониторинга направлен в mounted FS"
+    print_info "Mount point: $MONITORING_MOUNT_POINT"
+    print_info "Runtime root: $MONITORING_PHYSICAL_BASE"
+    print_info "Compatibility link: $MONITORING_BASE -> $MONITORING_PHYSICAL_BASE"
+    findmnt "$MONITORING_MOUNT_POINT" | while IFS= read -r line; do print_info "findmnt: $line"; done
+    df -h "$MONITORING_MOUNT_POINT" | while IFS= read -r line; do print_info "df: $line"; done
 }
 
 # Функция проверки прав (Secure Edition - БЕЗ root!)
@@ -4905,7 +4943,7 @@ ensure_grafana_token() {
         "${CRED_JSON_PATH:-}" \
         "$PWD/temp_data_cred.json" \
         "$(dirname "$0")/temp_data_cred.json" \
-        "$HOME/monitoring-deployment/temp_data_cred.json" \
+        "${DEPLOY_PATH:-$HOME/monitoring-deployment}/temp_data_cred.json" \
         "/tmp/temp_data_cred.json" \
         "/opt/vault/conf/data_sec.json"; do
         if [[ -n "$candidate" && -f "$candidate" ]]; then
@@ -5099,7 +5137,7 @@ setup_grafana_datasource_and_dashboards() {
         "${CRED_JSON_PATH:-}" \
         "$PWD/temp_data_cred.json" \
         "$(dirname "$0")/temp_data_cred.json" \
-        "$HOME/monitoring-deployment/temp_data_cred.json" \
+        "${DEPLOY_PATH:-$HOME/monitoring-deployment}/temp_data_cred.json" \
         "/tmp/temp_data_cred.json" \
         "/opt/vault/conf/data_sec.json"; do
         if [[ -n "$candidate" && -f "$candidate" ]]; then
@@ -7532,8 +7570,8 @@ get_certificates_from_jenkins() {
         "$(dirname "$0")"/temp_data_cred_*.json \
         "/home/${SUDO_USER:-$(whoami)}/temp_data_cred.json" \
         "/home/${SUDO_USER:-$(whoami)}"/temp_data_cred_*.json \
-        "$HOME/monitoring-deployment/temp_data_cred.json" \
-        "$HOME/monitoring-deployment"/temp_data_cred_*.json; do
+        "${DEPLOY_PATH:-$HOME/monitoring-deployment}/temp_data_cred.json" \
+        "${DEPLOY_PATH:-$HOME/monitoring-deployment}"/temp_data_cred_*.json; do
         if [[ -n "$candidate" && -f "$candidate" ]]; then
             cred_json_path="$candidate"
             break
@@ -7871,6 +7909,12 @@ main() {
     check_sudo
     echo "[MAIN] ✅ check_sudo completed" | tee /dev/stderr
     log_debug "Completed: check_sudo"
+
+    echo "[MAIN] Вызов ensure_monitoring_runtime_on_mounted_fs..." | tee /dev/stderr
+    log_debug "Calling: ensure_monitoring_runtime_on_mounted_fs"
+    ensure_monitoring_runtime_on_mounted_fs
+    echo "[MAIN] ✅ ensure_monitoring_runtime_on_mounted_fs completed" | tee /dev/stderr
+    log_debug "Completed: ensure_monitoring_runtime_on_mounted_fs"
     
     echo "[MAIN] Вызов check_dependencies..." | tee /dev/stderr
     log_debug "Calling: check_dependencies"

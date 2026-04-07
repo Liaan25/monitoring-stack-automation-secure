@@ -9,7 +9,9 @@ def computeEnvironmentVariables() {
         env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
         env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
         env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
-        env.DEPLOY_PATH = "/home/${env.DEPLOY_USER}/monitoring-deployment"
+        def mountName = (params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')
+        def stackDirName = params.MONITORING_STACK_DIR_NAME?.trim() ?: 'mon-harvest-prometheus-grafana'
+        env.DEPLOY_PATH = "/${mountName}/${stackDirName}/monitoring-deployment"
     }
     def netappAddr = params.NETAPP_API_ADDR?.trim() ?: ''
     def netappHost = netappAddr.tokenize('.') ? netappAddr.tokenize('.')[0] : ''
@@ -130,6 +132,8 @@ CRED_JSON_FILE='${pair.credJsonFile}' \
 TARGET_NETAPP='${pair.netapp}' \
 RLM_TOKEN="\$RLM_TOKEN" \
 PHASE_NAME='${phaseFilterSafe}' \
+MONITORING_MOUNT_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
+MONITORING_STACK_DIR_NAME='${scriptContext.params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana'}' \
 SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
 NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
 RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
@@ -160,6 +164,8 @@ DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
 CRED_JSON_FILE='${pair.credJsonFile}' \
 TARGET_NETAPP='${pair.netapp}' \
 RLM_TOKEN="\$RLM_TOKEN" \
+MONITORING_MOUNT_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
+MONITORING_STACK_DIR_NAME='${scriptContext.params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana'}' \
 SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
 NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
 RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
@@ -211,24 +217,41 @@ CRED_JSON_FILE='${pair.credJsonFile}' \
 }
 
 def runRlmMonitoringFsTask(scriptContext, Map pair) {
-    return scriptContext.sh(returnStatus: true, script: """#!/bin/bash
+    def output = scriptContext.sh(returnStdout: true, script: """#!/bin/bash
 set -e
 chmod +x tools/rlm_monitoring_fs.sh
+set +e
+OUTPUT=\$(
 RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
 RLM_TOKEN="\$RLM_TOKEN" \
 NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
 SERVER_FQDN='${pair.server}' \
 SERVER_IP='${pair.server}' \
-MOUNT_POINT='/monitoring' \
+TARGET_NETAPP='${pair.netapp}' \
+MOUNT_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
 VG_NAME='rootvg' \
-LV_NAME='monitoring' \
+LV_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
 TABLE_ID='${scriptContext.params.RLM_FS_TABLE_ID ?: 'uvslinuxtemplatewithtestandpromandvirt'}' \
 SIZE_GB='${scriptContext.params.MONITORING_FS_EXTEND_GB ?: '0'}' \
+FORCE_FS_APPLY='${scriptContext.params.FORCE_RLM_FS_APPLY ? 'true' : 'false'}' \
 RLM_MAX_ATTEMPTS='120' \
 RLM_SLEEP_SEC='10' \
 SSH_USER='${scriptContext.env.SSH_USER ?: ''}' \
-./tools/rlm_monitoring_fs.sh
-""")
+./tools/rlm_monitoring_fs.sh 2>&1
+)
+RC=\$?
+echo "\$OUTPUT"
+REASON=\$(printf "%s\\n" "\$OUTPUT" | sed -n 's/.*\\[RLM-FS-RESULT\\] reason=//p' | tail -1)
+echo "__RLM_FS_META__ rc=\${RC} reason=\${REASON:-unknown}"
+exit 0
+""").trim()
+    scriptContext.echo output
+    def meta = output.readLines().find { it.startsWith('__RLM_FS_META__') } ?: '__RLM_FS_META__ rc=1 reason=unknown'
+    def rcMatcher = (meta =~ /rc=(\d+)/)
+    def reasonMatcher = (meta =~ /reason=([A-Za-z0-9._-]+)/)
+    int rc = rcMatcher.find() ? rcMatcher.group(1).toInteger() : 1
+    String reason = reasonMatcher.find() ? reasonMatcher.group(1) : 'unknown'
+    return [rc: rc, reason: reason]
 }
 
 def getRemoteDomain(scriptContext, String serverAddress) {
@@ -437,9 +460,11 @@ pipeline {
         booleanParam(name: 'RUN_SERVICES_AS_MON_CI', defaultValue: true, description: '🧪 Временно запускать user-юниты от mon_ci (без mon_sys). Для возврата к mon_sys отключите.')
         booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: true, description: '⚡ Пропустить CI диагностику')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить CDL этап')
-        booleanParam(name: 'ENABLE_RLM_MONITORING_FS', defaultValue: false, description: '🧪 EXPERIMENT: создать/расширить /monitoring через RLM (UVS_LINUX_EXTEND_FS2) перед копированием')
-        string(name: 'MONITORING_FS_EXTEND_GB', defaultValue: params.MONITORING_FS_EXTEND_GB ?: '10', description: 'Размер (ГБ) для UVS_LINUX_EXTEND_FS2 в /monitoring (используется при ENABLE_RLM_MONITORING_FS=true)')
-        string(name: 'RLM_FS_TABLE_ID', defaultValue: params.RLM_FS_TABLE_ID ?: 'uvslinuxtemplatewithtestandpromandvirt', description: 'table_id для UVS_LINUX_EXTEND_FS2 (эксперимент)')
+        string(name: 'MONITORING_MOUNT_NAME', defaultValue: params.MONITORING_MOUNT_NAME ?: 'monitoring', description: 'Имя mount point без "/" (например monitoring => /monitoring)')
+        string(name: 'MONITORING_STACK_DIR_NAME', defaultValue: params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana', description: 'Подкаталог в mount point для runtime мониторинга')
+        string(name: 'MONITORING_FS_EXTEND_GB', defaultValue: params.MONITORING_FS_EXTEND_GB ?: '10', description: 'Размер (ГБ) для UVS_LINUX_EXTEND_FS2')
+        booleanParam(name: 'FORCE_RLM_FS_APPLY', defaultValue: false, description: 'Принудительно запускать UVS_LINUX_EXTEND_FS2 даже если mount уже существует (для изменения размера)')
+        string(name: 'RLM_FS_TABLE_ID', defaultValue: params.RLM_FS_TABLE_ID ?: 'uvslinuxtemplatewithtestandpromandvirt', description: 'table_id для UVS_LINUX_EXTEND_FS2')
     }
 
     stages {
@@ -554,15 +579,16 @@ pipeline {
                     if (!params.NAMESPACE_CI?.trim()) {
                         error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)")
                     }
-                    if (params.ENABLE_RLM_MONITORING_FS == true) {
-                        if (!params.MONITORING_FS_EXTEND_GB?.trim()) {
-                            error("❌ ENABLE_RLM_MONITORING_FS=true, но MONITORING_FS_EXTEND_GB не задан")
-                        }
-                        if (!(params.MONITORING_FS_EXTEND_GB ==~ /[0-9]+/) || params.MONITORING_FS_EXTEND_GB.toInteger() <= 0) {
-                            error("❌ MONITORING_FS_EXTEND_GB должен быть положительным целым числом")
-                        }
-                        echo "[INFO] EXPERIMENT FS: ENABLE_RLM_MONITORING_FS=true, size=${params.MONITORING_FS_EXTEND_GB}GB, table_id=${params.RLM_FS_TABLE_ID}"
+                    if (!params.MONITORING_MOUNT_NAME?.trim() || !(params.MONITORING_MOUNT_NAME ==~ /[A-Za-z0-9._-]+/)) {
+                        error("❌ MONITORING_MOUNT_NAME должен быть непустым и содержать только [A-Za-z0-9._-] (без /)")
                     }
+                    if (!params.MONITORING_FS_EXTEND_GB?.trim()) {
+                        error("❌ MONITORING_FS_EXTEND_GB не задан")
+                    }
+                    if (!(params.MONITORING_FS_EXTEND_GB ==~ /[0-9]+/) || params.MONITORING_FS_EXTEND_GB.toInteger() <= 0) {
+                        error("❌ MONITORING_FS_EXTEND_GB должен быть положительным целым числом")
+                    }
+                    echo "[INFO] FS mount: /${params.MONITORING_MOUNT_NAME}, size=${params.MONITORING_FS_EXTEND_GB}GB, force=${params.FORCE_RLM_FS_APPLY}, table_id=${params.RLM_FS_TABLE_ID}"
                     
                     echo "[OK] Параметры проверены"
                     echo "[INFO] Сервер: ${env.SERVER_ADDRESS_EFFECTIVE}"
@@ -628,10 +654,10 @@ pipeline {
         // CDL ЭТАП: Развертывание на целевом сервере (masterLin для доступа)
         // ========================================================================
 
-        stage('CDL: Подготовка /monitoring через RLM (EXPERIMENT)') {
+        stage('CDL: Подготовка mount через RLM') {
             agent { label "masterLin&&sbel8&&!static" }
             when {
-                expression { params.SKIP_DEPLOYMENT != true && params.ENABLE_RLM_MONITORING_FS == true }
+                expression { params.SKIP_DEPLOYMENT != true }
             }
             steps {
                 script {
@@ -639,8 +665,8 @@ pipeline {
                     def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
                     sh 'mkdir -p .deploy-status'
 
-                    echo "[STEP] EXPERIMENT: запускаем UVS_LINUX_EXTEND_FS2 для /monitoring ПЕРЕД копированием файлов"
-                    echo "[INFO] size_gb=${params.MONITORING_FS_EXTEND_GB}, table_id=${params.RLM_FS_TABLE_ID}, vg=rootvg, lv=monitoring, mount=/monitoring"
+                    echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
+                    echo "[INFO] mount=/${params.MONITORING_MOUNT_NAME}, size_gb=${params.MONITORING_FS_EXTEND_GB}, table_id=${params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${params.MONITORING_MOUNT_NAME}, force=${params.FORCE_RLM_FS_APPLY}"
 
                     withCredentials([
                         string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
@@ -650,13 +676,15 @@ pipeline {
                             deploymentPairs.each { pair ->
                                 def p = pair
                                 parallelFs["fs-${p.server}"] = {
-                                    int rc = runRlmMonitoringFsTask(this, p)
+                                    def fsResult = runRlmMonitoringFsTask(this, p)
+                                    int rc = (fsResult.rc ?: 1) as int
+                                    String reason = fsResult.reason ?: (rc == 0 ? 'ok' : "exit_code_${rc}")
                                     def statusObj = [
                                         server: p.server,
                                         netapp: p.netapp,
                                         stage: 'fs-mount',
                                         status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
-                                        reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
+                                        reason: reason
                                     ]
                                     writeFile file: ".deploy-status/fs_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
                                 }
@@ -678,9 +706,9 @@ pipeline {
                     echo fsSummary
                     env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + fsSummary) : fsSummary)
                     if (fsRows.any { it.status != 'SUCCESS' }) {
-                        error("❌ Экспериментальный этап RLM FS /monitoring завершился с ошибками")
+                        error("❌ Этап RLM FS mount завершился с ошибками")
                     }
-                    echo "[SUCCESS] RLM FS /monitoring успешно выполнен на всех серверах"
+                    echo "[SUCCESS] RLM FS mount успешно выполнен на всех серверах"
                 }
             }
         }
