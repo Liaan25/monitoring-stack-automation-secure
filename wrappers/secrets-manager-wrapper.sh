@@ -29,6 +29,15 @@ validate_json_file() {
         "/dev/shm"
         "$HOME"  # Для Secure Edition: файлы в домашней директории пользователя
     )
+
+    # Динамически разрешаем рабочую директорию деплоя (например /monitoring/.../monitoring-deployment)
+    # если она передана пайплайном/скриптом.
+    if [[ -n "${DEPLOY_PATH:-}" ]]; then
+        allowed_dirs+=("$DEPLOY_PATH")
+    fi
+    if [[ -n "${CRED_JSON_PATH:-}" ]]; then
+        allowed_dirs+=("$(dirname "$CRED_JSON_PATH")")
+    fi
     
     # Разрешенные имена файлов (включая per-target формат temp_data_cred_<poller>_<server>.json)
     local allowed_names=(
