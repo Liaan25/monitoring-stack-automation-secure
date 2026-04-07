@@ -3104,7 +3104,7 @@ copy_certs_to_user_dirs() {
     
     # Вариант 2: Ключ внутри bundle (попробуем извлечь)
     if [[ "$private_key_found" == "false" ]]; then
-        echo "[CERTS-COPY] ⚠️  Отдельный файл с ключом не найден, пробуем извлечь из bundle..."
+        echo "[CERTS-COPY] ℹ️  Отдельный файл с ключом не найден, используем штатное извлечение из bundle..."
         log_debug "⚠️  No separate key file found, trying to extract from bundle"
         
         # Пробуем извлечь ключ из bundle (если он там есть)

@@ -190,17 +190,20 @@ DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_TIMESTAMP ?: 'unknown'}' \
 }
 
 def runRemoteVerification(scriptContext, Map pair) {
-    return scriptContext.sh(script: """#!/bin/bash
+    return scriptContext.withEnv([
+        "TARGET_SERVER=${pair.server}",
+        "RUN_SERVICES_AS_MON_CI=${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}",
+        "DEPLOY_USER=${scriptContext.env.DEPLOY_USER}",
+        "MON_SYS_USER=${scriptContext.env.MON_SYS_USER}",
+        "PROMETHEUS_PORT=${scriptContext.params.PROMETHEUS_PORT ?: '9090'}",
+        "GRAFANA_PORT=${scriptContext.params.GRAFANA_PORT ?: '3300'}"
+    ]) {
+        scriptContext.sh(script: '''#!/bin/bash
 set -e
 chmod +x tools/remote_verify.sh
-TARGET_SERVER='${pair.server}' \
-RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
-DEPLOY_USER='${scriptContext.env.DEPLOY_USER}' \
-MON_SYS_USER='${scriptContext.env.MON_SYS_USER}' \
-PROMETHEUS_PORT='${scriptContext.params.PROMETHEUS_PORT ?: '9090'}' \
-GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3300'}' \
 ./tools/remote_verify.sh
-""", returnStdout: true).trim()
+''', returnStdout: true).trim()
+    }
 }
 
 def runRemoteCopy(scriptContext, Map pair) {
@@ -370,18 +373,22 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
                         vaultNamespace: vaultNamespace,
                         vaultAddr: "https://${scriptContext.params.SEC_MAN_ADDR}"
                     ]]) {
-                        def certResponseRaw = scriptContext.sh(
-                            script: """#!/bin/bash
+                        def certPayloadEscaped = certRequestPayload.replace("'", "'\"'\"'")
+                        def certResponseRaw = scriptContext.withEnv([
+                            "SBERCA_URL=https://${scriptContext.params.SEC_MAN_ADDR}",
+                            "SBERCA_API_PATH=${apiPath}",
+                            "SBERCA_NAMESPACE=${vaultNamespace ?: ''}",
+                            "SBERCA_REQUEST_PAYLOAD=${certPayloadEscaped}"
+                        ]) {
+                            scriptContext.sh(
+                            script: '''#!/bin/bash
 set -euo pipefail
 chmod +x tools/fetch_sberca.sh
-SBERCA_URL='https://${scriptContext.params.SEC_MAN_ADDR}' \\
-SBERCA_API_PATH='${apiPath}' \\
-SBERCA_NAMESPACE='${vaultNamespace ?: ''}' \\
-SBERCA_REQUEST_PAYLOAD='${certRequestPayload.replace("'", "'\"'\"'")}' \\
 ./tools/fetch_sberca.sh
-""",
+''',
                             returnStdout: true
                         ).trim()
+                        }
                         def certResponse = new groovy.json.JsonSlurperClassic().parseText(certResponseRaw)
                         def cert = (certResponse?.data?.certificate ?: '').toString().trim()
                         def pkey = (certResponse?.data?.private_key ?: '').toString().trim()
