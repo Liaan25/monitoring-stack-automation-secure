@@ -444,15 +444,15 @@
       {
         "current": {
           "selected": true,
-          "text": "node-exporter|node_exporter",
-          "value": "node-exporter|node_exporter"
+          "text": "node-exporter.*|node_exporter.*",
+          "value": "node-exporter.*|node_exporter.*"
         },
         "hide": 0,
         "includeAll": false,
         "label": "Job",
         "name": "job",
         "options": [],
-        "query": "node-exporter|node_exporter",
+        "query": "node-exporter.*|node_exporter.*",
         "skipUrlSync": false,
         "type": "textbox"
       },

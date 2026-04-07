@@ -4694,6 +4694,7 @@ apiVersion: 1
 
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}
