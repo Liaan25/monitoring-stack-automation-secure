@@ -41,6 +41,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${RUN_SERVICES_AS_MON_CI:=true}"
 : "${FORCE_FRESH_INSTALL:=true}"
 : "${ALLOW_LINGER_FAILURE:=true}"
+: "${SUPPRESS_LOCAL_FINAL_SUMMARY:=false}"
 : "${DEPLOY_TARGET_SERVER:=}"
 : "${DEPLOY_TARGET_NETAPP:=}"
 : "${NODE_EXPORTER_REPO_USER:=}"
@@ -3710,23 +3711,12 @@ install_node_exporter_from_tarball() {
         return 1
     fi
 
-    local archive_size
+    local archive_size archive_sha
     archive_size=$(stat -c%s "$archive_path" 2>/dev/null || stat -f%z "$archive_path" 2>/dev/null || echo "0")
-    print_info "Архив скачан: ${archive_size} байт"
-    print_info "SHA256 архива:"
-    sha256sum "$archive_path" | while IFS= read -r line; do
-        print_info "  $line"
-    done
-
-    print_info "Содержимое архива:"
-    tar -tzf "$archive_path" | sed 's/^/  - /' | while IFS= read -r line; do
-        print_info "$line"
-    done
-
-    print_info "Распаковка архива в: $extract_dir"
-    tar -xvzf "$archive_path" -C "$extract_dir" | while IFS= read -r line; do
-        print_info "  [untar] $line"
-    done
+    archive_sha="$(sha256sum "$archive_path" 2>/dev/null | awk '{print $1}' || true)"
+    print_info "Архив Node Exporter успешно скачан: ${archive_size} байт, sha256=${archive_sha:-n/a}"
+    print_info "Распаковка архива..."
+    tar -xzf "$archive_path" -C "$extract_dir"
 
     local extracted_bin=""
     extracted_bin=$(find "$extract_dir" -type f -name "node_exporter" -perm -111 2>/dev/null | head -1 || true)
@@ -3740,15 +3730,9 @@ install_node_exporter_from_tarball() {
     cp -f "$extracted_bin" "$target_bin"
     chmod 755 "$target_bin"
 
-    print_success "Node Exporter установлен: $target_bin"
-    print_info "Проверка версии:"
-    "$target_bin" --version 2>&1 | while IFS= read -r line; do
-        print_info "  $line"
-    done
-    print_info "Проверка help (первые 25 строк):"
-    "$target_bin" --help 2>&1 | head -25 | while IFS= read -r line; do
-        print_info "  $line"
-    done
+    local node_exporter_version
+    node_exporter_version="$("$target_bin" --version 2>/dev/null | head -1 | sed 's/^node_exporter, version[[:space:]]*//' || true)"
+    print_success "Node Exporter установлен: $target_bin (version: ${node_exporter_version:-unknown})"
 
     rm -rf "$work_dir" >/dev/null 2>&1 || true
     write_diagnostic "Node Exporter install: success, binary=${target_bin}"
@@ -6753,15 +6737,21 @@ EOF_HEADER
     # Функция для импорта дашбордов через harvest
     import_dashboards_via_harvest() {
         local bearer_token="$1"
+        local import_log="/tmp/harvest_dashboard_import_${DATE_INSTALL}_$$.log"
         
         print_info "Попытка импорта дашбордов через harvest..."
         
         # Пробуем импортировать дашборды
-        if echo "Y" | ./bin/harvest --config ./harvest.yml grafana import --addr "$grafana_url" --token "$bearer_token" --insecure 2>&1; then
-            print_success "Дашборды импортированы через harvest"
+        if echo "Y" | ./bin/harvest --config ./harvest.yml grafana import --addr "$grafana_url" --token "$bearer_token" --insecure >"$import_log" 2>&1; then
+            local imported_total imported_sets
+            imported_total=$(grep -Eo '^Imported[[:space:]]+[0-9]+' "$import_log" 2>/dev/null | awk '{sum+=$2} END {print (sum+0)}')
+            imported_sets=$(grep -Ec '^Imported[[:space:]]+[0-9]+' "$import_log" 2>/dev/null || echo "0")
+            print_success "Дашборды успешно импортированы для ${SERVER_DOMAIN} (dashboards=${imported_total}, groups=${imported_sets})"
+            rm -f "$import_log" >/dev/null 2>&1 || true
             return 0
         else
-            print_warning "Не удалось импортировать дашборды автоматически через harvest"
+            print_warning "Не удалось импортировать дашборды автоматически через harvest для ${SERVER_DOMAIN}"
+            print_info "Подробный лог импорта: ${import_log}"
             return 1
         fi
     }
@@ -8129,32 +8119,33 @@ main() {
     save_installation_state
     verify_installation
     
-    # Отображаем финальный summary
+    # Отображаем финальный summary (может быть подавлен при централизованной Jenkins-сводке)
     local elapsed_m
     elapsed_m=$(format_elapsed_minutes)
-    
-    echo
-    echo "================================================================"
-    echo "           ✅ РАЗВЕРТЫВАНИЕ УСПЕШНО ЗАВЕРШЕНО!"
-    echo "================================================================"
-    echo
-    echo "📦 Версия развертывания:"
-    echo "  • Version:              $DEPLOY_VERSION"
-    echo "  • Git Commit:           $DEPLOY_GIT_COMMIT"
-    echo "  • Build Date:           $DEPLOY_BUILD_DATE"
-    echo
-    echo "📊 Общая информация:"
-    echo "  • Сервер IP:            $SERVER_IP"
-    echo "  • Сервер домен:         $SERVER_DOMAIN"
-    echo "  • Дата установки:       $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "  • Время выполнения:     $elapsed_m"
-    echo
-    echo "🔗 Доступ к сервисам:"
-    echo "  • Prometheus:           https://$SERVER_DOMAIN:$PROMETHEUS_PORT"
-    echo "  • Grafana:              https://$SERVER_DOMAIN:$GRAFANA_PORT"
-    echo "  • Harvest (NetApp):     https://$SERVER_DOMAIN:$HARVEST_NETAPP_PORT/metrics"
-    echo "  • Harvest (Unix):       http://localhost:$HARVEST_UNIX_PORT/metrics"
-    echo
+    if [[ "${SUPPRESS_LOCAL_FINAL_SUMMARY}" != "true" ]]; then
+        echo
+        echo "================================================================"
+        echo "           ✅ РАЗВЕРТЫВАНИЕ УСПЕШНО ЗАВЕРШЕНО!"
+        echo "================================================================"
+        echo
+        echo "📦 Версия развертывания:"
+        echo "  • Version:              $DEPLOY_VERSION"
+        echo "  • Git Commit:           $DEPLOY_GIT_COMMIT"
+        echo "  • Build Date:           $DEPLOY_BUILD_DATE"
+        echo
+        echo "📊 Общая информация:"
+        echo "  • Сервер IP:            $SERVER_IP"
+        echo "  • Сервер домен:         $SERVER_DOMAIN"
+        echo "  • Дата установки:       $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "  • Время выполнения:     $elapsed_m"
+        echo
+        echo "🔗 Доступ к сервисам:"
+        echo "  • Prometheus:           https://$SERVER_DOMAIN:$PROMETHEUS_PORT"
+        echo "  • Grafana:              https://$SERVER_DOMAIN:$GRAFANA_PORT"
+        echo "  • Harvest (NetApp):     https://$SERVER_DOMAIN:$HARVEST_NETAPP_PORT/metrics"
+        echo "  • Harvest (Unix):       http://localhost:$HARVEST_UNIX_PORT/metrics"
+        echo
+    fi
     local runtime_user
     if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then
         runtime_user="$(whoami)"

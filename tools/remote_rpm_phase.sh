@@ -8,6 +8,7 @@ ssh ${SSH_OPTS} "${SSH_USER}@${TARGET_SERVER}" \
   CRED_JSON_FILE="${CRED_JSON_FILE}" \
   TARGET_NETAPP="${TARGET_NETAPP}" \
   PHASE_NAME="${PHASE_NAME}" \
+  LOG_LEVEL="${LOG_LEVEL:-normal}" \
   MONITORING_MOUNT_NAME="${MONITORING_MOUNT_NAME:-monitoring}" \
   MONITORING_STACK_DIR_NAME="${MONITORING_STACK_DIR_NAME:-mon-harvest-prometheus-grafana}" \
   SEC_MAN_ADDR="${SEC_MAN_ADDR}" \
@@ -64,6 +65,7 @@ esac
 env \
   MONITORING_MOUNT_NAME="${MONITORING_MOUNT_NAME:-monitoring}" \
   MONITORING_STACK_DIR_NAME="${MONITORING_STACK_DIR_NAME:-mon-harvest-prometheus-grafana}" \
+  SUPPRESS_LOCAL_FINAL_SUMMARY="true" \
   SEC_MAN_ADDR="${SEC_MAN_ADDR}" \
   NAMESPACE_CI="${NAMESPACE_CI}" \
   RLM_API_URL="${RLM_API_URL}" \
@@ -95,7 +97,20 @@ env \
   CRED_JSON_PATH="${DEPLOY_DIR}/${CRED_JSON_FILE}" \
   RLM_PHASE_ONLY="true" \
   RLM_PACKAGE_FILTER="${PHASE_NAME}" \
-  /bin/bash "${REMOTE_SCRIPT_PATH}"
+  if [[ "${LOG_LEVEL:-normal}" == "debug" ]]; then
+    /bin/bash "${REMOTE_SCRIPT_PATH}"
+  else
+    /bin/bash "${REMOTE_SCRIPT_PATH}" 2>&1 | awk '
+      /^DEBUG_/ { next }
+      /^\[MAIN\]/ { next }
+      /^\[SCRIPT_START\]/ { next }
+      /^\[SCRIPT\] Reached end of script definitions/ { next }
+      /^\[SCRIPT\] DEBUG_LOG will be:/ { next }
+      /^\[INFO\]   \[untar\] / { next }
+      { print }
+    '
+    exit ${PIPESTATUS[0]}
+  fi
 REMOTE_EOF
 
 echo "[SYNC-RPM] [${TARGET_SERVER}] ${PHASE_NAME}: локальный success, ожидаем остальные серверы..."
