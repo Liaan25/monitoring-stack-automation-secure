@@ -814,7 +814,7 @@ def runFsMountStage(scriptContext) {
     restoreDeployStatus(scriptContext)
     scriptContext.echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
     scriptContext.echo "[INFO] mount=/${scriptContext.params.MONITORING_MOUNT_NAME}, size_gb=${scriptContext.params.MONITORING_FS_EXTEND_GB}, table_id=${scriptContext.params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${scriptContext.params.MONITORING_MOUNT_NAME}, force=${scriptContext.params.FORCE_RLM_FS_APPLY}"
-    scriptContext.withCredentials([[string(credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')]]) {
+    scriptContext.withCredentials([string(credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')]) {
         withVaultSshCredentials(scriptContext) {
             def parallelFs = [:]
             deploymentPairs.each { pair ->
