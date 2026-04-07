@@ -71,8 +71,8 @@ MONITORING_BASE="$HOME/monitoring"
 # SECURE EDITION: runtime хранится в mounted FS (через $MONITORING_BASE -> symlink).
 INSTALL_DIR="$MONITORING_BASE/distrib/mon_rpm_${DATE_INSTALL}"
 LOG_FILE="$HOME/monitoring_deployment_${DATE_INSTALL}.log"
-DEBUG_LOG="$HOME/monitoring_deployment_debug_${DATE_INSTALL}.log"
-DEBUG_SUMMARY="$HOME/monitoring_deployment_summary.log"
+DEBUG_LOG="${MONITORING_PHYSICAL_BASE}/logs/deployment/monitoring_deployment_debug_${DATE_INSTALL}.log"
+DEBUG_SUMMARY="${MONITORING_PHYSICAL_BASE}/logs/deployment/monitoring_deployment_summary.log"
 # Non-root по умолчанию: state-файл в user-space.
 # Legacy путь /var/lib сохраняем только как fallback при наличии прав.
 STATE_FILE="$MONITORING_BASE/state/deployment_state"

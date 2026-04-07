@@ -1070,14 +1070,17 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                         echo "  • Harvest (Unix):       ${s.harvest_unix?.url ?: 'N/A'} (status: ${s.harvest_unix?.code ?: '000'} - ${s.harvest_unix?.status ?: 'fail'})"
                     }
                     echo "------------------------------------------------"
+                    def mountName = (params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')
+                    def stackDirName = params.MONITORING_STACK_DIR_NAME?.trim() ?: 'mon-harvest-prometheus-grafana'
+                    def runtimeBase = "/${mountName}/${stackDirName}"
                     echo "📄 Конфигурационные файлы:"
-                    echo "  • Prometheus:           ~/monitoring/config/prometheus/prometheus.yml"
-                    echo "  • Prometheus TLS:       ~/monitoring/config/prometheus/web-config.yml"
-                    echo "  • Grafana:              ~/monitoring/config/grafana/grafana.ini"
-                    echo "  • Harvest Unix:         ~/monitoring/config/harvest/harvest-unix.yml"
-                    echo "  • Harvest NetApp:       ~/monitoring/config/harvest/harvest-netapp.yml"
-                    echo "  • Harvest cert/key:     ~/monitoring/config/harvest/cert/harvest.{crt,key}"
-                    echo "  • State file:           ~/monitoring/state/deployment_state"
+                    echo "  • Prometheus:           ${runtimeBase}/config/prometheus/prometheus.yml"
+                    echo "  • Prometheus TLS:       ${runtimeBase}/config/prometheus/web-config.yml"
+                    echo "  • Grafana:              ${runtimeBase}/config/grafana/grafana.ini"
+                    echo "  • Harvest Unix:         ${runtimeBase}/config/harvest/harvest-unix.yml"
+                    echo "  • Harvest NetApp:       ${runtimeBase}/config/harvest/harvest-netapp.yml"
+                    echo "  • Harvest cert/key:     ${runtimeBase}/config/harvest/cert/harvest.{crt,key}"
+                    echo "  • State file:           ${runtimeBase}/state/deployment_state"
                     echo "================================================================"
                 }
             }
