@@ -95,6 +95,69 @@ def persistDeployStatus(scriptContext) {
     scriptContext.stash name: 'deploy-status-all', includes: '.deploy-status/*.json', allowEmpty: true
 }
 
+@NonCPS
+def buildVerifyFallbackReport(Map pair, String deployUser, String prometheusPort, String grafanaPort) {
+    return [
+        server: pair.server,
+        server_domain: pair.server,
+        server_ip: pair.server,
+        runtime_user: deployUser,
+        versions: [grafana: 'N/A', prometheus: 'N/A', harvest: 'N/A', node_exporter: 'N/A'],
+        services: [
+            prometheus: [url: "https://${pair.server}:${prometheusPort}", code: '000', status: 'fail'],
+            grafana: [url: "https://${pair.server}:${grafanaPort}", code: '000', status: 'fail'],
+            harvest_netapp: [url: "https://${pair.server}:12996/metrics", code: '000', status: 'fail'],
+            harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail'],
+            node_exporter: [url: "http://${pair.server}:9100/metrics", code: '000', status: 'fail']
+        ]
+    ]
+}
+
+def printFinalDeploymentReport(scriptContext, List reports) {
+    scriptContext.echo "================================================================"
+    scriptContext.echo "           ✅ РАЗВЕРТЫВАНИЕ УСПЕШНО ЗАВЕРШЕНО!"
+    scriptContext.echo "================================================================"
+    scriptContext.echo ""
+    scriptContext.echo "📦 Версия развертывания:"
+    scriptContext.echo "  • Version:              ${scriptContext.env.VERSION_SHORT}"
+    scriptContext.echo "  • Git Commit:           ${scriptContext.env.VERSION_GIT_COMMIT}"
+    scriptContext.echo "  • Build Date:           ${scriptContext.env.VERSION_BUILD_TIMESTAMP}"
+    scriptContext.echo ""
+    scriptContext.echo "📊 Сводка по серверам:"
+    reports.each { r ->
+        def srv = r.server_domain ?: r.server
+        def ip = r.server_ip ?: 'N/A'
+        def runtimeUser = r.runtime_user ?: scriptContext.env.DEPLOY_USER
+        def v = r.versions ?: [:]
+        def s = r.services ?: [:]
+        scriptContext.echo "------------------------------------------------"
+        scriptContext.echo "• Сервер: ${srv} (${ip})"
+        scriptContext.echo "  • Runtime user:         ${runtimeUser}"
+        scriptContext.echo "  • Grafana version:      ${v.grafana ?: 'N/A'}"
+        scriptContext.echo "  • Prometheus version:   ${v.prometheus ?: 'N/A'}"
+        scriptContext.echo "  • Harvest version:      ${v.harvest ?: 'N/A'}"
+        scriptContext.echo "  • Node Exporter ver.:   ${v.node_exporter ?: 'N/A'}"
+        scriptContext.echo "  • Prometheus:           ${s.prometheus?.url ?: 'N/A'} (status: ${s.prometheus?.code ?: '000'} - ${s.prometheus?.status ?: 'fail'})"
+        scriptContext.echo "  • Grafana:              ${s.grafana?.url ?: 'N/A'} (status: ${s.grafana?.code ?: '000'} - ${s.grafana?.status ?: 'fail'})"
+        scriptContext.echo "  • Harvest (NetApp):     ${s.harvest_netapp?.url ?: 'N/A'} (status: ${s.harvest_netapp?.code ?: '000'} - ${s.harvest_netapp?.status ?: 'fail'})"
+        scriptContext.echo "  • Harvest (Unix):       ${s.harvest_unix?.url ?: 'N/A'} (status: ${s.harvest_unix?.code ?: '000'} - ${s.harvest_unix?.status ?: 'fail'})"
+        scriptContext.echo "  • Node Exporter:        ${s.node_exporter?.url ?: 'N/A'} (status: ${s.node_exporter?.code ?: '000'} - ${s.node_exporter?.status ?: 'fail'})"
+    }
+    scriptContext.echo "------------------------------------------------"
+    def mountName = (scriptContext.params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')
+    def stackDirName = scriptContext.params.MONITORING_STACK_DIR_NAME?.trim() ?: 'mon-harvest-prometheus-grafana'
+    def runtimeBase = "/${mountName}/${stackDirName}"
+    scriptContext.echo "📄 Конфигурационные файлы:"
+    scriptContext.echo "  • Prometheus:           ${runtimeBase}/config/prometheus/prometheus.yml"
+    scriptContext.echo "  • Prometheus TLS:       ${runtimeBase}/config/prometheus/web-config.yml"
+    scriptContext.echo "  • Grafana:              ${runtimeBase}/config/grafana/grafana.ini"
+    scriptContext.echo "  • Harvest Unix:         ${runtimeBase}/config/harvest/harvest-unix.yml"
+    scriptContext.echo "  • Harvest NetApp:       ${runtimeBase}/config/harvest/harvest-netapp.yml"
+    scriptContext.echo "  • Harvest cert/key:     ${runtimeBase}/config/harvest/cert/harvest.{crt,key}"
+    scriptContext.echo "  • State file:           ${runtimeBase}/state/deployment_state"
+    scriptContext.echo "================================================================"
+}
+
 def withVaultSshCredentials(scriptContext, Closure body) {
     def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
     if (!sshCredentialsId) {
@@ -478,7 +541,7 @@ pipeline {
         booleanParam(name: 'SYNC_RPM_PHASES', defaultValue: true, description: '🔄 Синхронная lockstep-установка RPM по всем серверам (Grafana -> Prometheus -> Harvest -> Node Exporter)')
         booleanParam(name: 'SKIP_IPTABLES', defaultValue: true, description: '✅ Пропустить настройку iptables (для non-root/ограниченных sudo)')
         booleanParam(name: 'RUN_SERVICES_AS_MON_CI', defaultValue: true, description: '🧪 Временно запускать user-юниты от mon_ci (без mon_sys). Для возврата к mon_sys отключите.')
-        booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: true, description: '⚡ Пропустить CI диагностику')
+        booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: false, description: '⚡ Пропустить CI диагностику')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить CDL этап')
         string(name: 'MONITORING_MOUNT_NAME', defaultValue: params.MONITORING_MOUNT_NAME ?: 'monitoring', description: 'Имя mount point без "/" (например monitoring => /monitoring)')
         string(name: 'MONITORING_STACK_DIR_NAME', defaultValue: params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana', description: 'Подкаталог в mount point для runtime мониторинга')
@@ -954,20 +1017,13 @@ pipeline {
                                 if (marker) {
                                     writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: marker.substring('__VERIFY_JSON__'.length())
                                 } else {
-                                    writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson([
-                                        server: p.server,
-                                        server_domain: p.server,
-                                        server_ip: p.server,
-                                        runtime_user: env.DEPLOY_USER,
-                                        versions: [grafana: 'N/A', prometheus: 'N/A', harvest: 'N/A', node_exporter: 'N/A'],
-                                        services: [
-                                            prometheus: [url: "https://${p.server}:${params.PROMETHEUS_PORT}", code: '000', status: 'fail'],
-                                            grafana: [url: "https://${p.server}:${params.GRAFANA_PORT}", code: '000', status: 'fail'],
-                                            harvest_netapp: [url: "https://${p.server}:12996/metrics", code: '000', status: 'fail'],
-                                            harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail'],
-                                            node_exporter: [url: "http://${p.server}:9100/metrics", code: '000', status: 'fail']
-                                        ]
-                                    ])
+                                    def fallback = buildVerifyFallbackReport(
+                                        p,
+                                        env.DEPLOY_USER ?: '',
+                                        (params.PROMETHEUS_PORT ?: '9090').toString(),
+                                        (params.GRAFANA_PORT ?: '3300').toString()
+                                    )
+                                    writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(fallback)
                                 }
                             }
                         }
@@ -1049,65 +1105,15 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
                         if (fileExists(f)) {
                             reports << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
                         } else {
-                            reports << [
-                                server: p.server,
-                                server_domain: p.server,
-                                server_ip: p.server,
-                                runtime_user: env.DEPLOY_USER,
-                                versions: [grafana: 'N/A', prometheus: 'N/A', harvest: 'N/A', node_exporter: 'N/A'],
-                                services: [
-                                    prometheus: [url: "https://${p.server}:${params.PROMETHEUS_PORT}", code: '000', status: 'fail'],
-                                    grafana: [url: "https://${p.server}:${params.GRAFANA_PORT}", code: '000', status: 'fail'],
-                                    harvest_netapp: [url: "https://${p.server}:12996/metrics", code: '000', status: 'fail'],
-                                    harvest_unix: [url: "http://localhost:12995/metrics", code: '000', status: 'fail'],
-                                    node_exporter: [url: "http://${p.server}:9100/metrics", code: '000', status: 'fail']
-                                ]
-                            ]
+                            reports << buildVerifyFallbackReport(
+                                p,
+                                env.DEPLOY_USER ?: '',
+                                (params.PROMETHEUS_PORT ?: '9090').toString(),
+                                (params.GRAFANA_PORT ?: '3300').toString()
+                            )
                         }
                     }
-
-                    echo "================================================================"
-                    echo "           ✅ РАЗВЕРТЫВАНИЕ УСПЕШНО ЗАВЕРШЕНО!"
-                    echo "================================================================"
-                    echo ""
-                    echo "📦 Версия развертывания:"
-                    echo "  • Version:              ${env.VERSION_SHORT}"
-                    echo "  • Git Commit:           ${env.VERSION_GIT_COMMIT}"
-                    echo "  • Build Date:           ${env.VERSION_BUILD_TIMESTAMP}"
-                    echo ""
-                    echo "📊 Сводка по серверам:"
-                    reports.each { r ->
-                        def srv = r.server_domain ?: r.server
-                        def ip = r.server_ip ?: 'N/A'
-                        def runtimeUser = r.runtime_user ?: env.DEPLOY_USER
-                        def v = r.versions ?: [:]
-                        def s = r.services ?: [:]
-                        echo "------------------------------------------------"
-                        echo "• Сервер: ${srv} (${ip})"
-                        echo "  • Runtime user:         ${runtimeUser}"
-                        echo "  • Grafana version:      ${v.grafana ?: 'N/A'}"
-                        echo "  • Prometheus version:   ${v.prometheus ?: 'N/A'}"
-                        echo "  • Harvest version:      ${v.harvest ?: 'N/A'}"
-                        echo "  • Node Exporter ver.:   ${v.node_exporter ?: 'N/A'}"
-                        echo "  • Prometheus:           ${s.prometheus?.url ?: 'N/A'} (status: ${s.prometheus?.code ?: '000'} - ${s.prometheus?.status ?: 'fail'})"
-                        echo "  • Grafana:              ${s.grafana?.url ?: 'N/A'} (status: ${s.grafana?.code ?: '000'} - ${s.grafana?.status ?: 'fail'})"
-                        echo "  • Harvest (NetApp):     ${s.harvest_netapp?.url ?: 'N/A'} (status: ${s.harvest_netapp?.code ?: '000'} - ${s.harvest_netapp?.status ?: 'fail'})"
-                        echo "  • Harvest (Unix):       ${s.harvest_unix?.url ?: 'N/A'} (status: ${s.harvest_unix?.code ?: '000'} - ${s.harvest_unix?.status ?: 'fail'})"
-                        echo "  • Node Exporter:        ${s.node_exporter?.url ?: 'N/A'} (status: ${s.node_exporter?.code ?: '000'} - ${s.node_exporter?.status ?: 'fail'})"
-                    }
-                    echo "------------------------------------------------"
-                    def mountName = (params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')
-                    def stackDirName = params.MONITORING_STACK_DIR_NAME?.trim() ?: 'mon-harvest-prometheus-grafana'
-                    def runtimeBase = "/${mountName}/${stackDirName}"
-                    echo "📄 Конфигурационные файлы:"
-                    echo "  • Prometheus:           ${runtimeBase}/config/prometheus/prometheus.yml"
-                    echo "  • Prometheus TLS:       ${runtimeBase}/config/prometheus/web-config.yml"
-                    echo "  • Grafana:              ${runtimeBase}/config/grafana/grafana.ini"
-                    echo "  • Harvest Unix:         ${runtimeBase}/config/harvest/harvest-unix.yml"
-                    echo "  • Harvest NetApp:       ${runtimeBase}/config/harvest/harvest-netapp.yml"
-                    echo "  • Harvest cert/key:     ${runtimeBase}/config/harvest/cert/harvest.{crt,key}"
-                    echo "  • State file:           ${runtimeBase}/state/deployment_state"
-                    echo "================================================================"
+                    printFinalDeploymentReport(this, reports)
                 }
             }
         }
