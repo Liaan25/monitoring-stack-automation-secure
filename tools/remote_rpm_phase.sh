@@ -106,7 +106,10 @@ if [[ "${LOG_LEVEL:-normal}" == "debug" ]]; then
 else
   run_remote_phase 2>&1 | awk '
     /^DEBUG_/ { next }
-    /^\[MAIN\]/ { next }
+    /^\[MAIN\]/ {
+      if ($0 ~ /ERROR|FAIL|FAILED|WARNING|WARN|❌|⏰/) { print }
+      next
+    }
     /^\[SCRIPT\] Calling main with args:/ { next }
     /^\[SCRIPT\] main\(\) completed with exit code:/ { next }
     /^\[SCRIPT\] Script finished$/ { next }
