@@ -7473,6 +7473,44 @@ verify_installation() {
     fi
 }
 
+service_http_status() {
+    local url="$1"
+    local insecure="${2:-false}"
+    local code
+    if [[ "${insecure}" == "true" ]]; then
+        code="$(curl -k -sS -o /dev/null -w "%{http_code}" --max-time 8 "$url" 2>/dev/null || true)"
+    else
+        code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 "$url" 2>/dev/null || true)"
+    fi
+    if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
+        echo "${code} - ok"
+    elif [[ "${code}" =~ ^[0-9]{3}$ ]]; then
+        echo "${code} - fail"
+    else
+        echo "000 - fail"
+    fi
+}
+
+print_installed_versions_summary() {
+    local graf_ver prom_ver harv_ver node_ver
+    graf_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' grafana 2>/dev/null || echo 'N/A')"
+    prom_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' prometheus 2>/dev/null || echo 'N/A')"
+    harv_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' harvest 2>/dev/null || echo 'N/A')"
+    if [[ -x "$HOME/bin/node_exporter" ]]; then
+        node_ver="$("$HOME/bin/node_exporter" --version 2>/dev/null | head -1 | sed 's/^node_exporter, version[[:space:]]*//' || true)"
+    else
+        node_ver="N/A"
+    fi
+    node_ver="${node_ver:-N/A}"
+
+    echo "📦 Установленные пакеты/бинарники:"
+    echo "  • grafana (rpm):        ${graf_ver}"
+    echo "  • prometheus (rpm):     ${prom_ver}"
+    echo "  • harvest (rpm):        ${harv_ver}"
+    echo "  • node_exporter (bin):  ${node_ver} [$HOME/bin/node_exporter]"
+    echo
+}
+
 save_installation_state() {
     print_step "Сохранение состояния установки"
     ensure_working_directory
@@ -8197,11 +8235,15 @@ main() {
         echo "  • Время выполнения:     $elapsed_m"
         echo
         echo "🔗 Доступ к сервисам:"
-        echo "  • Prometheus:           https://$SERVER_DOMAIN:$PROMETHEUS_PORT"
-        echo "  • Grafana:              https://$SERVER_DOMAIN:$GRAFANA_PORT"
-        echo "  • Harvest (NetApp):     https://$SERVER_DOMAIN:$HARVEST_NETAPP_PORT/metrics"
-        echo "  • Harvest (Unix):       http://localhost:$HARVEST_UNIX_PORT/metrics"
+        echo "  • Prometheus:           https://$SERVER_DOMAIN:$PROMETHEUS_PORT (status: $(service_http_status "https://127.0.0.1:${PROMETHEUS_PORT}/-/ready" true))"
+        echo "  • Grafana:              https://$SERVER_DOMAIN:$GRAFANA_PORT (status: $(service_http_status "https://127.0.0.1:${GRAFANA_PORT}/api/health" true))"
+        echo "  • Harvest (NetApp):     https://$SERVER_DOMAIN:$HARVEST_NETAPP_PORT/metrics (status: $(service_http_status "https://127.0.0.1:${HARVEST_NETAPP_PORT}/metrics" true))"
+        echo "  • Harvest (Unix):       http://localhost:$HARVEST_UNIX_PORT/metrics (status: $(service_http_status "http://127.0.0.1:${HARVEST_UNIX_PORT}/metrics" false))"
+        if [[ -n "${NODE_EXPORTER_URL:-}" ]]; then
+            echo "  • Node Exporter:        http://$SERVER_DOMAIN:$NODE_EXPORTER_PORT/metrics (status: $(service_http_status "http://127.0.0.1:${NODE_EXPORTER_PORT}/metrics" false))"
+        fi
         echo
+        print_installed_versions_summary
     fi
     local runtime_user
     if [[ "${RUN_SERVICES_AS_MON_CI:-true}" == "true" ]]; then

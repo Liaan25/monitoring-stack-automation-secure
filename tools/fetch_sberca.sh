@@ -2,6 +2,10 @@
 set -euo pipefail
 set +x
 
+if [[ -z "${SBERCA_NAMESPACE:-}" && -n "${VAULT_NAMESPACE:-}" ]]; then
+  SBERCA_NAMESPACE="${VAULT_NAMESPACE}"
+fi
+
 NS_HEADER=()
 if [[ -n "${SBERCA_NAMESPACE:-}" ]]; then
   NS_HEADER=(-H "X-Vault-Namespace: ${SBERCA_NAMESPACE}")

@@ -83,16 +83,44 @@ def renderDeploySummary(String title, List<Map> rows) {
 
 def restoreDeployStatus(scriptContext) {
     scriptContext.sh 'mkdir -p .deploy-status'
-    try {
-        scriptContext.unstash('deploy-status-all')
-    } catch (ignored) {
+    def candidates = []
+    if (scriptContext.env.DEPLOY_STATUS_STASH_LAST?.trim()) {
+        candidates << scriptContext.env.DEPLOY_STATUS_STASH_LAST.trim()
+    }
+    candidates << 'deploy-status-all'
+
+    boolean restored = false
+    candidates.unique().each { stashName ->
+        if (restored) {
+            return
+        }
+        try {
+            scriptContext.unstash(stashName)
+            restored = true
+            scriptContext.echo "[INFO] deploy-status восстановлен из stash: ${stashName}"
+        } catch (ignored) {
+            // Пробуем следующий stash-кандидат
+        }
+    }
+
+    if (!restored) {
         scriptContext.echo "[INFO] deploy-status stash не найден, продолжаем с пустым локальным статусом"
     }
 }
 
 def persistDeployStatus(scriptContext) {
     scriptContext.sh 'mkdir -p .deploy-status'
-    scriptContext.stash name: 'deploy-status-all', includes: '.deploy-status/*.json', allowEmpty: true
+    int seq
+    try {
+        seq = (scriptContext.env.DEPLOY_STATUS_STASH_SEQ ?: '0').toInteger()
+    } catch (ignored) {
+        seq = 0
+    }
+    seq += 1
+    scriptContext.env.DEPLOY_STATUS_STASH_SEQ = seq.toString()
+    def stashName = "deploy-status-all-${scriptContext.env.BUILD_NUMBER ?: '0'}-${seq}"
+    scriptContext.stash name: stashName, includes: '.deploy-status/*.json', allowEmpty: true
+    scriptContext.env.DEPLOY_STATUS_STASH_LAST = stashName
 }
 
 @NonCPS
@@ -454,7 +482,6 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
                         def certResponseRaw = scriptContext.withEnv([
                             "SBERCA_URL=https://${scriptContext.params.SEC_MAN_ADDR}",
                             "SBERCA_API_PATH=${apiPath}",
-                            "SBERCA_NAMESPACE=${vaultNamespace ?: ''}",
                             "SBERCA_REQUEST_PAYLOAD=${certPayloadEscaped}"
                         ]) {
                             scriptContext.sh(
@@ -510,6 +537,179 @@ fi
     }
     scriptContext.stash name: 'vault-credentials', includes: 'temp_data_cred_*.json,temp_data_cred.json'
     scriptContext.echo "[SUCCESS] Данные из Vault получены"
+}
+
+def runSyncRpmStage(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    restoreDeployStatus(scriptContext)
+
+    scriptContext.echo "[STEP] Синхронная lockstep установка RPM по всем серверам"
+    scriptContext.echo "[INFO] Принцип: Grafana -> Prometheus -> Harvest -> Node Exporter"
+    def rpmPhases = ['Grafana', 'Prometheus', 'Harvest', 'Node Exporter']
+
+    scriptContext.withCredentials([[
+        $class: 'StringBinding',
+        credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID,
+        variable: 'RLM_TOKEN'
+    ]]) {
+        withVaultSshCredentials(scriptContext) {
+            rpmPhases.each { phaseName ->
+                def phaseSlug = phaseName.toLowerCase().replaceAll(/[^a-z0-9]+/, '_')
+                scriptContext.echo "================================================"
+                scriptContext.echo "[SYNC-RPM] ФАЗА START: ${phaseName}"
+                scriptContext.echo "================================================"
+
+                def parallelPhase = [:]
+                deploymentPairs.each { pair ->
+                    def p = pair
+                    parallelPhase["rpm-${phaseSlug}-${p.server}"] = {
+                        int rc = runRemoteRpmPhaseInstall(scriptContext, p, phaseName)
+                        def statusObj = [
+                            server: p.server,
+                            netapp: p.netapp,
+                            stage: "rpm-${phaseSlug}",
+                            status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
+                            reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
+                        ]
+                        scriptContext.writeFile file: ".deploy-status/rpm_${phaseSlug}_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
+                    }
+                }
+                scriptContext.parallel parallelPhase
+
+                def phaseRows = []
+                deploymentPairs.each { p ->
+                    def f = ".deploy-status/rpm_${phaseSlug}_${p.serverPrefixSafe}.json"
+                    if (scriptContext.fileExists(f)) {
+                        phaseRows << new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(f))
+                    } else {
+                        phaseRows << [server: p.server, netapp: p.netapp, stage: "rpm-${phaseSlug}", status: 'FAILED', reason: 'no_status_file']
+                    }
+                }
+                def phaseSummary = renderDeploySummary("СВОДКА ${phaseName.toUpperCase()} (LOCKSTEP)", phaseRows)
+                scriptContext.echo phaseSummary
+                scriptContext.env.DEPLOY_STATUS_SUMMARY = (scriptContext.env.DEPLOY_STATUS_SUMMARY ? (scriptContext.env.DEPLOY_STATUS_SUMMARY + "\n" + phaseSummary) : phaseSummary)
+                persistDeployStatus(scriptContext)
+                if (phaseRows.any { it.status != 'SUCCESS' }) {
+                    scriptContext.error("❌ Фаза ${phaseName} завершилась с ошибками. Переход к следующей фазе остановлен.")
+                }
+
+                scriptContext.echo "[SYNC-RPM] Все серверы завершили фазу ${phaseName}. Переходим к следующей через 5с..."
+                scriptContext.sh 'sleep 5'
+            }
+        }
+    }
+}
+
+def runDeployStage(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    restoreDeployStatus(scriptContext)
+    def effectiveSkipRpm = scriptContext.params.SYNC_RPM_PHASES ? 'true' : (scriptContext.params.SKIP_RPM_INSTALL ? 'true' : 'false')
+
+    scriptContext.echo "[STEP] Запуск развертывания на удаленных серверах..."
+    if (scriptContext.params.SYNC_RPM_PHASES) {
+        scriptContext.echo "[INFO] Режим: SKIP_RPM_INSTALL=true (RPM уже установлены в lockstep-фазах)"
+    } else {
+        scriptContext.echo "[INFO] Режим: стандартный (учитываем параметр SKIP_RPM_INSTALL=${effectiveSkipRpm})"
+    }
+
+    scriptContext.unstash 'vault-credentials'
+    scriptContext.withCredentials([[
+        $class: 'StringBinding',
+        credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID,
+        variable: 'RLM_TOKEN'
+    ]]) {
+        withVaultSshCredentials(scriptContext) {
+            def parallelDeploy = [:]
+            deploymentPairs.each { pair ->
+                def p = pair
+                parallelDeploy["deploy-${p.server}"] = {
+                    int rc = runRemoteFullDeploy(scriptContext, p, effectiveSkipRpm)
+                    def statusObj = [
+                        server: p.server,
+                        netapp: p.netapp,
+                        stage: 'deploy',
+                        status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
+                        reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
+                    ]
+                    scriptContext.writeFile file: ".deploy-status/deploy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
+                }
+            }
+            scriptContext.parallel parallelDeploy
+        }
+    }
+
+    def deployRows = []
+    deploymentPairs.each { p ->
+        def f = ".deploy-status/deploy_${p.serverPrefixSafe}.json"
+        if (scriptContext.fileExists(f)) {
+            deployRows << new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(f))
+        } else {
+            deployRows << [server: p.server, netapp: p.netapp, stage: 'deploy', status: 'FAILED', reason: 'no_status_file']
+        }
+    }
+    def deploySummary = renderDeploySummary("СВОДКА DEPLOY", deployRows)
+    scriptContext.echo deploySummary
+    scriptContext.env.DEPLOY_STATUS_SUMMARY = (scriptContext.env.DEPLOY_STATUS_SUMMARY ? (scriptContext.env.DEPLOY_STATUS_SUMMARY + "\n" + deploySummary) : deploySummary)
+    persistDeployStatus(scriptContext)
+    if (deployRows.any { it.status != 'SUCCESS' }) {
+        scriptContext.error("❌ Ошибка развертывания на одном или нескольких серверах")
+    }
+}
+
+def runVerifyStage(scriptContext) {
+    computeEnvironmentVariables()
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    restoreDeployStatus(scriptContext)
+
+    scriptContext.echo "[STEP] Проверка результатов развертывания (User Units)..."
+    withVaultSshCredentials(scriptContext) {
+        def parallelChecks = [:]
+        deploymentPairs.each { pair ->
+            def p = pair
+            parallelChecks["check-${p.server}"] = {
+                def result = runRemoteVerification(scriptContext, p)
+                scriptContext.echo result
+                def marker = result.readLines().find { it.startsWith('__VERIFY_JSON__') }
+                if (marker) {
+                    scriptContext.writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: marker.substring('__VERIFY_JSON__'.length())
+                } else {
+                    def fallback = buildVerifyFallbackReport(
+                        p,
+                        scriptContext.env.DEPLOY_USER ?: '',
+                        (scriptContext.params.PROMETHEUS_PORT ?: '9090').toString(),
+                        (scriptContext.params.GRAFANA_PORT ?: '3300').toString()
+                    )
+                    scriptContext.writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(fallback)
+                }
+            }
+        }
+        scriptContext.parallel parallelChecks
+    }
+
+    def verifyRows = []
+    deploymentPairs.each { p ->
+        def f = ".deploy-status/verify_${p.serverPrefixSafe}.json"
+        if (scriptContext.fileExists(f)) {
+            def row = new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(f))
+            def svc = row.services ?: [:]
+            def ok = [svc.prometheus, svc.grafana, svc.harvest_netapp, svc.node_exporter].every { it?.status == 'ok' }
+            verifyRows << [
+                server: p.server,
+                netapp: p.netapp,
+                stage: 'verify',
+                status: (ok ? 'SUCCESS' : 'FAILED'),
+                reason: (ok ? 'ok' : 'service_check_failed')
+            ]
+        } else {
+            verifyRows << [server: p.server, netapp: p.netapp, stage: 'verify', status: 'FAILED', reason: 'no_status_file']
+        }
+    }
+    def verifySummary = renderDeploySummary("СВОДКА VERIFY", verifyRows)
+    scriptContext.echo verifySummary
+    scriptContext.env.DEPLOY_STATUS_SUMMARY = (scriptContext.env.DEPLOY_STATUS_SUMMARY ? (scriptContext.env.DEPLOY_STATUS_SUMMARY + "\n" + verifySummary) : verifySummary)
+    persistDeployStatus(scriptContext)
 }
 
 pipeline {
@@ -870,63 +1070,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    restoreDeployStatus(this)
-
-                    echo "[STEP] Синхронная lockstep установка RPM по всем серверам"
-                    echo "[INFO] Принцип: Grafana -> Prometheus -> Harvest -> Node Exporter"
-                    def rpmPhases = ['Grafana', 'Prometheus', 'Harvest', 'Node Exporter']
-
-                    withCredentials([
-                        string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
-                    ]) {
-                        withVaultSshCredentials(this) {
-                            rpmPhases.each { phaseName ->
-                                def phaseSlug = phaseName.toLowerCase().replaceAll(/[^a-z0-9]+/, '_')
-                                echo "================================================"
-                                echo "[SYNC-RPM] ФАЗА START: ${phaseName}"
-                                echo "================================================"
-
-                                def parallelPhase = [:]
-                                deploymentPairs.each { pair ->
-                                    def p = pair
-                                    parallelPhase["rpm-${phaseSlug}-${p.server}"] = {
-                                        int rc = runRemoteRpmPhaseInstall(this, p, phaseName)
-                                        def statusObj = [
-                                            server: p.server,
-                                            netapp: p.netapp,
-                                            stage: "rpm-${phaseSlug}",
-                                            status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
-                                            reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
-                                        ]
-                                        writeFile file: ".deploy-status/rpm_${phaseSlug}_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
-                                    }
-                                }
-                                parallel parallelPhase
-
-                                def phaseRows = []
-                                deploymentPairs.each { p ->
-                                    def f = ".deploy-status/rpm_${phaseSlug}_${p.serverPrefixSafe}.json"
-                                    if (fileExists(f)) {
-                                        phaseRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                                    } else {
-                                        phaseRows << [server: p.server, netapp: p.netapp, stage: "rpm-${phaseSlug}", status: 'FAILED', reason: 'no_status_file']
-                                    }
-                                }
-                                def phaseSummary = renderDeploySummary("СВОДКА ${phaseName.toUpperCase()} (LOCKSTEP)", phaseRows)
-                                echo phaseSummary
-                                env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + phaseSummary) : phaseSummary)
-                                persistDeployStatus(this)
-                                if (phaseRows.any { it.status != 'SUCCESS' }) {
-                                    error("❌ Фаза ${phaseName} завершилась с ошибками. Переход к следующей фазе остановлен.")
-                                }
-
-                                echo "[SYNC-RPM] Все серверы завершили фазу ${phaseName}. Переходим к следующей через 5с..."
-                                sh 'sleep 5'
-                            }
-                        }
-                    }
+                    runSyncRpmStage(this)
                 }
             }
         }
@@ -938,58 +1082,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    restoreDeployStatus(this)
-                    def effectiveSkipRpm = params.SYNC_RPM_PHASES ? 'true' : (params.SKIP_RPM_INSTALL ? 'true' : 'false')
-
-                    echo "[STEP] Запуск развертывания на удаленных серверах..."
-                    if (params.SYNC_RPM_PHASES) {
-                        echo "[INFO] Режим: SKIP_RPM_INSTALL=true (RPM уже установлены в lockstep-фазах)"
-                    } else {
-                        echo "[INFO] Режим: стандартный (учитываем параметр SKIP_RPM_INSTALL=${effectiveSkipRpm})"
-                    }
-
-                    unstash 'vault-credentials'
-                    withCredentials([
-                        string(credentialsId: params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')
-                    ]) {
-                        withVaultSshCredentials(this) {
-                            def parallelDeploy = [:]
-                            deploymentPairs.each { pair ->
-                                def p = pair
-                                parallelDeploy["deploy-${p.server}"] = {
-                                    int rc = runRemoteFullDeploy(this, p, effectiveSkipRpm)
-                                    def statusObj = [
-                                        server: p.server,
-                                        netapp: p.netapp,
-                                        stage: 'deploy',
-                                        status: (rc == 0 ? 'SUCCESS' : 'FAILED'),
-                                        reason: (rc == 0 ? 'ok' : "exit_code_${rc}")
-                                    ]
-                                    writeFile file: ".deploy-status/deploy_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(statusObj)
-                                }
-                            }
-                            parallel parallelDeploy
-                        }
-                    }
-
-                    def deployRows = []
-                    deploymentPairs.each { p ->
-                        def f = ".deploy-status/deploy_${p.serverPrefixSafe}.json"
-                        if (fileExists(f)) {
-                            deployRows << new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                        } else {
-                            deployRows << [server: p.server, netapp: p.netapp, stage: 'deploy', status: 'FAILED', reason: 'no_status_file']
-                        }
-                    }
-                    def deploySummary = renderDeploySummary("СВОДКА DEPLOY", deployRows)
-                    echo deploySummary
-                    env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + deploySummary) : deploySummary)
-                    persistDeployStatus(this)
-                    if (deployRows.any { it.status != 'SUCCESS' }) {
-                        error("❌ Ошибка развертывания на одном или нескольких серверах")
-                    }
+                    runDeployStage(this)
                 }
             }
         }
@@ -1001,57 +1094,7 @@ pipeline {
             }
             steps {
                 script {
-                    computeEnvironmentVariables()
-                    def deploymentPairs = buildDeploymentPairs(params.SERVER_ADDRESS, params.NETAPP_API_ADDR)
-                    restoreDeployStatus(this)
-                    
-                    echo "[STEP] Проверка результатов развертывания (User Units)..."
-                    withVaultSshCredentials(this) {
-                        def parallelChecks = [:]
-                        deploymentPairs.each { pair ->
-                            def p = pair
-                            parallelChecks["check-${p.server}"] = {
-                                def result = runRemoteVerification(this, p)
-                                echo result
-                                def marker = result.readLines().find { it.startsWith('__VERIFY_JSON__') }
-                                if (marker) {
-                                    writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: marker.substring('__VERIFY_JSON__'.length())
-                                } else {
-                                    def fallback = buildVerifyFallbackReport(
-                                        p,
-                                        env.DEPLOY_USER ?: '',
-                                        (params.PROMETHEUS_PORT ?: '9090').toString(),
-                                        (params.GRAFANA_PORT ?: '3300').toString()
-                                    )
-                                    writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(fallback)
-                                }
-                            }
-                        }
-                        parallel parallelChecks
-                    }
-
-                    def verifyRows = []
-                    deploymentPairs.each { p ->
-                        def f = ".deploy-status/verify_${p.serverPrefixSafe}.json"
-                        if (fileExists(f)) {
-                            def row = new groovy.json.JsonSlurperClassic().parseText(readFile(f))
-                            def svc = row.services ?: [:]
-                            def ok = [svc.prometheus, svc.grafana, svc.harvest_netapp, svc.node_exporter].every { it?.status == 'ok' }
-                            verifyRows << [
-                                server: p.server,
-                                netapp: p.netapp,
-                                stage: 'verify',
-                                status: (ok ? 'SUCCESS' : 'FAILED'),
-                                reason: (ok ? 'ok' : 'service_check_failed')
-                            ]
-                        } else {
-                            verifyRows << [server: p.server, netapp: p.netapp, stage: 'verify', status: 'FAILED', reason: 'no_status_file']
-                        }
-                    }
-                    def verifySummary = renderDeploySummary("СВОДКА VERIFY", verifyRows)
-                    echo verifySummary
-                    env.DEPLOY_STATUS_SUMMARY = (env.DEPLOY_STATUS_SUMMARY ? (env.DEPLOY_STATUS_SUMMARY + "\n" + verifySummary) : verifySummary)
-                    persistDeployStatus(this)
+                    runVerifyStage(this)
                 }
             }
         }

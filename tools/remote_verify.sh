@@ -66,11 +66,53 @@ status_text() {
   [[ "$code" =~ ^2[0-9][0-9]$ ]] && echo "ok" || echo "fail"
 }
 
+print_node_exporter_diagnostics() {
+  echo "[NODE-EXPORTER-DIAG] =================================================="
+  echo "[NODE-EXPORTER-DIAG] server=${TARGET_SERVER} domain=${SERVER_DOMAIN}"
+  echo "[NODE-EXPORTER-DIAG] node_exporter_code=${node_code} prometheus_code=${prom_code}"
+
+  if [[ -x "$HOME/bin/node_exporter" ]]; then
+    echo "[NODE-EXPORTER-DIAG] binary=$HOME/bin/node_exporter"
+    "$HOME/bin/node_exporter" --version 2>/dev/null | head -2 | sed 's/^/[NODE-EXPORTER-DIAG] /' || true
+  else
+    echo "[NODE-EXPORTER-DIAG] binary_missing=$HOME/bin/node_exporter"
+  fi
+
+  echo "[NODE-EXPORTER-DIAG] local_metrics_head:"
+  curl -sS --max-time 6 "http://127.0.0.1:${NODE_EXPORTER_PORT}/metrics" 2>/dev/null | head -5 | sed 's/^/[NODE-EXPORTER-DIAG]   /' || true
+
+  if systemctl --user is-active --quiet monitoring-node-exporter.service 2>/dev/null; then
+    echo "[NODE-EXPORTER-DIAG] service_status=active (monitoring-node-exporter.service)"
+  else
+    echo "[NODE-EXPORTER-DIAG] service_status=inactive_or_missing (monitoring-node-exporter.service)"
+  fi
+  systemctl --user status monitoring-node-exporter.service --no-pager -l 2>/dev/null | sed -n '1,12p' | sed 's/^/[NODE-EXPORTER-DIAG]   /' || true
+  journalctl --user -u monitoring-node-exporter.service -n 40 --no-pager 2>/dev/null | sed 's/^/[NODE-EXPORTER-DIAG]   /' || true
+
+  local prom_cfg="$HOME/monitoring/config/prometheus/prometheus.yml"
+  if [[ -f "${prom_cfg}" ]]; then
+    echo "[NODE-EXPORTER-DIAG] prometheus_cfg=${prom_cfg}"
+    awk '/job_name: '\''node-exporter-/{flag=1} flag{print} /^$/{if(flag){exit}}' "${prom_cfg}" 2>/dev/null | sed 's/^/[NODE-EXPORTER-DIAG]   /' || true
+  else
+    echo "[NODE-EXPORTER-DIAG] prometheus_cfg_missing=${prom_cfg}"
+  fi
+
+  echo "[NODE-EXPORTER-DIAG] prometheus_targets_api:"
+  curl -k -sS --max-time 8 "https://127.0.0.1:${PROMETHEUS_PORT}/api/v1/targets?state=active" 2>/dev/null \
+    | jq -c '.data.activeTargets[]? | select(.labels.job|test("^node-exporter")) | {job:.labels.job,instance:.labels.instance,health,lastError,scrapeUrl}' 2>/dev/null \
+    | sed 's/^/[NODE-EXPORTER-DIAG]   /' || true
+  echo "[NODE-EXPORTER-DIAG] =================================================="
+}
+
 prom_code="$(get_http_code_fallback "https://127.0.0.1:${PROMETHEUS_PORT}/-/ready" "https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/-/ready")"
 graf_code="$(get_http_code_fallback "https://127.0.0.1:${GRAFANA_PORT}/api/health" "https://${SERVER_DOMAIN}:${GRAFANA_PORT}/api/health")"
 harv_n_code="$(get_http_code_fallback "https://127.0.0.1:${HARVEST_NETAPP_PORT}/metrics" "https://${SERVER_DOMAIN}:${HARVEST_NETAPP_PORT}/metrics")"
 harv_u_code="$(get_http_code "http://127.0.0.1:${HARVEST_UNIX_PORT}/metrics")"
 node_code="$(get_http_code_fallback "http://127.0.0.1:${NODE_EXPORTER_PORT}/metrics" "http://${SERVER_DOMAIN}:${NODE_EXPORTER_PORT}/metrics")"
+
+if [[ "$(status_text "${node_code}")" != "ok" || "$(status_text "${prom_code}")" != "ok" ]]; then
+  print_node_exporter_diagnostics
+fi
 
 prom_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' prometheus 2>/dev/null || echo 'N/A')"
 graf_ver="$(rpm -q --qf '%{VERSION}-%{RELEASE}' grafana 2>/dev/null || echo 'N/A')"
