@@ -3853,24 +3853,52 @@ create_rlm_install_tasks() {
             exit 1
         fi
 
-        response=$(printf '%s' "$payload" | "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" create_rpm_task "$RLM_API_URL" "$RLM_TOKEN") || true
+        local create_rc=0
+        response=$(printf '%s' "$payload" | "$WRAPPERS_DIR/rlm-api-wrapper_launcher.sh" create_rpm_task "$RLM_API_URL" "$RLM_TOKEN") || create_rc=$?
 
         # Получаем ID задачи
         local task_id
         task_id=$(echo "$response" | jq -r '.id // empty')
         if [[ -z "$task_id" || "$task_id" == "null" ]]; then
+            # Дополнительная диагностика: если wrapper вернул пустой/невалидный ответ,
+            # делаем прямой запрос и печатаем http_code + body в Jenkins-консоль.
+            local diag_http_code=""
+            local diag_body=""
+            local diag_raw=""
+            if [[ -z "$response" || "$response" == "null" ]]; then
+                diag_raw=$(printf '%s' "$payload" | curl -k -sS -X POST "${RLM_API_URL}/api/tasks.json" \
+                    -H "Accept: application/json" \
+                    -H "Authorization: Token ${RLM_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    --connect-timeout 10 --max-time 30 \
+                    -w '\n__HTTP_CODE__:%{http_code}\n' \
+                    -d @- 2>&1 || true)
+                diag_http_code=$(printf '%s\n' "$diag_raw" | sed -n 's/^__HTTP_CODE__://p' | tail -1)
+                diag_body=$(printf '%s\n' "$diag_raw" | sed '/^__HTTP_CODE__:/d')
+            fi
+
             if [[ "$optional_package" == "true" ]]; then
                 print_warning "Не удалось создать задачу для $name (опционально), продолжаем."
-                print_info "Ответ RLM: $response"
+                print_info "Ответ RLM: ${response:-<empty>}"
+                print_info "Код завершения wrapper: $create_rc"
                 print_info "URL пакета: ${url:-не задан}"
                 print_info "RLM payload (debug): $(echo "$payload" | jq -c . 2>/dev/null || echo "$payload")"
+                if [[ -n "$diag_http_code" ]]; then
+                    print_info "RLM direct curl http_code: $diag_http_code"
+                    print_info "RLM direct curl body: ${diag_body:-<empty>}"
+                fi
                 write_diagnostic "$name RLM: SKIPPED (optional, task create failed): $response"
                 continue
             fi
-            print_error "❌ Ошибка при создании задачи для $name: $response"
+            print_error "❌ Ошибка при создании задачи для $name: ${response:-<empty>}"
+            print_error "❌ Код завершения wrapper: $create_rc"
             print_error "❌ URL пакета: ${url:-не задан}"
             print_error "❌ RLM payload (debug): $(echo "$payload" | jq -c . 2>/dev/null || echo "$payload")"
             print_error "❌ RLM API URL (debug): ${RLM_API_URL}/api/tasks.json"
+            if [[ -n "$diag_http_code" ]]; then
+                print_error "❌ RLM direct curl http_code: $diag_http_code"
+                print_error "❌ RLM direct curl body: ${diag_body:-<empty>}"
+            fi
             exit 1
         fi
         print_success "✅ Задача создана для $name. ID: $task_id"

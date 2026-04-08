@@ -66,10 +66,11 @@ create_task() {
   payload="$(cat)"
   [[ -n "$payload" ]] || fail "Пустой payload для создания задачи"
 
-  curl -k -s -X POST "${RLM_API_URL}/api/tasks.json" \
+  curl -k -sS -X POST "${RLM_API_URL}/api/tasks.json" \
     -H "Accept: application/json" \
     -H "Authorization: Token ${RLM_TOKEN}" \
     -H "Content-Type: application/json" \
+    --connect-timeout 10 --max-time 30 \
     -d "$payload"
 }
 
@@ -77,10 +78,11 @@ get_status() {
   local task_id="$1"
   validate_task_id "$task_id"
 
-  curl -k -s -X GET "${RLM_API_URL}/api/tasks/${task_id}/" \
+  curl -k -sS -X GET "${RLM_API_URL}/api/tasks/${task_id}/" \
     -H "Accept: application/json" \
     -H "Authorization: Token ${RLM_TOKEN}" \
-    -H "Content-Type: application/json"
+    -H "Content-Type: application/json" \
+    --connect-timeout 10 --max-time 30
 }
 
 main() {
