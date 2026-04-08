@@ -991,6 +991,11 @@ pipeline {
         booleanParam(name: 'RUN_SERVICES_AS_MON_CI', defaultValue: true, description: '🧪 Временно запускать user-юниты от mon_ci (без mon_sys). Для возврата к mon_sys отключите.')
         booleanParam(name: 'SKIP_CI_CHECKS', defaultValue: false, description: '⚡ Пропустить CI диагностику')
         booleanParam(name: 'SKIP_DEPLOYMENT', defaultValue: false, description: '🚫 Пропустить CDL этап')
+        booleanParam(name: 'USE_PROD_AGENT_PROFILE', defaultValue: true, description: 'Использовать PROD-профиль лейблов агентов (true=PROD, false=DEV)')
+        string(name: 'DEV_CI_AGENT_LABEL', defaultValue: params.DEV_CI_AGENT_LABEL ?: 'clearAgent&&sbel8&&!static', description: 'Лейбл CI-агента для DEV')
+        string(name: 'DEV_CDL_AGENT_LABEL', defaultValue: params.DEV_CDL_AGENT_LABEL ?: 'masterLin&&sbel8&&!static', description: 'Лейбл CDL-агента для DEV')
+        string(name: 'PROD_CI_AGENT_LABEL', defaultValue: params.PROD_CI_AGENT_LABEL ?: 'sberlinux_sbel8_clearAgent_linux', description: 'Лейбл CI-агента для PROD')
+        string(name: 'PROD_CDL_AGENT_LABEL', defaultValue: params.PROD_CDL_AGENT_LABEL ?: 'masterLin&&sbel8&&linux', description: 'Лейбл CDL-агента для PROD')
         string(name: 'MONITORING_MOUNT_NAME', defaultValue: params.MONITORING_MOUNT_NAME ?: 'monitoring', description: 'Имя mount point без "/" (например monitoring => /monitoring)')
         string(name: 'MONITORING_STACK_DIR_NAME', defaultValue: params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana', description: 'Подкаталог в mount point для runtime мониторинга')
         string(name: 'MONITORING_FS_EXTEND_GB', defaultValue: params.MONITORING_FS_EXTEND_GB ?: '10', description: 'Размер (ГБ) для UVS_LINUX_EXTEND_FS2')
@@ -999,12 +1004,25 @@ pipeline {
     }
 
     stages {
+        stage('CI: Выбор agent-профиля') {
+            agent none
+            steps {
+                script {
+                    def selectedCi = params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL
+                    def selectedCdl = params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL
+                    echo "[INFO] Agent profile: ${params.USE_PROD_AGENT_PROFILE ? 'PROD' : 'DEV'}"
+                    echo "[INFO] CI label: ${selectedCi}"
+                    echo "[INFO] CDL label: ${selectedCdl}"
+                }
+            }
+        }
+
         // ========================================================================
         // CI ЭТАП: Подготовка и проверка (clearAgent - чистый агент для сборки)
         // ========================================================================
         
         stage('CI: Информация о версии проекта') {
-            agent { label "clearAgent&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             steps {
                 script {
                     runCiVersionStage(this)
@@ -1013,7 +1031,7 @@ pipeline {
         }
         
         stage('CI: Очистка workspace и отладка') {
-            agent { label "clearAgent&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_CI_CHECKS != true }
             }
@@ -1025,7 +1043,7 @@ pipeline {
         }
         
         stage('CI: Отладка параметров пайплайна') {
-            agent { label "clearAgent&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_CI_CHECKS != true }
             }
@@ -1037,7 +1055,7 @@ pipeline {
         }
         
         stage('CI: Информация о коде и окружении') {
-            agent { label "clearAgent&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_CI_CHECKS != true }
             }
@@ -1049,7 +1067,7 @@ pipeline {
         }
         
         stage('CI: Расширенная диагностика сети и сервера') {
-            agent { label "clearAgent&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_CI_CHECKS != true }
             }
@@ -1061,7 +1079,7 @@ pipeline {
         }
         
         stage('CI: Получение секретов из Vault') {
-            agent { label "clearAgent&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             steps {
                 script {
                     fetchVaultCredentialsForAllPairs(this)
@@ -1074,7 +1092,7 @@ pipeline {
         // ========================================================================
 
         stage('CDL: Подготовка mount через RLM') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true }
             }
@@ -1086,7 +1104,7 @@ pipeline {
         }
 
         stage('CDL: Копирование файлов на сервер') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true }
             }
@@ -1098,7 +1116,7 @@ pipeline {
         }
 
         stage('CDL: Синхронная фазовая установка RPM') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true && params.SYNC_RPM_PHASES == true }
             }
@@ -1110,7 +1128,7 @@ pipeline {
         }
 
         stage('CDL: Выполнение развертывания') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true }
             }
@@ -1122,7 +1140,7 @@ pipeline {
         }
 
         stage('CDL: Проверка результатов') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true }
             }
@@ -1134,7 +1152,7 @@ pipeline {
         }
 
         stage('CDL: Очистка') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true }
             }
@@ -1146,7 +1164,7 @@ pipeline {
         }
 
         stage('CDL: Получение сведений о развертывании системы') {
-            agent { label "masterLin&&sbel8&&!static" }
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
                 expression { params.SKIP_DEPLOYMENT != true }
             }
