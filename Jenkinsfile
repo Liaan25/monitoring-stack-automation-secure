@@ -186,6 +186,21 @@ def printFinalDeploymentReport(scriptContext, List reports) {
     scriptContext.echo "================================================================"
 }
 
+def loadRlmTokenFromVaultJson(scriptContext) {
+    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    def primaryCred = deploymentPairs[0].credJsonFile
+    if (!scriptContext.fileExists(primaryCred)) {
+        scriptContext.error("❌ Не найден файл с секретами: ${primaryCred}")
+    }
+
+    def json = new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(primaryCred))
+    def token = (json?.rlm_api?.token ?: '').toString().trim()
+    if (!token) {
+        scriptContext.error("❌ В Vault KV не найден RLM токен (ключ: ${scriptContext.params.RLM_TOKEN_KV_KEY ?: 'rlm-token-sigma-prom'})")
+    }
+    return token
+}
+
 def withVaultSshCredentials(scriptContext, Closure body) {
     def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
     if (!sshCredentialsId) {
@@ -420,6 +435,11 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
             [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
         ]]
     }
+    if (scriptContext.params.RLM_TOKEN_KV?.trim()) {
+        vaultSecrets << [path: scriptContext.params.RLM_TOKEN_KV, secretValues: [
+            [envVar: 'VA_RLM_TOKEN', vaultKey: (scriptContext.params.RLM_TOKEN_KV_KEY?.trim() ?: 'rlm-token-sigma-prom')]
+        ]]
+    }
 
     if (vaultSecrets.isEmpty()) {
         scriptContext.echo "[WARNING] KV пути не заданы"
@@ -429,6 +449,7 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
             "netapp_ssh": [addr: '', user: '', pass: ''],
             "node_exporter_tuz": [user: '', pass: ''],
             "grafana_web": [user: '', pass: ''],
+            "rlm_api": [token: ''],
             "certificates": [server_bundle_pem: '', ca_chain_crt: '', grafana_client_pem: '']
         ]
         scriptContext.writeFile file: scriptContext.env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(emptyData)
@@ -514,6 +535,7 @@ chmod +x tools/fetch_sberca.sh
                     "netapp_ssh": [addr: (scriptContext.env.VA_NETAPP_SSH_ADDR ?: ''), user: (scriptContext.env.VA_NETAPP_SSH_USER ?: ''), pass: (scriptContext.env.VA_NETAPP_SSH_PASS ?: '')],
                     "node_exporter_tuz": [user: (scriptContext.env.VA_NODE_EXPORTER_TUZ_USER ?: ''), pass: (scriptContext.env.VA_NODE_EXPORTER_TUZ_PASS ?: '')],
                     "grafana_web": [user: (scriptContext.env.VA_GRAFANA_WEB_USER ?: ''), pass: (scriptContext.env.VA_GRAFANA_WEB_PASS ?: '')],
+                    "rlm_api": [token: (scriptContext.env.VA_RLM_TOKEN ?: '')],
                     "certificates": [server_bundle_pem: serverBundlePem, ca_chain_crt: caChainCrt, grafana_client_pem: grafanaClientPem]
                 ]
                 scriptContext.writeFile file: scriptContext.env.CRED_JSON_FILE, text: groovy.json.JsonOutput.toJson(data)
@@ -548,11 +570,9 @@ def runSyncRpmStage(scriptContext) {
     scriptContext.echo "[INFO] Принцип: Grafana -> Prometheus -> Harvest -> Node Exporter"
     def rpmPhases = ['Grafana', 'Prometheus', 'Harvest', 'Node Exporter']
 
-    scriptContext.withCredentials([[
-        $class: 'StringBinding',
-        credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID,
-        variable: 'RLM_TOKEN'
-    ]]) {
+    scriptContext.unstash 'vault-credentials'
+    def rlmToken = loadRlmTokenFromVaultJson(scriptContext)
+    scriptContext.withEnv(['RLM_TOKEN=' + rlmToken]) {
         withVaultSshCredentials(scriptContext) {
             rpmPhases.each { phaseName ->
                 def phaseSlug = phaseName.toLowerCase().replaceAll(/[^a-z0-9]+/, '_')
@@ -615,11 +635,8 @@ def runDeployStage(scriptContext) {
     }
 
     scriptContext.unstash 'vault-credentials'
-    scriptContext.withCredentials([[
-        $class: 'StringBinding',
-        credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID,
-        variable: 'RLM_TOKEN'
-    ]]) {
+    def rlmToken = loadRlmTokenFromVaultJson(scriptContext)
+    scriptContext.withEnv(['RLM_TOKEN=' + rlmToken]) {
         withVaultSshCredentials(scriptContext) {
             def parallelDeploy = [:]
             deploymentPairs.each { pair ->
@@ -768,7 +785,7 @@ def runCiParamsDebugStage(scriptContext) {
     if (!scriptContext.params.SERVER_ADDRESS?.trim()) { scriptContext.error("❌ Не указан SERVER_ADDRESS") }
     if (!scriptContext.params.SSH_CREDENTIALS_ID?.trim()) { scriptContext.error("❌ Не указан SSH_CREDENTIALS_ID") }
     if (!scriptContext.params.SSH_LOGIN?.trim()) { scriptContext.error("❌ Не указан SSH_LOGIN") }
-    if (!scriptContext.params.RLM_TOKEN_CREDENTIAL_ID?.trim()) { scriptContext.error("❌ Не указан RLM_TOKEN_CREDENTIAL_ID") }
+    if (!scriptContext.params.RLM_TOKEN_KV?.trim()) { scriptContext.error("❌ Не указан RLM_TOKEN_KV (путь KV с RLM токеном)") }
     if (!scriptContext.params.NAMESPACE_CI?.trim()) { scriptContext.error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)") }
     if (!scriptContext.params.MONITORING_MOUNT_NAME?.trim() || !(scriptContext.params.MONITORING_MOUNT_NAME ==~ /[A-Za-z0-9._-]+/)) {
         scriptContext.error("❌ MONITORING_MOUNT_NAME должен быть непустым и содержать только [A-Za-z0-9._-] (без /)")
@@ -812,9 +829,11 @@ def runFsMountStage(scriptContext) {
     computeEnvironmentVariables()
     def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
     restoreDeployStatus(scriptContext)
+    scriptContext.unstash 'vault-credentials'
+    def rlmToken = loadRlmTokenFromVaultJson(scriptContext)
     scriptContext.echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
     scriptContext.echo "[INFO] mount=/${scriptContext.params.MONITORING_MOUNT_NAME}, size_gb=${scriptContext.params.MONITORING_FS_EXTEND_GB}, table_id=${scriptContext.params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${scriptContext.params.MONITORING_MOUNT_NAME}, force=${scriptContext.params.FORCE_RLM_FS_APPLY}"
-    scriptContext.withCredentials([string(credentialsId: scriptContext.params.RLM_TOKEN_CREDENTIAL_ID, variable: 'RLM_TOKEN')]) {
+    scriptContext.withEnv(['RLM_TOKEN=' + rlmToken]) {
         withVaultSshCredentials(scriptContext) {
             def parallelFs = [:]
             deploymentPairs.each { pair ->
@@ -956,12 +975,14 @@ pipeline {
         string(name: 'VICTORIA_METRICS_REMOTE_WRITE_URL', defaultValue: params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: '', description: 'URL VictoriaMetrics для Prometheus remote_write (например http://10.73.129.70:8480/insert/0/prometheus)')
         string(name: 'NETAPP_SSH_KV',      defaultValue: params.NETAPP_SSH_KV ?: '',      description: 'Путь KV в Vault для NetApp SSH')
         string(name: 'GRAFANA_WEB_KV',     defaultValue: params.GRAFANA_WEB_KV ?: '',     description: 'Путь KV в Vault для Grafana Web')
+        string(name: 'RLM_TOKEN_KV',       defaultValue: params.RLM_TOKEN_KV ?: '',       description: 'Путь KV в Vault для RLM API токена')
+        string(name: 'RLM_TOKEN_KV_KEY',   defaultValue: params.RLM_TOKEN_KV_KEY ?: 'rlm-token-sigma-prom', description: 'Ключ токена в KV секрете RLM')
         string(name: 'SBERCA_CERT_KV',     defaultValue: params.SBERCA_CERT_KV ?: '',     description: 'Путь KV в Vault для SberCA Cert')
         string(name: 'ADMIN_EMAIL',        defaultValue: params.ADMIN_EMAIL ?: '',        description: 'Email администратора')
         string(name: 'GRAFANA_PORT',       defaultValue: params.GRAFANA_PORT ?: '3300',   description: 'Порт Grafana')
         string(name: 'PROMETHEUS_PORT',    defaultValue: params.PROMETHEUS_PORT ?: '9090',description: 'Порт Prometheus')
         string(name: 'RLM_API_URL',        defaultValue: params.RLM_API_URL ?: '',        description: 'Базовый URL RLM API')
-        string(name: 'RLM_TOKEN_CREDENTIAL_ID', defaultValue: params.RLM_TOKEN_CREDENTIAL_ID ?: 'rlm-token', description: 'Jenkins Credential ID для RLM API токена')
+        string(name: 'RLM_TOKEN_CREDENTIAL_ID', defaultValue: params.RLM_TOKEN_CREDENTIAL_ID ?: 'rlm-token', description: 'DEPRECATED: не используется (RLM токен читается из Vault KV)')
         string(name: 'VAULT_CREDENTIAL_ID', defaultValue: params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev', description: 'Jenkins Credential ID для Vault')
         choice(name: 'LOG_LEVEL', choices: ['normal', 'debug'], description: 'Уровень логирования для консоли Jenkins (normal=минимум шума, debug=полный вывод)')
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
