@@ -154,6 +154,71 @@ build_tls_args() {
   fi
 }
 
+parse_rlm_host_port() {
+  local url_no_scheme host_port host port
+  url_no_scheme="${RLM_API_URL#https://}"
+  host_port="${url_no_scheme%%/*}"
+  host="${host_port%%:*}"
+  port="${host_port##*:}"
+  if [[ "${host_port}" == "${host}" ]]; then
+    port="443"
+  fi
+  echo "${host}:${port}"
+}
+
+run_connection_diagnostics() {
+  local tls_args=()
+  build_tls_args tls_args
+
+  local host_port host port
+  host_port="$(parse_rlm_host_port)"
+  host="${host_port%%:*}"
+  port="${host_port##*:}"
+
+  debug "diag: MODE=${MODE}"
+  debug "diag: runtime_user=$(id -un 2>/dev/null || echo unknown), uid=$(id -u 2>/dev/null || echo unknown), gid=$(id -g 2>/dev/null || echo unknown)"
+  debug "diag: groups=$(id -Gn 2>/dev/null || echo unknown)"
+  debug "diag: hostname=$(hostname 2>/dev/null || echo unknown), pwd=$(pwd), shell=${SHELL:-unknown}"
+  debug "diag: env USER=${USER:-}, LOGNAME=${LOGNAME:-}, SUDO_USER=${SUDO_USER:-}, SSH_CONNECTION=${SSH_CONNECTION:-}"
+  debug "diag: target rlm_url=${RLM_API_URL}, host=${host}, port=${port}"
+
+  if command -v getent >/dev/null 2>&1; then
+    debug "diag: dns(getent)=$(getent ahostsv4 "${host}" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' || true)"
+  elif command -v nslookup >/dev/null 2>&1; then
+    debug "diag: dns(nslookup)=$(nslookup "${host}" 2>/dev/null | sed -n 's/^Address: //p' | tr '\n' ' ' || true)"
+  else
+    debug "diag: dns tools not found (getent/nslookup)"
+  fi
+
+  local tcp_rc=1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1 || tcp_rc=$?
+    if [[ ${tcp_rc} -eq 0 ]]; then
+      debug "diag: tcp_connect ${host}:${port} -> OK"
+    else
+      debug "diag: tcp_connect ${host}:${port} -> FAIL (rc=${tcp_rc})"
+    fi
+  else
+    debug "diag: timeout command not found, tcp probe skipped"
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    local probe_http_code probe_out probe_rc=0
+    probe_out="$(curl -sS -o /dev/null -w '%{http_code}' \
+      "${tls_args[@]}" \
+      --connect-timeout 7 --max-time 15 \
+      -H "Accept: application/json" \
+      -H "Authorization: Token ${RLM_TOKEN}" \
+      "${RLM_API_URL}/api/tasks/0/" 2>&1)" || probe_rc=$?
+    if [[ ${probe_rc} -eq 0 ]]; then
+      probe_http_code="${probe_out##*$'\n'}"
+      debug "diag: https_probe ${RLM_API_URL}/api/tasks/0/ -> HTTP ${probe_http_code}"
+    else
+      debug "diag: https_probe ${RLM_API_URL}/api/tasks/0/ -> FAIL (rc=${probe_rc}) output=${probe_out}"
+    fi
+  fi
+}
+
 create_task() {
   local payload
   payload="$(cat)"
@@ -189,6 +254,10 @@ main() {
   trap cleanup_mtls_tmp_dir EXIT
   validate_url_base "$RLM_API_URL"
   validate_token "$RLM_TOKEN"
+
+  if [[ "$MODE" == create_* ]] && [[ "${RLM_MTLS_DEBUG}" == "true" || "${LOG_LEVEL:-}" == "debug" ]]; then
+    run_connection_diagnostics
+  fi
 
   case "$MODE" in
     create_vault_task|create_rpm_task|create_group_task)
