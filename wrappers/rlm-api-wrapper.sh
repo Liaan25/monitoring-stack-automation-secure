@@ -19,6 +19,7 @@ RLM_TOKEN="${3:-}"
 RLM_TLS_CERT_FILE="${RLM_TLS_CERT_FILE:-}"
 RLM_TLS_KEY_FILE="${RLM_TLS_KEY_FILE:-}"
 RLM_TLS_CA_FILE="${RLM_TLS_CA_FILE:-}"
+RLM_MTLS_DEBUG="${RLM_MTLS_DEBUG:-true}"
 RLM_MTLS_TMP_DIR=""
 
 # Белый список допустимых базовых URL RLM.
@@ -30,6 +31,12 @@ ALLOWED_RLM_BASES=(
 
 log() {
   echo "[RLM_WRAPPER] $*"
+}
+
+debug() {
+  if [[ "${RLM_MTLS_DEBUG}" == "true" || "${LOG_LEVEL:-}" == "debug" ]]; then
+    echo "[RLM_WRAPPER][DEBUG] $*" >&2
+  fi
 }
 
 fail() {
@@ -80,14 +87,17 @@ prepare_mtls_materials_if_needed() {
     if [[ -n "${RLM_TLS_CA_FILE}" ]]; then
       [[ -r "${RLM_TLS_CA_FILE}" ]] || fail "RLM_TLS_CA_FILE недоступен: ${RLM_TLS_CA_FILE}"
     fi
+    debug "mTLS: используются внешние пути cert=${RLM_TLS_CERT_FILE}, key=${RLM_TLS_KEY_FILE}, cacert=${RLM_TLS_CA_FILE:-<not set>}"
     return 0
   fi
 
   # Авто-режим: читаем mTLS-материалы из temp_data_cred*.json, который уже кладется Jenkins-ом.
   local cred_json="${CRED_JSON_PATH:-}"
   if [[ -z "${cred_json}" || ! -f "${cred_json}" ]]; then
+    debug "mTLS: CRED_JSON_PATH не задан или файл не найден, fallback без mTLS"
     return 0
   fi
+  debug "mTLS: пробуем извлечь сертификаты из ${cred_json}"
   command -v jq >/dev/null 2>&1 || fail "Для mTLS требуется jq"
   command -v openssl >/dev/null 2>&1 || fail "Для mTLS требуется openssl"
 
@@ -103,6 +113,7 @@ prepare_mtls_materials_if_needed() {
 
   jq -r '.certificates.grafana_client_pem // .certificates.server_bundle_pem // empty' "${cred_json}" > "${bundle_file}" 2>/dev/null || true
   if [[ ! -s "${bundle_file}" ]]; then
+    debug "mTLS: сертификатный bundle пуст в ${cred_json}, fallback без mTLS"
     rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
     return 0
   fi
@@ -120,6 +131,7 @@ prepare_mtls_materials_if_needed() {
   RLM_TLS_KEY_FILE="${key_file}"
   RLM_TLS_CA_FILE="${ca_file}"
   RLM_MTLS_TMP_DIR="${tmp_dir}"
+  debug "mTLS: материалы подготовлены cert=${RLM_TLS_CERT_FILE}, key=${RLM_TLS_KEY_FILE}, cacert=${RLM_TLS_CA_FILE:-<not set>}"
 }
 
 build_tls_args() {
@@ -134,9 +146,11 @@ build_tls_args() {
     if [[ -n "${RLM_TLS_CA_FILE}" && -r "${RLM_TLS_CA_FILE}" ]]; then
       out_arr+=(--cacert "${RLM_TLS_CA_FILE}")
     fi
+    debug "mTLS: включен для ${RLM_API_URL}"
   else
     # Legacy fallback: без mTLS сохраним старое поведение.
     out_arr+=(-k)
+    debug "mTLS: НЕ включен для ${RLM_API_URL}, используется fallback -k"
   fi
 }
 
