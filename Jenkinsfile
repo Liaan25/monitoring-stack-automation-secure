@@ -196,7 +196,9 @@ def loadRlmTokenFromVaultJson(scriptContext) {
     def json = new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(primaryCred))
     def token = (json?.rlm_api?.token ?: '').toString().trim()
     if (!token) {
-        scriptContext.error("❌ В Vault KV не найден RLM токен (ключ: ${scriptContext.params.RLM_TOKEN_KV_KEY ?: 'rlm-token-sigma-prom'})")
+        def configuredKey = scriptContext.params.RLM_TOKEN_KV_KEY?.trim()
+        def effectiveKey = configuredKey ? configuredKey : (scriptContext.params.RLM_TOKEN_KV?.tokenize('/')?.last() ?: 'unknown')
+        scriptContext.error("❌ В Vault KV не найден RLM токен (ключ: ${effectiveKey})")
     }
     return token
 }
@@ -436,8 +438,14 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
         ]]
     }
     if (scriptContext.params.RLM_TOKEN_KV?.trim()) {
+        def rlmTokenKey = scriptContext.params.RLM_TOKEN_KV_KEY?.trim()
+        if (!rlmTokenKey) {
+            // Если ключ не задан явно, берем имя ключа из конца пути KV.
+            // Пример: .../KV/rlm-token-sigma-ift -> key=rlm-token-sigma-ift
+            rlmTokenKey = scriptContext.params.RLM_TOKEN_KV.tokenize('/').last()
+        }
         vaultSecrets << [path: scriptContext.params.RLM_TOKEN_KV, secretValues: [
-            [envVar: 'VA_RLM_TOKEN', vaultKey: (scriptContext.params.RLM_TOKEN_KV_KEY?.trim() ?: 'rlm-token-sigma-prom')]
+            [envVar: 'VA_RLM_TOKEN', vaultKey: rlmTokenKey]
         ]]
     }
 
@@ -976,7 +984,7 @@ pipeline {
         string(name: 'NETAPP_SSH_KV',      defaultValue: params.NETAPP_SSH_KV ?: '',      description: 'Путь KV в Vault для NetApp SSH')
         string(name: 'GRAFANA_WEB_KV',     defaultValue: params.GRAFANA_WEB_KV ?: '',     description: 'Путь KV в Vault для Grafana Web')
         string(name: 'RLM_TOKEN_KV',       defaultValue: params.RLM_TOKEN_KV ?: '',       description: 'Путь KV в Vault для RLM API токена')
-        string(name: 'RLM_TOKEN_KV_KEY',   defaultValue: params.RLM_TOKEN_KV_KEY ?: 'rlm-token-sigma-prom', description: 'Ключ токена в KV секрете RLM')
+        string(name: 'RLM_TOKEN_KV_KEY',   defaultValue: params.RLM_TOKEN_KV_KEY ?: '', description: 'Ключ токена в KV секрете RLM (опц.; если пусто — берется из конца пути RLM_TOKEN_KV)')
         string(name: 'SBERCA_CERT_KV',     defaultValue: params.SBERCA_CERT_KV ?: '',     description: 'Путь KV в Vault для SberCA Cert')
         string(name: 'ADMIN_EMAIL',        defaultValue: params.ADMIN_EMAIL ?: '',        description: 'Email администратора')
         string(name: 'GRAFANA_PORT',       defaultValue: params.GRAFANA_PORT ?: '3300',   description: 'Порт Grafana')
