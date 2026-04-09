@@ -39,6 +39,35 @@ debug() {
   fi
 }
 
+debug_step() {
+  local title="$1"
+  debug "diag: ---------------- ${title} ----------------"
+}
+
+run_diag_cmd() {
+  local title="$1"
+  local command="$2"
+  local output rc
+
+  debug_step "${title}"
+  debug "diag: cmd: ${command}"
+
+  set +e
+  output="$(bash -o pipefail -c "${command}" 2>&1)"
+  rc=$?
+  set -e
+
+  if [[ -n "${output}" ]]; then
+    while IFS= read -r line; do
+      debug "diag: out: ${line}"
+    done <<< "${output}"
+  else
+    debug "diag: out: <empty>"
+  fi
+  debug "diag: rc=${rc}"
+  return 0
+}
+
 fail() {
   echo "[RLM_WRAPPER][ERROR] $*" >&2
   exit 1
@@ -170,52 +199,55 @@ run_connection_diagnostics() {
   local tls_args=()
   build_tls_args tls_args
 
-  local host_port host port
+  local host_port host port tls_probe_url
   host_port="$(parse_rlm_host_port)"
   host="${host_port%%:*}"
   port="${host_port##*:}"
+  tls_probe_url="${RLM_API_URL}/api/tasks/0/"
 
+  debug_step "RLM connectivity precheck"
   debug "diag: MODE=${MODE}"
-  debug "diag: runtime_user=$(id -un 2>/dev/null || echo unknown), uid=$(id -u 2>/dev/null || echo unknown), gid=$(id -g 2>/dev/null || echo unknown)"
-  debug "diag: groups=$(id -Gn 2>/dev/null || echo unknown)"
-  debug "diag: hostname=$(hostname 2>/dev/null || echo unknown), pwd=$(pwd), shell=${SHELL:-unknown}"
-  debug "diag: env USER=${USER:-}, LOGNAME=${LOGNAME:-}, SUDO_USER=${SUDO_USER:-}, SSH_CONNECTION=${SSH_CONNECTION:-}"
   debug "diag: target rlm_url=${RLM_API_URL}, host=${host}, port=${port}"
+  debug "diag: env USER=${USER:-}, LOGNAME=${LOGNAME:-}, SUDO_USER=${SUDO_USER:-}, SSH_CONNECTION=${SSH_CONNECTION:-}"
+  debug "diag: tls cert=${RLM_TLS_CERT_FILE:-<not set>}, key=${RLM_TLS_KEY_FILE:-<not set>}, cacert=${RLM_TLS_CA_FILE:-<not set>}"
+
+  run_diag_cmd "whoami / id / groups" "whoami && id && id -Gn"
+  run_diag_cmd "hostname / fqdn / pwd / shell" "hostname && (hostname -f 2>/dev/null || true) && pwd && echo \"SHELL=${SHELL:-unknown}\""
+  run_diag_cmd "target endpoint" "echo \"RLM_API_URL=${RLM_API_URL}\" && echo \"RLM_HOST=${host}\" && echo \"RLM_PORT=${port}\""
 
   if command -v getent >/dev/null 2>&1; then
-    debug "diag: dns(getent)=$(getent ahostsv4 "${host}" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' || true)"
+    run_diag_cmd "dns lookup via getent" "getent ahostsv4 \"${host}\""
   elif command -v nslookup >/dev/null 2>&1; then
-    debug "diag: dns(nslookup)=$(nslookup "${host}" 2>/dev/null | sed -n 's/^Address: //p' | tr '\n' ' ' || true)"
+    run_diag_cmd "dns lookup via nslookup" "nslookup \"${host}\""
   else
-    debug "diag: dns tools not found (getent/nslookup)"
+    debug_step "dns lookup"
+    debug "diag: cmd: getent|nslookup"
+    debug "diag: out: dns tools not found (getent/nslookup)"
+    debug "diag: rc=127"
   fi
 
-  local tcp_rc=1
   if command -v timeout >/dev/null 2>&1; then
-    timeout 5 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1 || tcp_rc=$?
-    if [[ ${tcp_rc} -eq 0 ]]; then
-      debug "diag: tcp_connect ${host}:${port} -> OK"
-    else
-      debug "diag: tcp_connect ${host}:${port} -> FAIL (rc=${tcp_rc})"
-    fi
+    run_diag_cmd "raw tcp connect probe (/dev/tcp)" "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/${host}/${port}'"
   else
-    debug "diag: timeout command not found, tcp probe skipped"
+    debug_step "raw tcp connect probe (/dev/tcp)"
+    debug "diag: cmd: timeout 5 bash -c 'cat < /dev/null > /dev/tcp/${host}/${port}'"
+    debug "diag: out: timeout command not found, tcp probe skipped"
+    debug "diag: rc=127"
   fi
 
   if command -v curl >/dev/null 2>&1; then
-    local probe_http_code probe_out probe_rc=0
-    probe_out="$(curl -sS -o /dev/null -w '%{http_code}' \
-      "${tls_args[@]}" \
-      --connect-timeout 7 --max-time 15 \
-      -H "Accept: application/json" \
-      -H "Authorization: Token ${RLM_TOKEN}" \
-      "${RLM_API_URL}/api/tasks/0/" 2>&1)" || probe_rc=$?
-    if [[ ${probe_rc} -eq 0 ]]; then
-      probe_http_code="${probe_out##*$'\n'}"
-      debug "diag: https_probe ${RLM_API_URL}/api/tasks/0/ -> HTTP ${probe_http_code}"
-    else
-      debug "diag: https_probe ${RLM_API_URL}/api/tasks/0/ -> FAIL (rc=${probe_rc}) output=${probe_out}"
+    run_diag_cmd "curl verbose probe (without mTLS)" \
+      "curl -v -o /dev/null --connect-timeout 7 --max-time 15 \"${tls_probe_url}\""
+
+    if [[ -n "${RLM_TLS_CERT_FILE}" && -n "${RLM_TLS_KEY_FILE}" ]]; then
+      run_diag_cmd "curl verbose probe (with mTLS)" \
+        "curl -v -o /dev/null --connect-timeout 7 --max-time 20 --tlsv1.2 --cert \"${RLM_TLS_CERT_FILE}\" --key \"${RLM_TLS_KEY_FILE}\" ${RLM_TLS_CA_FILE:+--cacert \"${RLM_TLS_CA_FILE}\"} -H \"Accept: application/json\" -H \"Authorization: Token <redacted>\" \"${tls_probe_url}\""
     fi
+  else
+    debug_step "curl probes"
+    debug "diag: cmd: curl -v ..."
+    debug "diag: out: curl not found, probes skipped"
+    debug "diag: rc=127"
   fi
 }
 
