@@ -199,13 +199,99 @@ ensure_debug_log_target() {
     summary_dir="$(dirname "$DEBUG_SUMMARY")"
 
     mkdir -p "$log_dir" "$summary_dir" 2>/dev/null || true
-    if [[ ! -d "$log_dir" || ! -w "$log_dir" ]]; then
+    local probe_file
+    probe_file="${log_dir}/.debug_log_probe_${DATE_INSTALL}_$$"
+    if [[ ! -d "$log_dir" ]] || ! ( : > "$probe_file" ) 2>/dev/null; then
         DEBUG_LOG="/tmp/monitoring_deployment_debug_${DATE_INSTALL}.log"
         DEBUG_SUMMARY="/tmp/monitoring_deployment_summary.log"
         log_dir="$(dirname "$DEBUG_LOG")"
         summary_dir="$(dirname "$DEBUG_SUMMARY")"
         mkdir -p "$log_dir" "$summary_dir" 2>/dev/null || true
+        echo "[ensure_debug_log_target] Fallback to /tmp debug logs (target is not writable or mounted read-only)" >&2
+    else
+        rm -f "$probe_file" >/dev/null 2>&1 || true
     fi
+}
+
+run_fs_diag_cmd() {
+    local title="$1"
+    local command="$2"
+    local output rc
+
+    print_info "[FS-DIAG] ===== ${title} ====="
+    print_info "[FS-DIAG] CMD: ${command}"
+    write_diagnostic "[FS-DIAG] ===== ${title} ====="
+    write_diagnostic "[FS-DIAG] CMD: ${command}"
+
+    if output=$(bash -o pipefail -c "${command}" 2>&1); then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    if [[ -n "$output" ]]; then
+        while IFS= read -r line; do
+            print_info "[FS-DIAG] OUT: ${line}"
+            write_diagnostic "[FS-DIAG] OUT: ${line}"
+        done <<< "$output"
+    else
+        print_info "[FS-DIAG] OUT: <empty>"
+        write_diagnostic "[FS-DIAG] OUT: <empty>"
+    fi
+
+    print_info "[FS-DIAG] RC: ${rc}"
+    write_diagnostic "[FS-DIAG] RC: ${rc}"
+}
+
+probe_path_rw() {
+    local path="$1"
+    local label="$2"
+    local probe_file
+    probe_file="${path}/.rw_probe_${DATE_INSTALL}_$$"
+
+    if [[ ! -d "$path" ]]; then
+        print_warning "[FS-DIAG] ${label}: path отсутствует (${path})"
+        write_diagnostic "[FS-DIAG] ${label}: path отсутствует (${path})"
+        return 0
+    fi
+
+    if ( : > "$probe_file" ) 2>/dev/null; then
+        rm -f "$probe_file" >/dev/null 2>&1 || true
+        print_success "[FS-DIAG] ${label}: write probe OK (${path})"
+        write_diagnostic "[FS-DIAG] ${label}: write probe OK (${path})"
+    else
+        print_error "[FS-DIAG] ${label}: write probe FAILED (${path})"
+        write_diagnostic "[FS-DIAG] ${label}: write probe FAILED (${path})"
+    fi
+}
+
+diagnose_filesystem_state() {
+    print_step "Диагностика файловой системы и mount-статуса"
+    ensure_working_directory
+
+    print_info "[FS-DIAG] MONITORING_MOUNT_POINT=${MONITORING_MOUNT_POINT}"
+    print_info "[FS-DIAG] MONITORING_PHYSICAL_BASE=${MONITORING_PHYSICAL_BASE}"
+    print_info "[FS-DIAG] MONITORING_BASE=${MONITORING_BASE}"
+    print_info "[FS-DIAG] DEBUG_LOG=${DEBUG_LOG}"
+
+    write_diagnostic "[FS-DIAG] MONITORING_MOUNT_POINT=${MONITORING_MOUNT_POINT}"
+    write_diagnostic "[FS-DIAG] MONITORING_PHYSICAL_BASE=${MONITORING_PHYSICAL_BASE}"
+    write_diagnostic "[FS-DIAG] MONITORING_BASE=${MONITORING_BASE}"
+    write_diagnostic "[FS-DIAG] DEBUG_LOG=${DEBUG_LOG}"
+
+    run_fs_diag_cmd "runtime user and groups" "whoami && id && id -Gn"
+    run_fs_diag_cmd "mounts (monitoring related)" "mount | awk '/monitoring|\\/monitoring/ {print}'"
+    run_fs_diag_cmd "findmnt mount point" "findmnt \"${MONITORING_MOUNT_POINT}\" -o TARGET,SOURCE,FSTYPE,OPTIONS"
+    run_fs_diag_cmd "findmnt by runtime path" "findmnt -T \"${MONITORING_PHYSICAL_BASE}\" -o TARGET,SOURCE,FSTYPE,OPTIONS"
+    run_fs_diag_cmd "df filesystem types and free space" "df -Th \"${MONITORING_MOUNT_POINT}\" \"${MONITORING_PHYSICAL_BASE}\" 2>/dev/null || df -Th \"${MONITORING_MOUNT_POINT}\""
+    run_fs_diag_cmd "path ownership and permissions" "ls -ld \"${MONITORING_MOUNT_POINT}\" \"${MONITORING_PHYSICAL_BASE}\" \"${MONITORING_PHYSICAL_BASE}/logs\" \"${MONITORING_PHYSICAL_BASE}/logs/deployment\" 2>/dev/null || true"
+    run_fs_diag_cmd "symlink check for MONITORING_BASE" "ls -ld \"${MONITORING_BASE}\" && readlink -f \"${MONITORING_BASE}\" 2>/dev/null || true"
+    run_fs_diag_cmd "filesystem type for mount point" "stat -f -c \"%n: type=%T\" \"${MONITORING_MOUNT_POINT}\" 2>/dev/null || true"
+
+    probe_path_rw "${MONITORING_MOUNT_POINT}" "mount root"
+    probe_path_rw "${MONITORING_PHYSICAL_BASE}" "runtime root"
+    probe_path_rw "${MONITORING_PHYSICAL_BASE}/logs" "logs dir"
+    probe_path_rw "${MONITORING_PHYSICAL_BASE}/logs/deployment" "deployment logs dir"
 }
 
 # Инициализация DEBUG лога с полной диагностикой
@@ -7947,6 +8033,10 @@ main() {
     # Инициализация diagnostic log
     init_diagnostic_log
     echo "[MAIN] init_diagnostic_log completed"
+
+    echo "[MAIN] Calling diagnose_filesystem_state..."
+    diagnose_filesystem_state
+    echo "[MAIN] diagnose_filesystem_state completed"
     
     echo "[MAIN] Calling init_debug_log..."
     # Инициализация расширенного DEBUG лога
@@ -8022,6 +8112,7 @@ main() {
         write_diagnostic "РЕЖИМ: RLM_PHASE_ONLY, package=${RLM_PACKAGE_FILTER:-<not set>}"
 
         check_sudo
+        ensure_monitoring_runtime_on_mounted_fs
         check_dependencies
         detect_network_info
         load_config_from_json
