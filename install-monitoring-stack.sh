@@ -105,6 +105,9 @@ SERVER_DOMAIN=""
 VAULT_CRT_FILE=""
 VAULT_KEY_FILE=""
 GRAFANA_BEARER_TOKEN=""
+RUNTIME_HARVEST_BIN_EFFECTIVE=""
+RUNTIME_HARVEST_BIN_SOURCE="unset"
+RUNTIME_PROMETHEUS_BIN_EXPECTED="/usr/bin/prometheus"
 
 # Порты сервисов
 PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
@@ -241,6 +244,50 @@ run_fs_diag_cmd() {
 
     print_info "[FS-DIAG] RC: ${rc}"
     write_diagnostic "[FS-DIAG] RC: ${rc}"
+}
+
+run_exec_diag_cmd() {
+    local title="$1"
+    local command="$2"
+    local output rc
+
+    print_info "[EXEC-DIAG] ===== ${title} ====="
+    print_info "[EXEC-DIAG] CMD: ${command}"
+    write_diagnostic "[EXEC-DIAG] ===== ${title} ====="
+    write_diagnostic "[EXEC-DIAG] CMD: ${command}"
+
+    if output=$(bash -o pipefail -c "${command}" 2>&1); then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    if [[ -n "$output" ]]; then
+        while IFS= read -r line; do
+            print_info "[EXEC-DIAG] OUT: ${line}"
+            write_diagnostic "[EXEC-DIAG] OUT: ${line}"
+        done <<< "$output"
+    else
+        print_info "[EXEC-DIAG] OUT: <empty>"
+        write_diagnostic "[EXEC-DIAG] OUT: <empty>"
+    fi
+
+    print_info "[EXEC-DIAG] RC: ${rc}"
+    write_diagnostic "[EXEC-DIAG] RC: ${rc}"
+}
+
+diagnose_executable_path() {
+    local label="$1"
+    local target="$2"
+    if [[ -z "$target" ]]; then
+        return 0
+    fi
+
+    run_exec_diag_cmd "target ${label}" "echo 'target=${target}' && if [[ -e '${target}' ]]; then echo 'exists=yes'; else echo 'exists=no'; fi && if [[ -x '${target}' ]]; then echo 'executable=yes'; else echo 'executable=no'; fi"
+    run_exec_diag_cmd "stat/ls ${label}" "ls -ld '${target}' 2>&1 || true; stat '${target}' 2>&1 || true; readlink -f '${target}' 2>&1 || true"
+    run_exec_diag_cmd "file/hash ${label}" "file -L '${target}' 2>&1 || true; sha256sum '${target}' 2>&1 || true"
+    run_exec_diag_cmd "mount/options ${label}" "findmnt -T '${target}' -o TARGET,SOURCE,FSTYPE,OPTIONS 2>&1 || true; dirname '${target}' | xargs -I{} findmnt -T '{}' -o TARGET,SOURCE,FSTYPE,OPTIONS 2>&1 || true"
+    run_exec_diag_cmd "namei ${label}" "namei -om '${target}' 2>&1 || true"
 }
 
 probe_path_rw() {
@@ -3424,6 +3471,10 @@ setup_monitoring_user_units() {
     print_info "  Config: $runtime_prometheus_config"
     print_info "  Data:   $runtime_prometheus_data"
     print_info "  Logs:   $runtime_prometheus_logs"
+    print_info "  ExecStart bin (expected): ${RUNTIME_PROMETHEUS_BIN_EXPECTED}"
+
+    run_exec_diag_cmd "prometheus binary candidates before unit generation" "command -v prometheus 2>&1 || true; ls -l /usr/bin/prometheus /usr/sbin/prometheus /opt/prometheus/prometheus 2>&1 || true"
+    diagnose_executable_path "prometheus(/usr/bin)" "${RUNTIME_PROMETHEUS_BIN_EXPECTED}"
     
     # Удаляем старый unit файл, чтобы гарантировать создание нового
     if [[ -f "$prom_unit" ]]; then
@@ -3494,21 +3545,48 @@ EOF
     local runtime_harvest_logs="${runtime_home}/monitoring/logs/harvest"
     local runtime_bin_dir="${runtime_home}/bin"
     local runtime_harvest_bin="/opt/harvest/bin/harvest"
+    local runtime_harvest_source="system:/opt/harvest/bin/harvest"
+    local harvest_cp_out="" harvest_cp_rc=0
+    local poller_cp_out="" poller_cp_rc=0
+    local chmod_out="" chmod_rc=0
     
     mkdir -p "$runtime_bin_dir" "$runtime_harvest_logs"
     if [[ -x "/opt/harvest/bin/harvest" ]]; then
-        cp -f "/opt/harvest/bin/harvest" "${runtime_bin_dir}/harvest" 2>/dev/null || true
-        cp -f "/opt/harvest/bin/poller" "${runtime_bin_dir}/poller" 2>/dev/null || true
-        chmod 755 "${runtime_bin_dir}/harvest" "${runtime_bin_dir}/poller" 2>/dev/null || true
+        harvest_cp_out=$(cp -f "/opt/harvest/bin/harvest" "${runtime_bin_dir}/harvest" 2>&1)
+        harvest_cp_rc=$?
+        poller_cp_out=$(cp -f "/opt/harvest/bin/poller" "${runtime_bin_dir}/poller" 2>&1)
+        poller_cp_rc=$?
+        chmod_out=$(chmod 755 "${runtime_bin_dir}/harvest" "${runtime_bin_dir}/poller" 2>&1)
+        chmod_rc=$?
+
+        print_info "[EXEC-DIAG] harvest copy rc=${harvest_cp_rc}, poller copy rc=${poller_cp_rc}, chmod rc=${chmod_rc}"
+        write_diagnostic "[EXEC-DIAG] harvest copy rc=${harvest_cp_rc}, poller copy rc=${poller_cp_rc}, chmod rc=${chmod_rc}"
+        [[ -n "$harvest_cp_out" ]] && { print_info "[EXEC-DIAG] harvest copy out: ${harvest_cp_out}"; write_diagnostic "[EXEC-DIAG] harvest copy out: ${harvest_cp_out}"; }
+        [[ -n "$poller_cp_out" ]] && { print_info "[EXEC-DIAG] poller copy out: ${poller_cp_out}"; write_diagnostic "[EXEC-DIAG] poller copy out: ${poller_cp_out}"; }
+        [[ -n "$chmod_out" ]] && { print_info "[EXEC-DIAG] chmod out: ${chmod_out}"; write_diagnostic "[EXEC-DIAG] chmod out: ${chmod_out}"; }
+
         if [[ -x "${runtime_bin_dir}/harvest" ]]; then
             runtime_harvest_bin="${runtime_bin_dir}/harvest"
+            runtime_harvest_source="userspace-copy:${runtime_bin_dir}/harvest"
         fi
+    else
+        print_warning "[EXEC-DIAG] /opt/harvest/bin/harvest не найден или не executable до копирования"
+        write_diagnostic "[EXEC-DIAG] /opt/harvest/bin/harvest missing or not executable before copy"
     fi
     
     print_info "Harvest пути (user-space для $runtime_user):"
     print_info "  Config: $runtime_harvest_config"
     print_info "  Logs:   $runtime_harvest_logs"
     print_info "  Binary: $runtime_harvest_bin"
+    print_info "  Binary source: $runtime_harvest_source"
+
+    RUNTIME_HARVEST_BIN_EFFECTIVE="$runtime_harvest_bin"
+    RUNTIME_HARVEST_BIN_SOURCE="$runtime_harvest_source"
+
+    run_exec_diag_cmd "harvest command/binary candidates before unit generation" "command -v harvest 2>&1 || true; ls -l /opt/harvest/bin/harvest /opt/harvest/harvest '${runtime_bin_dir}/harvest' /opt/harvest/bin/poller '${runtime_bin_dir}/poller' 2>&1 || true"
+    diagnose_executable_path "harvest(selected)" "$runtime_harvest_bin"
+    diagnose_executable_path "harvest(system /opt/harvest/bin/harvest)" "/opt/harvest/bin/harvest"
+    diagnose_executable_path "harvest(legacy /opt/harvest/harvest)" "/opt/harvest/harvest"
     
     # Удаляем legacy single-unit, если остался с предыдущих версий
     rm -f "$harvest_legacy_unit" 2>/dev/null || true
@@ -3607,6 +3685,11 @@ EOF
     echo "[DEBUG-SYSTEMD] Grafana unit: $graf_unit"
     echo "[DEBUG-SYSTEMD] Harvest unit (unix): $harvest_unix_unit"
     echo "[DEBUG-SYSTEMD] Harvest unit (netapp): $harvest_netapp_unit"
+
+    run_exec_diag_cmd "generated unit files list" "ls -l '${user_systemd_dir}' 2>&1 || true"
+    run_exec_diag_cmd "generated monitoring-prometheus.service content" "sed -n '1,240p' '${prom_unit}' 2>&1 || true"
+    run_exec_diag_cmd "generated ${HARVEST_UNIX_SERVICE} content" "sed -n '1,240p' '${harvest_unix_unit}' 2>&1 || true"
+    run_exec_diag_cmd "generated ${HARVEST_NETAPP_SERVICE} content" "sed -n '1,240p' '${harvest_netapp_unit}' 2>&1 || true"
 }
 
 configure_grafana_ini() {
@@ -7064,6 +7147,58 @@ configure_services() {
             fi
         }
 
+        run_user_journalctl() {
+            if [[ "$run_as_current_user" == "true" ]]; then
+                env "$xdg_env" /usr/bin/journalctl --user "$@"
+            else
+                runuser -u "$runtime_user" -- env "$xdg_env" /usr/bin/journalctl --user "$@"
+            fi
+        }
+
+        dump_user_unit_failure_debug() {
+            local unit="$1"
+            local exec_hint="${2:-}"
+            print_info "[EXEC-DIAG] Детальный дамп для ${unit}"
+            write_diagnostic "[EXEC-DIAG] Детальный дамп для ${unit}"
+
+            run_user_systemctl show "$unit" \
+                --property=Id \
+                --property=LoadState \
+                --property=ActiveState \
+                --property=SubState \
+                --property=Result \
+                --property=ExecStart \
+                --property=ExecMainCode \
+                --property=ExecMainStatus \
+                --property=MainPID \
+                --property=User \
+                --property=Group \
+                --property=FragmentPath \
+                --property=Environment 2>/dev/null | while IFS= read -r line; do
+                    print_info "[EXEC-DIAG] ${line}"
+                    write_diagnostic "[EXEC-DIAG] ${line}"
+                done
+
+            run_user_systemctl cat "$unit" 2>/dev/null | while IFS= read -r line; do
+                print_info "[EXEC-DIAG] unit-cat: ${line}"
+                write_diagnostic "[EXEC-DIAG] unit-cat: ${line}"
+            done
+
+            run_user_systemctl status "$unit" --no-pager --full 2>/dev/null | while IFS= read -r line; do
+                print_info "[EXEC-DIAG] unit-status: ${line}"
+                write_diagnostic "[EXEC-DIAG] unit-status: ${line}"
+            done
+
+            run_user_journalctl -u "$unit" -n 200 --no-pager 2>/dev/null | while IFS= read -r line; do
+                print_info "[EXEC-DIAG] unit-journal: ${line}"
+                write_diagnostic "[EXEC-DIAG] unit-journal: ${line}"
+            done
+
+            if [[ -n "$exec_hint" ]]; then
+                diagnose_executable_path "${unit} exec hint" "$exec_hint"
+            fi
+        }
+
         port_in_use() {
             local port="$1"
             # Предпочитаем фильтр ss по порту; fallback на grep для старых версий ss.
@@ -7096,6 +7231,14 @@ configure_services() {
             print_info "Пропускаем настройку прав Grafana для mon_sys (runtime user: ${runtime_user})"
         fi
 
+        run_exec_diag_cmd "user-unit runtime context" "echo 'runtime_user=${runtime_user}'; echo 'runtime_uid=${runtime_uid}'; echo 'run_as_current_user=${run_as_current_user}'; echo 'xdg_env=${xdg_env}'; id '${runtime_user}' 2>&1 || true; getent passwd '${runtime_user}' 2>&1 || true"
+        run_exec_diag_cmd "binary preflight before user-unit starts" "command -v prometheus 2>&1 || true; command -v harvest 2>&1 || true; command -v grafana-server 2>&1 || true; ls -l /usr/bin/prometheus /usr/sbin/prometheus /opt/harvest/bin/harvest '${HOME}/bin/harvest' 2>&1 || true"
+        diagnose_executable_path "preflight prometheus expected" "${RUNTIME_PROMETHEUS_BIN_EXPECTED}"
+        if [[ -n "${RUNTIME_HARVEST_BIN_EFFECTIVE:-}" ]]; then
+            diagnose_executable_path "preflight harvest effective" "${RUNTIME_HARVEST_BIN_EFFECTIVE}"
+        fi
+        diagnose_executable_path "preflight harvest system" "/opt/harvest/bin/harvest"
+
         # Перечитываем конфигурацию user-юнитов
         run_user_systemctl daemon-reload >/dev/null 2>&1 || print_warning "Не удалось выполнить daemon-reload для user-юнитов"
 
@@ -7121,6 +7264,7 @@ configure_services() {
                 print_info "$line"
                 log_message "[PROMETHEUS USER SYSTEMD STATUS] $line"
             done
+            dump_user_unit_failure_debug "monitoring-prometheus.service" "${RUNTIME_PROMETHEUS_BIN_EXPECTED}"
         fi
         echo
 
@@ -7197,6 +7341,7 @@ configure_services() {
                     print_info "$line"
                     log_message "[HARVEST UNIX USER SYSTEMD STATUS] $line"
                 done
+                dump_user_unit_failure_debug "${HARVEST_UNIX_SERVICE}" "${RUNTIME_HARVEST_BIN_EFFECTIVE:-/opt/harvest/bin/harvest}"
             fi
         else
             print_warning "Запуск ${HARVEST_UNIX_SERVICE} пропущен"
@@ -7217,6 +7362,7 @@ configure_services() {
                 print_info "$line"
                 log_message "[HARVEST NETAPP USER SYSTEMD STATUS] $line"
             done
+            dump_user_unit_failure_debug "${HARVEST_NETAPP_SERVICE}" "${RUNTIME_HARVEST_BIN_EFFECTIVE:-/opt/harvest/bin/harvest}"
         fi
 
         if [[ "$grafana_started" != true ]]; then
