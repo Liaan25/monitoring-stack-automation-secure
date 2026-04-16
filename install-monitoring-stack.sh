@@ -3974,6 +3974,131 @@ install_node_exporter_from_tarball() {
     return 0
 }
 
+check_all_package_test_download_access() {
+    local target_server="${DEPLOY_TARGET_SERVER:-${SERVER_DOMAIN:-unknown-server}}"
+    local repo_user="${NODE_EXPORTER_REPO_USER:-}"
+    local repo_pass="${NODE_EXPORTER_REPO_PASS:-}"
+    local work_dir="/tmp/package_download_check_${DATE_INSTALL}_$$"
+    local has_failure=false
+
+    print_step "Проверка тестовой загрузки всех пакетов (3 RPM + 1 tar.gz)"
+    print_info "Целевой сервер: ${target_server}"
+    write_diagnostic "Package test download: server=${target_server}, urls(grafana/prometheus/harvest/node_exporter)=${GRAFANA_URL:-<empty>}|${PROMETHEUS_URL:-<empty>}|${HARVEST_URL:-<empty>}|${NODE_EXPORTER_URL:-<empty>}"
+
+    # Используем те же креды/подход, что и у Node Exporter.
+    if [[ -z "$repo_user" || -z "$repo_pass" ]]; then
+        local cred_json_path=""
+        for p in \
+            "${CRED_JSON_PATH:-}" \
+            "$LOCAL_CRED_JSON" \
+            "$PWD/temp_data_cred.json" \
+            "$PWD"/temp_data_cred_*.json \
+            "$(dirname "$0")/temp_data_cred.json" \
+            "$(dirname "$0")"/temp_data_cred_*.json \
+            "/tmp/temp_data_cred.json" \
+            "/tmp"/temp_data_cred_*.json; do
+            [[ -z "$p" ]] && continue
+            for f in $p; do
+                if [[ -f "$f" ]]; then
+                    cred_json_path="$f"
+                    break 2
+                fi
+            done
+        done
+
+        if [[ -n "$cred_json_path" ]]; then
+            repo_user="$(jq -r '.node_exporter_tuz.user // empty' "$cred_json_path" 2>/dev/null || true)"
+            repo_pass="$(jq -r '.node_exporter_tuz.pass // empty' "$cred_json_path" 2>/dev/null || true)"
+            print_info "Креды для тестовой загрузки Prometheus взяты из: $cred_json_path"
+        fi
+    fi
+
+    if [[ -z "$repo_user" || -z "$repo_pass" ]]; then
+        print_error "Креды TUZ (node_exporter_tuz.user/pass) не найдены: не можем проверить тестовую загрузку пакетов"
+        write_diagnostic "Package test download: failed, creds not found"
+        return 1
+    fi
+
+    rm -rf "$work_dir" >/dev/null 2>&1 || true
+    mkdir -p "$work_dir"
+
+    local checks=(
+        "Grafana RPM|${GRAFANA_URL:-}|grafana-test-download.rpm"
+        "Prometheus RPM|${PROMETHEUS_URL:-}|prometheus-test-download.rpm"
+        "Harvest RPM|${HARVEST_URL:-}|harvest-test-download.rpm"
+        "Node Exporter tar.gz|${NODE_EXPORTER_URL:-}|node-exporter-test-download.tar.gz"
+    )
+
+    local check_name check_url check_file check_path
+    local file_size file_sha
+    for check in "${checks[@]}"; do
+        IFS='|' read -r check_name check_url check_file <<< "$check"
+        check_path="${work_dir}/${check_file}"
+        print_info "[DOWNLOAD-CHECK] ${check_name}: start"
+        print_info "[DOWNLOAD-CHECK] ${check_name}: URL=${check_url:-<empty>}"
+
+        if [[ -z "$check_url" ]]; then
+            print_error "[DOWNLOAD-CHECK] ${check_name}: URL пустой, тестовая загрузка невозможна"
+            write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: failed, empty URL"
+            has_failure=true
+            continue
+        fi
+
+        if ! curl -k -fL --retry 2 --connect-timeout 20 --max-time 300 \
+            -u "${repo_user}:${repo_pass}" \
+            -o "$check_path" \
+            "$check_url"; then
+            print_error "[DOWNLOAD-CHECK] ${check_name}: загрузка не удалась (доступ к URL с сервера отсутствует/ограничен)"
+            write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: failed, curl error, url=${check_url}"
+            has_failure=true
+            continue
+        fi
+
+        file_size=$(stat -c%s "$check_path" 2>/dev/null || stat -f%z "$check_path" 2>/dev/null || echo "0")
+        file_sha="$(sha256sum "$check_path" 2>/dev/null | awk '{print $1}' || true)"
+        if [[ "$file_size" -le 0 ]]; then
+            print_error "[DOWNLOAD-CHECK] ${check_name}: файл скачан, но размер 0 байт"
+            write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: failed, empty file"
+            has_failure=true
+            continue
+        fi
+
+        print_success "✅ [DOWNLOAD-CHECK] ${check_name}: загрузка успешна (${file_size} байт, sha256=${file_sha:-n/a})"
+        write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: success, file=${check_path}, size=${file_size}, sha256=${file_sha:-n/a}"
+    done
+
+    # Очистка всех тестовых файлов с поштучным отчетом.
+    for check in "${checks[@]}"; do
+        IFS='|' read -r check_name check_url check_file <<< "$check"
+        check_path="${work_dir}/${check_file}"
+        if [[ -f "$check_path" ]]; then
+            rm -f "$check_path" >/dev/null 2>&1 || true
+            if [[ -f "$check_path" ]]; then
+                print_warning "⚠ [DOWNLOAD-CHECK] ${check_name}: не удалось удалить тестовый файл ${check_path}"
+                write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: cleanup failed, file still exists ${check_path}"
+                has_failure=true
+            else
+                print_success "✅ [DOWNLOAD-CHECK] ${check_name}: тестовый файл удален (${check_path})"
+                write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: cleanup success, file removed"
+            fi
+        else
+            print_info "[DOWNLOAD-CHECK] ${check_name}: тестовый файл не найден (возможно загрузка не удалась)"
+            write_diagnostic "[DOWNLOAD-CHECK] ${check_name}: cleanup skipped, file absent"
+        fi
+    done
+
+    rm -rf "$work_dir" >/dev/null 2>&1 || true
+    if [[ "$has_failure" == true ]]; then
+        print_error "[DOWNLOAD-CHECK] Проверка загрузки пакетов завершилась с ошибками"
+        write_diagnostic "[DOWNLOAD-CHECK] overall result: FAILED"
+        return 1
+    fi
+
+    print_success "[DOWNLOAD-CHECK] Все 4 тестовые загрузки и удаления выполнены успешно"
+    write_diagnostic "[DOWNLOAD-CHECK] overall result: SUCCESS"
+    return 0
+}
+
 diagnose_rpm_install_footprint() {
     local component="$1"
     local rpm_url="$2"
@@ -4192,6 +4317,12 @@ create_rlm_install_tasks() {
         "$NODE_EXPORTER_URL|Node Exporter"
     )
     local processed_packages=0
+
+    # До создания RLM-задач проверяем доступность всех package URLs прямой загрузкой с сервера.
+    if ! check_all_package_test_download_access; then
+        print_error "Проверка тестовой загрузки пакетов завершилась ошибкой. Прерываем RLM фазу для корректного root-cause."
+        exit 1
+    fi
 
     for package in "${packages[@]}"; do
         IFS='|' read -r url name <<< "$package"
