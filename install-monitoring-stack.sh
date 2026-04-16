@@ -108,6 +108,8 @@ GRAFANA_BEARER_TOKEN=""
 RUNTIME_HARVEST_BIN_EFFECTIVE=""
 RUNTIME_HARVEST_BIN_SOURCE="unset"
 RUNTIME_PROMETHEUS_BIN_EXPECTED="/usr/bin/prometheus"
+DISCOVERED_PROMETHEUS_BIN=""
+DISCOVERED_HARVEST_BIN=""
 
 # Порты сервисов
 PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
@@ -3466,6 +3468,22 @@ setup_monitoring_user_units() {
     local runtime_prometheus_config="${runtime_home}/monitoring/config/prometheus"
     local runtime_prometheus_data="${runtime_home}/monitoring/data/prometheus"
     local runtime_prometheus_logs="${runtime_home}/monitoring/logs/prometheus"
+    local detected_prometheus_bin="${DISCOVERED_PROMETHEUS_BIN:-}"
+
+    if [[ -z "$detected_prometheus_bin" ]]; then
+        if [[ -x "/usr/bin/prometheus" ]]; then
+            detected_prometheus_bin="/usr/bin/prometheus"
+        elif [[ -x "/usr/sbin/prometheus" ]]; then
+            detected_prometheus_bin="/usr/sbin/prometheus"
+        elif [[ -x "/usr/local/bin/prometheus" ]]; then
+            detected_prometheus_bin="/usr/local/bin/prometheus"
+        elif [[ -x "/opt/prometheus/prometheus" ]]; then
+            detected_prometheus_bin="/opt/prometheus/prometheus"
+        else
+            detected_prometheus_bin="$(command -v prometheus 2>/dev/null || true)"
+        fi
+    fi
+    [[ -n "$detected_prometheus_bin" ]] && RUNTIME_PROMETHEUS_BIN_EXPECTED="$detected_prometheus_bin"
     
     print_info "Prometheus пути (user-space для $runtime_user):"
     print_info "  Config: $runtime_prometheus_config"
@@ -3492,7 +3510,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/prometheus --config.file=${runtime_prometheus_config}/prometheus.yml --storage.tsdb.path=${runtime_prometheus_data} --web.console.templates=${runtime_prometheus_config}/consoles --web.console.libraries=${runtime_prometheus_config}/console_libraries --web.config.file=${runtime_prometheus_config}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}
+ExecStart=${RUNTIME_PROMETHEUS_BIN_EXPECTED} --config.file=${runtime_prometheus_config}/prometheus.yml --storage.tsdb.path=${runtime_prometheus_data} --web.console.templates=${runtime_prometheus_config}/consoles --web.console.libraries=${runtime_prometheus_config}/console_libraries --web.config.file=${runtime_prometheus_config}/web-config.yml --web.external-url=https://${SERVER_DOMAIN}:${PROMETHEUS_PORT}/ --web.listen-address=0.0.0.0:${PROMETHEUS_PORT}
 WorkingDirectory=${runtime_prometheus_data}
 Restart=on-failure
 RestartSec=10
@@ -3544,18 +3562,46 @@ EOF
     local runtime_harvest_config="${runtime_home}/monitoring/config/harvest"
     local runtime_harvest_logs="${runtime_home}/monitoring/logs/harvest"
     local runtime_bin_dir="${runtime_home}/bin"
-    local runtime_harvest_bin="/opt/harvest/bin/harvest"
-    local runtime_harvest_source="system:/opt/harvest/bin/harvest"
+    local runtime_harvest_bin="${DISCOVERED_HARVEST_BIN:-}"
+    local runtime_harvest_source="autodiscovery"
+    local source_harvest_bin=""
     local harvest_cp_out="" harvest_cp_rc=0
     local poller_cp_out="" poller_cp_rc=0
     local chmod_out="" chmod_rc=0
     
     mkdir -p "$runtime_bin_dir" "$runtime_harvest_logs"
-    if [[ -x "/opt/harvest/bin/harvest" ]]; then
-        harvest_cp_out=$(cp -f "/opt/harvest/bin/harvest" "${runtime_bin_dir}/harvest" 2>&1)
+    if [[ -z "$runtime_harvest_bin" ]]; then
+        if [[ -x "/opt/harvest/bin/harvest" ]]; then
+            source_harvest_bin="/opt/harvest/bin/harvest"
+            runtime_harvest_source="system:/opt/harvest/bin/harvest"
+        elif [[ -x "/opt/harvest/harvest" ]]; then
+            source_harvest_bin="/opt/harvest/harvest"
+            runtime_harvest_source="system:/opt/harvest/harvest"
+        elif [[ -x "/usr/bin/harvest" ]]; then
+            source_harvest_bin="/usr/bin/harvest"
+            runtime_harvest_source="system:/usr/bin/harvest"
+        elif [[ -x "/usr/local/bin/harvest" ]]; then
+            source_harvest_bin="/usr/local/bin/harvest"
+            runtime_harvest_source="system:/usr/local/bin/harvest"
+        else
+            source_harvest_bin="$(command -v harvest 2>/dev/null || true)"
+            [[ -n "$source_harvest_bin" ]] && runtime_harvest_source="command-v:${source_harvest_bin}"
+        fi
+        runtime_harvest_bin="${source_harvest_bin:-/opt/harvest/bin/harvest}"
+    else
+        source_harvest_bin="$runtime_harvest_bin"
+    fi
+
+    if [[ -n "$source_harvest_bin" && -x "$source_harvest_bin" ]]; then
+        harvest_cp_out=$(cp -f "$source_harvest_bin" "${runtime_bin_dir}/harvest" 2>&1)
         harvest_cp_rc=$?
-        poller_cp_out=$(cp -f "/opt/harvest/bin/poller" "${runtime_bin_dir}/poller" 2>&1)
-        poller_cp_rc=$?
+        if [[ -x "/opt/harvest/bin/poller" ]]; then
+            poller_cp_out=$(cp -f "/opt/harvest/bin/poller" "${runtime_bin_dir}/poller" 2>&1)
+            poller_cp_rc=$?
+        else
+            poller_cp_out="poller source not found in /opt/harvest/bin/poller"
+            poller_cp_rc=1
+        fi
         chmod_out=$(chmod 755 "${runtime_bin_dir}/harvest" "${runtime_bin_dir}/poller" 2>&1)
         chmod_rc=$?
 
@@ -3570,8 +3616,8 @@ EOF
             runtime_harvest_source="userspace-copy:${runtime_bin_dir}/harvest"
         fi
     else
-        print_warning "[EXEC-DIAG] /opt/harvest/bin/harvest не найден или не executable до копирования"
-        write_diagnostic "[EXEC-DIAG] /opt/harvest/bin/harvest missing or not executable before copy"
+        print_warning "[EXEC-DIAG] harvest binary source не найден или не executable до копирования"
+        write_diagnostic "[EXEC-DIAG] harvest binary source missing or not executable before copy"
     fi
     
     print_info "Harvest пути (user-space для $runtime_user):"
@@ -3928,6 +3974,115 @@ install_node_exporter_from_tarball() {
     return 0
 }
 
+diagnose_rpm_install_footprint() {
+    local component="$1"
+    local rpm_url="$2"
+    local task_id="$3"
+    local rlm_status_json="${4:-}"
+    local component_lc
+    component_lc=$(echo "$component" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+
+    print_info "[RPM-FORENSICS] ===== ${component}: post-RLM install footprint ====="
+    write_diagnostic "[RPM-FORENSICS] ===== ${component}: post-RLM install footprint ====="
+    print_info "[RPM-FORENSICS] task_id=${task_id}, url=${rpm_url}"
+    write_diagnostic "[RPM-FORENSICS] task_id=${task_id}, url=${rpm_url}"
+
+    run_exec_diag_cmd "rpmdb baseline snapshot (${component})" "rpm -qa | sort | awk 'BEGIN{IGNORECASE=1} /grafana|prometheus|harvest|node[-_]?exporter/ {print}'"
+    run_exec_diag_cmd "which/command -v snapshot (${component})" "command -v grafana-server 2>&1 || true; command -v prometheus 2>&1 || true; command -v harvest 2>&1 || true"
+    run_exec_diag_cmd "filesystem snapshot common bins (${component})" "ls -l /usr/bin/prometheus /usr/sbin/prometheus /usr/local/bin/prometheus /opt/prometheus/prometheus /opt/harvest/bin/harvest /opt/harvest/harvest /usr/bin/harvest /usr/local/bin/harvest /usr/sbin/grafana-server /usr/share/grafana/bin/grafana 2>&1 || true"
+
+    if [[ -n "$rlm_status_json" ]]; then
+        local rlm_parsed=""
+        rlm_parsed=$(echo "$rlm_status_json" | jq -c '{id,status,state,service,result:.payload.result,mess:.payload.mess,mess2:.payload.mess2,sts:.payload.sts}' 2>/dev/null || true)
+        print_info "[RPM-FORENSICS] RLM final raw (${component}): ${rlm_status_json}"
+        write_diagnostic "[RPM-FORENSICS] RLM final raw (${component}): ${rlm_status_json}"
+        print_info "[RPM-FORENSICS] RLM final parsed (${component}): ${rlm_parsed:-unparsed}"
+        write_diagnostic "[RPM-FORENSICS] RLM final parsed (${component}): ${rlm_parsed:-unparsed}"
+    fi
+
+    local pkg_regex=""
+    local expected_bins=()
+    local expected_label=""
+    local required_component=false
+    case "$component" in
+        Grafana)
+            pkg_regex="grafana"
+            expected_bins=(/usr/sbin/grafana-server /usr/bin/grafana-server /usr/share/grafana/bin/grafana)
+            expected_label="grafana-server"
+            required_component=true
+            ;;
+        Prometheus)
+            pkg_regex="prometheus"
+            expected_bins=(/usr/bin/prometheus /usr/sbin/prometheus /usr/local/bin/prometheus /opt/prometheus/prometheus)
+            expected_label="prometheus"
+            required_component=true
+            ;;
+        Harvest)
+            pkg_regex="harvest"
+            expected_bins=(/opt/harvest/bin/harvest /opt/harvest/harvest /usr/bin/harvest /usr/local/bin/harvest)
+            expected_label="harvest"
+            required_component=true
+            ;;
+        *)
+            pkg_regex="$component_lc"
+            ;;
+    esac
+
+    local pkg_list=""
+    pkg_list=$(rpm -qa | awk -v pat="$pkg_regex" 'BEGIN{IGNORECASE=1} $0 ~ pat {print}' 2>/dev/null || true)
+    if [[ -n "$pkg_list" ]]; then
+        print_info "[RPM-FORENSICS] Найдены RPM-пакеты для ${component}:"
+        write_diagnostic "[RPM-FORENSICS] Найдены RPM-пакеты для ${component}:"
+        while IFS= read -r pkg; do
+            [[ -z "$pkg" ]] && continue
+            print_info "[RPM-FORENSICS]   $pkg"
+            write_diagnostic "[RPM-FORENSICS]   $pkg"
+            run_exec_diag_cmd "rpm -qi ${pkg}" "rpm -qi '${pkg}' 2>&1 || true"
+            run_exec_diag_cmd "rpm -ql ${pkg} (first 250 lines)" "rpm -ql '${pkg}' 2>&1 | sed -n '1,250p'"
+        done <<< "$pkg_list"
+    else
+        print_warning "[RPM-FORENSICS] RPM-пакеты по маске '${pkg_regex}' не найдены для ${component}"
+        write_diagnostic "[RPM-FORENSICS] RPM-пакеты по маске '${pkg_regex}' не найдены для ${component}"
+    fi
+
+    local found_any_bin=false
+    local first_found_bin=""
+    local b
+    for b in "${expected_bins[@]}"; do
+        diagnose_executable_path "${component} expected binary" "$b"
+        run_exec_diag_cmd "rpm owner for ${b}" "rpm -qf '${b}' 2>&1 || true"
+        if [[ -x "$b" ]]; then
+            found_any_bin=true
+            if [[ -z "$first_found_bin" ]]; then
+                first_found_bin="$b"
+            fi
+        fi
+    done
+
+    if [[ "$component" == "Prometheus" && -n "$first_found_bin" ]]; then
+        DISCOVERED_PROMETHEUS_BIN="$first_found_bin"
+        RUNTIME_PROMETHEUS_BIN_EXPECTED="$first_found_bin"
+        print_info "[RPM-FORENSICS] Prometheus binary selected: ${DISCOVERED_PROMETHEUS_BIN}"
+        write_diagnostic "[RPM-FORENSICS] Prometheus binary selected: ${DISCOVERED_PROMETHEUS_BIN}"
+    fi
+    if [[ "$component" == "Harvest" && -n "$first_found_bin" ]]; then
+        DISCOVERED_HARVEST_BIN="$first_found_bin"
+        print_info "[RPM-FORENSICS] Harvest binary selected: ${DISCOVERED_HARVEST_BIN}"
+        write_diagnostic "[RPM-FORENSICS] Harvest binary selected: ${DISCOVERED_HARVEST_BIN}"
+    fi
+
+    if [[ "$required_component" == true && "$found_any_bin" != true ]]; then
+        print_error "[RPM-FORENSICS] ${component}: RLM reported success, but '${expected_label}' binary not found in expected paths"
+        print_error "[RPM-FORENSICS] ${component}: this is an infrastructure/RLM installer consistency issue (task success without local binary)"
+        write_diagnostic "[RPM-FORENSICS] ${component}: required binary not found after successful RLM task"
+        return 1
+    fi
+
+    print_info "[RPM-FORENSICS] ${component}: post-RLM footprint check completed"
+    write_diagnostic "[RPM-FORENSICS] ${component}: post-RLM footprint check completed"
+    return 0
+}
+
 create_rlm_install_tasks() {
     print_step "Создание задач RLM для установки пакетов"
     ensure_working_directory
@@ -4144,6 +4299,15 @@ create_rlm_install_tasks() {
                         export RLM_ID_TASK_NODE_EXPORTER
                         ;;
                 esac
+                if ! diagnose_rpm_install_footprint "$name" "$url" "$task_id" "$status_response"; then
+                    if [[ "$optional_package" == "true" ]]; then
+                        print_warning "[RPM-FORENSICS] ${name}: required footprint check failed, but package is optional"
+                        write_diagnostic "[RPM-FORENSICS] ${name}: footprint check failed (optional)"
+                    else
+                        print_error "[RPM-FORENSICS] ${name}: footprint check failed after successful RLM task"
+                        exit 1
+                    fi
+                fi
                 break
             elif echo "$status_response" | grep -qE '"status":"(failed|error)"'; then
                 echo ""
