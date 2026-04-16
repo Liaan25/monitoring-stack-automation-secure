@@ -4083,6 +4083,73 @@ diagnose_rpm_install_footprint() {
     return 0
 }
 
+dump_rlm_failure_diagnostics() {
+    local component="$1"
+    local task_id="$2"
+    local rpm_url="$3"
+    local status_json="${4:-}"
+
+    print_error "[RLM-FAIL-DIAG] ===== ${component}: расширенная диагностика ошибки RLM ====="
+    print_error "[RLM-FAIL-DIAG] task_id=${task_id}, url=${rpm_url}"
+    write_diagnostic "[RLM-FAIL-DIAG] component=${component}, task_id=${task_id}, url=${rpm_url}"
+
+    local parsed_summary=""
+    parsed_summary=$(echo "$status_json" | jq -c '{
+        id,
+        status,
+        state,
+        decision,
+        approved,
+        canceled,
+        error,
+        validation_error,
+        service,
+        payload_sts: (.payload.sts // null),
+        payload_mess: (.payload.mess // null),
+        payload_mess2: (.payload.mess2 // null),
+        max_task_status: (.payload.max_task_status // null),
+        enabled_checks: (.payload.enabled_checks // []),
+        jj_segments: (.payload.jj_segments // []),
+        rules_from_db_count: ((.payload.rules_from_db // []) | length),
+        packages_count: ((.payload.packages // []) | length),
+        servers_count: ((.payload.servers // []) | length),
+        parse_result_count: ((.payload.parse_result // {}) | length),
+        script_logs_count: ((.payload.script_logs // {}) | length)
+    }' 2>/dev/null || true)
+    print_error "[RLM-FAIL-DIAG] parsed summary: ${parsed_summary:-unparsed}"
+    write_diagnostic "[RLM-FAIL-DIAG] parsed summary: ${parsed_summary:-unparsed}"
+
+    local rules_count=""
+    local segments_count=""
+    rules_count=$(echo "$status_json" | jq -r '((.payload.rules_from_db // []) | length)' 2>/dev/null || echo "")
+    segments_count=$(echo "$status_json" | jq -r '((.payload.jj_segments // []) | length)' 2>/dev/null || echo "")
+    if [[ "$rules_count" == "0" ]]; then
+        print_error "[RLM-FAIL-DIAG] rules_from_db пустой -> нет подходящего правила для URL/КЭ/стенда в классификаторе RLM"
+        write_diagnostic "[RLM-FAIL-DIAG] rules_from_db empty"
+    fi
+    if [[ "$segments_count" == "0" ]]; then
+        print_error "[RLM-FAIL-DIAG] jj_segments пустой -> RLM не определил допустимый сегмент для установки"
+        write_diagnostic "[RLM-FAIL-DIAG] jj_segments empty"
+    fi
+
+    local packages_preview=""
+    local servers_preview=""
+    local parse_result_preview=""
+    local script_logs_preview=""
+    packages_preview=$(echo "$status_json" | jq -c '.payload.packages // []' 2>/dev/null || true)
+    servers_preview=$(echo "$status_json" | jq -c '.payload.servers // []' 2>/dev/null || true)
+    parse_result_preview=$(echo "$status_json" | jq -c '.payload.parse_result // {}' 2>/dev/null || true)
+    script_logs_preview=$(echo "$status_json" | jq -c '.payload.script_logs // {}' 2>/dev/null || true)
+    print_error "[RLM-FAIL-DIAG] payload.packages: ${packages_preview:-[]}"
+    print_error "[RLM-FAIL-DIAG] payload.servers: ${servers_preview:-[]}"
+    print_error "[RLM-FAIL-DIAG] payload.parse_result: ${parse_result_preview:-{}}"
+    print_error "[RLM-FAIL-DIAG] payload.script_logs: ${script_logs_preview:-{}}"
+    write_diagnostic "[RLM-FAIL-DIAG] payload.packages=${packages_preview:-[]}"
+    write_diagnostic "[RLM-FAIL-DIAG] payload.servers=${servers_preview:-[]}"
+    write_diagnostic "[RLM-FAIL-DIAG] payload.parse_result=${parse_result_preview:-{}}"
+    write_diagnostic "[RLM-FAIL-DIAG] payload.script_logs=${script_logs_preview:-{}}"
+}
+
 create_rlm_install_tasks() {
     print_step "Создание задач RLM для установки пакетов"
     ensure_working_directory
@@ -4275,6 +4342,19 @@ create_rlm_install_tasks() {
             echo "📦 $name │ server: ${target_server} │ netapp: ${target_netapp} │ Попытка $attempt/$max_attempts │ Статус: $current_status $status_icon │ Время: ${elapsed_min}м (${elapsed_sec}с)"
 
             write_diagnostic "$name RLM: attempt=$attempt/$max_attempts, status=$current_status, elapsed=${elapsed_min}m"
+            if [[ "$current_status" == "approved" && $((attempt % 5)) -eq 0 ]]; then
+                local approved_diag=""
+                approved_diag=$(echo "$status_response" | jq -c '{
+                    id, status, state, decision, approved,
+                    max_task_status: (.payload.max_task_status // null),
+                    rules_from_db_count: ((.payload.rules_from_db // []) | length),
+                    jj_segments: (.payload.jj_segments // []),
+                    packages_count: ((.payload.packages // []) | length),
+                    servers_count: ((.payload.servers // []) | length)
+                }' 2>/dev/null || true)
+                print_info "[RLM-APPROVED-DIAG] ${name}: ${approved_diag:-unparsed}"
+                write_diagnostic "[RLM-APPROVED-DIAG] ${name}: ${approved_diag:-unparsed}"
+            fi
 
             if echo "$status_response" | grep -q '"status":"success"'; then
                 echo "✅ $name УСТАНОВЛЕН за ${elapsed_min}м (${elapsed_sec}с)"
@@ -4315,14 +4395,16 @@ create_rlm_install_tasks() {
                     print_warning "$name: ошибка установки (опционально), продолжаем"
                     print_info "Ответ RLM: $status_response"
                     print_info "RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
-                    print_info "RLM status parsed (debug): $(echo "$status_response" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
+                    print_info "RLM status parsed (debug): $(echo "$status_response" | jq -c '{id,status,state,decision,error,validation_error,payload_sts:(.payload.sts // null),payload_mess:(.payload.mess // null),payload_mess2:(.payload.mess2 // null),rules_from_db_count:((.payload.rules_from_db // [])|length),jj_segments:(.payload.jj_segments // [])}' 2>/dev/null || echo 'unparsed')"
+                    dump_rlm_failure_diagnostics "$name" "$task_id" "$url" "$status_response"
                     write_diagnostic "$name RLM: FAILED (optional) - $status_response"
                     break
                 fi
                 print_error "❌ $name: ОШИБКА УСТАНОВКИ"
                 print_error "📋 Ответ RLM: $status_response"
                 print_error "❌ RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
-                print_error "❌ RLM status parsed (debug): $(echo "$status_response" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
+                print_error "❌ RLM status parsed (debug): $(echo "$status_response" | jq -c '{id,status,state,decision,error,validation_error,payload_sts:(.payload.sts // null),payload_mess:(.payload.mess // null),payload_mess2:(.payload.mess2 // null),rules_from_db_count:((.payload.rules_from_db // [])|length),jj_segments:(.payload.jj_segments // [])}' 2>/dev/null || echo 'unparsed')"
+                dump_rlm_failure_diagnostics "$name" "$task_id" "$url" "$status_response"
                 write_diagnostic "$name RLM: FAILED - $status_response"
                 exit 1
             fi
@@ -4337,14 +4419,16 @@ create_rlm_install_tasks() {
                 print_warning "$name: таймаут установки (опционально), продолжаем"
                 print_info "RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
                 print_info "Последний ответ RLM (debug): ${last_status_response:-<empty>}"
-                print_info "Последний parsed статус (debug): $(echo "${last_status_response:-}" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
+                print_info "Последний parsed статус (debug): $(echo "${last_status_response:-}" | jq -c '{id,status,state,decision,error,validation_error,payload_sts:(.payload.sts // null),payload_mess:(.payload.mess // null),payload_mess2:(.payload.mess2 // null),rules_from_db_count:((.payload.rules_from_db // [])|length),jj_segments:(.payload.jj_segments // [])}' 2>/dev/null || echo 'unparsed')"
+                dump_rlm_failure_diagnostics "$name" "$task_id" "$url" "${last_status_response:-}"
                 write_diagnostic "$name RLM: TIMEOUT (optional) after ${max_attempts} attempts"
                 continue
             fi
             print_error "⏰ $name: ТАЙМАУТ после ${max_attempts} попыток (~$((max_attempts * interval_sec / 60)) минут)"
             print_error "❌ RLM status URL (debug): ${RLM_API_URL}/api/tasks/${task_id}/"
             print_error "❌ Последний ответ RLM (debug): ${last_status_response:-<empty>}"
-            print_error "❌ Последний parsed статус (debug): $(echo "${last_status_response:-}" | jq -c '{status: .status, id: .id, message: (.message // .msg // empty), detail: (.detail // .error // .errors // .result // empty)}' 2>/dev/null || echo 'unparsed')"
+            print_error "❌ Последний parsed статус (debug): $(echo "${last_status_response:-}" | jq -c '{id,status,state,decision,error,validation_error,payload_sts:(.payload.sts // null),payload_mess:(.payload.mess // null),payload_mess2:(.payload.mess2 // null),rules_from_db_count:((.payload.rules_from_db // [])|length),jj_segments:(.payload.jj_segments // [])}' 2>/dev/null || echo 'unparsed')"
+            dump_rlm_failure_diagnostics "$name" "$task_id" "$url" "${last_status_response:-}"
             exit 1
         fi
 
