@@ -358,6 +358,7 @@ FORCE_FS_APPLY='${scriptContext.params.FORCE_RLM_FS_APPLY ? 'true' : 'false'}' \
 RLM_MAX_ATTEMPTS='120' \
 RLM_SLEEP_SEC='10' \
 SSH_USER="\$SSH_USER" \
+CRED_JSON_FILE='${pair.credJsonFile}' \
 ./tools/rlm_monitoring_fs.sh 2>&1
 )
 RC=\$?

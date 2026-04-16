@@ -6,6 +6,87 @@ emit_result() {
   echo "[RLM-FS-RESULT] reason=${reason}"
 }
 
+RLM_TLS_CERT_FILE="${RLM_TLS_CERT_FILE:-}"
+RLM_TLS_KEY_FILE="${RLM_TLS_KEY_FILE:-}"
+RLM_TLS_CA_FILE="${RLM_TLS_CA_FILE:-}"
+RLM_MTLS_TMP_DIR=""
+
+cleanup_mtls_tmp_dir() {
+  if [[ -n "${RLM_MTLS_TMP_DIR:-}" && -d "${RLM_MTLS_TMP_DIR}" ]]; then
+    rm -rf "${RLM_MTLS_TMP_DIR}" >/dev/null 2>&1 || true
+  fi
+}
+
+prepare_mtls_materials_if_needed() {
+  if [[ -n "${RLM_TLS_CERT_FILE}" && -n "${RLM_TLS_KEY_FILE}" ]]; then
+    [[ -r "${RLM_TLS_CERT_FILE}" ]] || { echo "[RLM-FS][ERROR] RLM_TLS_CERT_FILE unreadable: ${RLM_TLS_CERT_FILE}"; return 1; }
+    [[ -r "${RLM_TLS_KEY_FILE}" ]] || { echo "[RLM-FS][ERROR] RLM_TLS_KEY_FILE unreadable: ${RLM_TLS_KEY_FILE}"; return 1; }
+    if [[ -n "${RLM_TLS_CA_FILE}" ]]; then
+      [[ -r "${RLM_TLS_CA_FILE}" ]] || { echo "[RLM-FS][ERROR] RLM_TLS_CA_FILE unreadable: ${RLM_TLS_CA_FILE}"; return 1; }
+    fi
+    echo "[RLM-FS] mTLS: using explicit cert/key paths"
+    return 0
+  fi
+
+  local cred_json="${CRED_JSON_FILE:-${CRED_JSON_PATH:-}}"
+  if [[ -z "${cred_json}" || ! -f "${cred_json}" ]]; then
+    echo "[RLM-FS][ERROR] CRED_JSON_FILE is not set or file missing (mTLS required)"
+    return 1
+  fi
+
+  command -v jq >/dev/null 2>&1 || { echo "[RLM-FS][ERROR] jq is required for mTLS extraction"; return 1; }
+  command -v openssl >/dev/null 2>&1 || { echo "[RLM-FS][ERROR] openssl is required for mTLS extraction"; return 1; }
+
+  local tmp_dir bundle_file cert_file key_file ca_file
+  tmp_dir="$(mktemp -d /tmp/rlm-fs-mtls-XXXXXX)"
+  chmod 700 "${tmp_dir}" || true
+
+  bundle_file="${tmp_dir}/client_bundle.pem"
+  cert_file="${tmp_dir}/client.crt"
+  key_file="${tmp_dir}/client.key"
+  ca_file="${tmp_dir}/ca_chain.crt"
+
+  jq -r '.certificates.grafana_client_pem // .certificates.server_bundle_pem // empty' "${cred_json}" > "${bundle_file}" 2>/dev/null || true
+  if [[ ! -s "${bundle_file}" ]]; then
+    echo "[RLM-FS][ERROR] mTLS bundle is empty in ${cred_json}"
+    rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  openssl pkey -in "${bundle_file}" -out "${key_file}" >/dev/null 2>&1 || { echo "[RLM-FS][ERROR] failed to extract client private key"; rm -rf "${tmp_dir}" >/dev/null 2>&1 || true; return 1; }
+  openssl crl2pkcs7 -nocrl -certfile "${bundle_file}" | openssl pkcs7 -print_certs -out "${cert_file}" >/dev/null 2>&1 || { echo "[RLM-FS][ERROR] failed to extract client certificate"; rm -rf "${tmp_dir}" >/dev/null 2>&1 || true; return 1; }
+
+  jq -r '.certificates.ca_chain_crt // empty' "${cred_json}" > "${ca_file}" 2>/dev/null || true
+  [[ -s "${ca_file}" ]] || rm -f "${ca_file}" >/dev/null 2>&1 || true
+
+  chmod 600 "${bundle_file}" "${cert_file}" "${key_file}" >/dev/null 2>&1 || true
+  [[ -f "${ca_file}" ]] && chmod 600 "${ca_file}" >/dev/null 2>&1 || true
+
+  RLM_TLS_CERT_FILE="${cert_file}"
+  RLM_TLS_KEY_FILE="${key_file}"
+  RLM_TLS_CA_FILE="${ca_file}"
+  RLM_MTLS_TMP_DIR="${tmp_dir}"
+  echo "[RLM-FS] mTLS materials prepared from ${cred_json}"
+  return 0
+}
+
+build_tls_args() {
+  local -n out_arr=$1
+  out_arr=()
+  if ! prepare_mtls_materials_if_needed; then
+    return 1
+  fi
+
+  [[ -n "${RLM_TLS_CERT_FILE}" && -n "${RLM_TLS_KEY_FILE}" ]] || return 1
+  [[ -r "${RLM_TLS_CERT_FILE}" ]] || return 1
+  [[ -r "${RLM_TLS_KEY_FILE}" ]] || return 1
+
+  out_arr+=(--tlsv1.2 --cert "${RLM_TLS_CERT_FILE}" --key "${RLM_TLS_KEY_FILE}")
+  if [[ -n "${RLM_TLS_CA_FILE}" && -r "${RLM_TLS_CA_FILE}" ]]; then
+    out_arr+=(--cacert "${RLM_TLS_CA_FILE}")
+  fi
+}
+
 verify_remote_mount_writable() {
   local mount_point="$1"
   local server="$2"
@@ -47,6 +128,7 @@ force_apply="${FORCE_FS_APPLY:-false}"
 max_attempts="${RLM_MAX_ATTEMPTS:-120}"
 sleep_sec="${RLM_SLEEP_SEC:-10}"
 server_ip="${SERVER_IP:-}"
+trap cleanup_mtls_tmp_dir EXIT
 
 echo "┌────────────────────────────────────────────────────────────┐"
 printf "│  🗄️  ПОДГОТОВКА FS: %-35s │\n" "${mount_point}"
@@ -83,6 +165,12 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 2
 fi
 
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "[RLM-FS][ERROR] openssl is required"
+  emit_result "dependency_openssl_missing"
+  exit 2
+fi
+
 kae_server="$(echo "${NAMESPACE_CI}" | cut -d'_' -f2)"
 mon_ci_user="${kae_server}-lnx-mon_ci"
 mon_ci_group="${kae_server}-lnx-mon_ci"
@@ -91,6 +179,14 @@ echo "[RLM-FS] Derived KAE=${kae_server}"
 echo "[RLM-FS] mon_ci_user=${mon_ci_user}"
 echo "[RLM-FS] mon_ci_group=${mon_ci_group}"
 echo "[RLM-FS] Poll settings: attempts=${max_attempts}, sleep=${sleep_sec}s"
+
+tls_args=()
+if ! build_tls_args tls_args; then
+  echo "[RLM-FS][ERROR] Unable to prepare mTLS materials for RLM API"
+  emit_result "mtls_prepare_failed"
+  exit 2
+fi
+echo "[RLM-FS] mTLS enabled for RLM API"
 
 if [[ -n "${SSH_USER:-}" && "${force_apply}" != "true" ]]; then
   if ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
@@ -165,11 +261,25 @@ payload="$(
 echo "[RLM-FS] Payload:"
 echo "${payload}" | jq .
 
-create_resp="$(curl -k -sS -X POST "${RLM_API_URL}/api/tasks.json" \
+set +e
+create_resp="$(curl -sS -X POST "${RLM_API_URL}/api/tasks.json" \
   -H "Accept: application/json" \
   -H "Authorization: Token ${RLM_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d "${payload}")"
+  "${tls_args[@]}" \
+  -d "${payload}" 2>&1)"
+create_rc=$?
+set -e
+if [[ ${create_rc} -ne 0 ]]; then
+  echo "[RLM-FS][ERROR] Create request failed (curl rc=${create_rc})"
+  echo "[RLM-FS][ERROR] ${create_resp}"
+  if [[ ${create_rc} -eq 56 ]]; then
+    emit_result "curl_56_mtls_certificate_required"
+  else
+    emit_result "curl_create_rc_${create_rc}"
+  fi
+  exit 3
+fi
 
 echo "[RLM-FS] Create response:"
 echo "${create_resp}" | jq . || true
@@ -196,10 +306,20 @@ last_resp=""
 start_ts="$(date +%s)"
 
 for i in $(seq 1 "${max_attempts}"); do
-  status_resp="$(curl -k -sS -X GET "${RLM_API_URL}/api/tasks/${task_id}/" \
+  set +e
+  status_resp="$(curl -sS -X GET "${RLM_API_URL}/api/tasks/${task_id}/" \
     -H "Accept: application/json" \
     -H "Authorization: Token ${RLM_TOKEN}" \
-    -H "Content-Type: application/json")"
+    -H "Content-Type: application/json" \
+    "${tls_args[@]}" 2>&1)"
+  status_rc=$?
+  set -e
+  if [[ ${status_rc} -ne 0 ]]; then
+    echo "[RLM-FS][ERROR] Status request failed for task ${task_id} (curl rc=${status_rc})"
+    echo "[RLM-FS][ERROR] ${status_resp}"
+    emit_result "curl_status_rc_${status_rc}"
+    exit 4
+  fi
 
   status="$(echo "${status_resp}" | jq -r '.status // "unknown"')"
   final_status="${status}"
