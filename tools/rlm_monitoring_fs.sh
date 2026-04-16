@@ -112,7 +112,41 @@ verify_remote_mount_writable() {
   fi
 
   echo "[RLM-FS][ERROR] Writable probe failed for ${mount_point} on ${server}"
+  collect_remote_ro_diagnostics "${mount_point}" "${server}" "${ssh_user}"
   return 1
+}
+
+collect_remote_ro_diagnostics() {
+  local mount_point="$1"
+  local server="$2"
+  local ssh_user="$3"
+
+  echo "[RLM-FS] Collecting extended readonly diagnostics for ${mount_point} on ${server}"
+  ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+    "${ssh_user}@${server}" \
+    "set +e;
+     echo '[RLM-FS][REMOTE-DIAG] ===== READONLY FORENSICS START =====';
+     echo '[RLM-FS][REMOTE-DIAG] date:'; date;
+     echo '[RLM-FS][REMOTE-DIAG] hostname:'; hostname -f 2>/dev/null || hostname;
+     echo '[RLM-FS][REMOTE-DIAG] user:'; id;
+     echo '[RLM-FS][REMOTE-DIAG] uname:'; uname -a;
+     echo '[RLM-FS][REMOTE-DIAG] findmnt -T mount_point:'; findmnt -T '${mount_point}' -o TARGET,SOURCE,FSTYPE,OPTIONS 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] /proc/mounts entry:'; awk '\$2==\"${mount_point}\" {print}' /proc/mounts 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] df -Th:'; df -Th '${mount_point}' 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] df -i:'; df -i '${mount_point}' 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] ls -ld mount and parent:'; ls -ld '${mount_point}' \"\$(dirname '${mount_point}')\" 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] lsblk -f:'; lsblk -f 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] fstab entry:'; awk '(\$1 !~ /^#/ && \$2==\"${mount_point}\") {print}' /etc/fstab 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] manual write probe in mount root:'; : > '${mount_point}/.rlm_fs_forensics_probe_$$' 2>/tmp/rlm_fs_forensics.err && rm -f '${mount_point}/.rlm_fs_forensics_probe_$$' || true;
+     if [ -s /tmp/rlm_fs_forensics.err ]; then
+       echo '[RLM-FS][REMOTE-DIAG] write probe stderr:'; cat /tmp/rlm_fs_forensics.err;
+     fi;
+     rm -f /tmp/rlm_fs_forensics.err 2>/dev/null || true;
+     echo '[RLM-FS][REMOTE-DIAG] dmesg (tail 200):';
+     (dmesg -T 2>/dev/null | egrep -i 'ext4|xfs|btrfs|I/O error|read-only|remount|buffer i/o' | tail -n 200) || echo '[RLM-FS][REMOTE-DIAG] dmesg unavailable (likely permission restricted)';
+     echo '[RLM-FS][REMOTE-DIAG] journalctl -k (tail 200):';
+     (journalctl -k --no-pager -n 200 2>/dev/null | egrep -i 'ext4|xfs|btrfs|I/O error|read-only|remount|buffer i/o') || echo '[RLM-FS][REMOTE-DIAG] journalctl unavailable or restricted';
+     echo '[RLM-FS][REMOTE-DIAG] ===== READONLY FORENSICS END =====';" || true
 }
 
 server="${SERVER_FQDN:-<empty>}"
