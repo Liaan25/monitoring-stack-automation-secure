@@ -6,6 +6,34 @@ emit_result() {
   echo "[RLM-FS-RESULT] reason=${reason}"
 }
 
+verify_remote_mount_writable() {
+  local mount_point="$1"
+  local server="$2"
+  local ssh_user="$3"
+  local probe_name
+  probe_name=".rlm_fs_write_probe_$$"
+
+  echo "[RLM-FS] Writable probe for ${mount_point} on ${server}"
+  if ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+      "${ssh_user}@${server}" \
+      "set -e;
+       echo '[RLM-FS][REMOTE] findmnt:';
+       findmnt -T '${mount_point}' -o TARGET,SOURCE,FSTYPE,OPTIONS || true;
+       echo '[RLM-FS][REMOTE] df:';
+       df -h '${mount_point}' || true;
+       echo '[RLM-FS][REMOTE] perms:';
+       ls -ld '${mount_point}' || true;
+       echo '[RLM-FS][REMOTE] write probe start';
+       : > '${mount_point}/${probe_name}';
+       rm -f '${mount_point}/${probe_name}';
+       echo '[RLM-FS][REMOTE] write probe: OK'"; then
+    return 0
+  fi
+
+  echo "[RLM-FS][ERROR] Writable probe failed for ${mount_point} on ${server}"
+  return 1
+}
+
 server="${SERVER_FQDN:-<empty>}"
 netapp="${TARGET_NETAPP:-unknown-netapp}"
 mount_name_raw="${MOUNT_NAME:-monitoring}"
@@ -69,10 +97,16 @@ if [[ -n "${SSH_USER:-}" && "${force_apply}" != "true" ]]; then
       "${SSH_USER}@${server}" "findmnt '${mount_point}' >/dev/null 2>&1"; then
     current_df="$(ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
       "${SSH_USER}@${server}" "df -h '${mount_point}' 2>/dev/null | tail -1 || true" || true)"
-    echo "🗄️ FS ${mount_point} │ server: ${server} │ netapp: ${netapp} │ Статус: already-exists ✅ │ reason: skip_without_force"
-    [[ -n "${current_df}" ]] && echo "[RLM-FS] Текущий размер: ${current_df}"
-    emit_result "skipped_existing_mount"
-    exit 0
+    if verify_remote_mount_writable "${mount_point}" "${server}" "${SSH_USER}"; then
+      echo "🗄️ FS ${mount_point} │ server: ${server} │ netapp: ${netapp} │ Статус: already-exists ✅ │ reason: skip_without_force"
+      [[ -n "${current_df}" ]] && echo "[RLM-FS] Текущий размер: ${current_df}"
+      emit_result "skipped_existing_mount"
+      exit 0
+    else
+      echo "🗄️ FS ${mount_point} │ server: ${server} │ netapp: ${netapp} │ Статус: already-exists ❌ │ reason: existing_mount_not_writable"
+      emit_result "existing_mount_not_writable"
+      exit 5
+    fi
   fi
 fi
 
@@ -218,6 +252,11 @@ if [[ -n "${SSH_USER:-}" ]]; then
      df -h '${mount_point}' || true;
      echo '[RLM-FS][REMOTE] perms:';
      stat -c '%U:%G %a %n' '${mount_point}' || true;"
+
+  if ! verify_remote_mount_writable "${mount_point}" "${server}" "${SSH_USER}"; then
+    emit_result "applied_but_not_writable"
+    exit 6
+  fi
 fi
 
 echo "✅ FS ${mount_point} ГОТОВ на ${server}"
