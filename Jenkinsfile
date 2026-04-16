@@ -266,6 +266,7 @@ SBERCA_CERT_KV='${scriptContext.params.SBERCA_CERT_KV ?: ''}' \
 ADMIN_EMAIL='${scriptContext.params.ADMIN_EMAIL ?: ''}' \
 VICTORIA_METRICS_REMOTE_WRITE_URL='${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}' \
 USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}' \
+PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false'}' \
 RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
 DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
 DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
@@ -299,6 +300,7 @@ ADMIN_EMAIL='${scriptContext.params.ADMIN_EMAIL ?: ''}' \
 VICTORIA_METRICS_REMOTE_WRITE_URL='${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}' \
 RENEW_CERTIFICATES_ONLY='${scriptContext.params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}' \
 USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}' \
+PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false'}' \
 EFFECTIVE_SKIP_RPM='${effectiveSkipRpm}' \
 SKIP_IPTABLES='${scriptContext.params.SKIP_IPTABLES ? 'true' : 'false'}' \
 RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
@@ -986,6 +988,7 @@ pipeline {
         choice(name: 'LOG_LEVEL', choices: ['normal', 'debug'], description: 'Уровень логирования для консоли Jenkins (normal=минимум шума, debug=полный вывод)')
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
         booleanParam(name: 'USE_SIMPLIFIED_CERT_FLOW', defaultValue: true, description: '✅ Использовать non-root/simplified certificate flow (без /opt/vault/*). Отключите только для legacy rollback.')
+        booleanParam(name: 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', defaultValue: true, description: '✅ Устанавливать Prometheus из архива по URL (без RLM-задачи). false = оставить текущую RLM-установку RPM.')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов')
         booleanParam(name: 'SYNC_RPM_PHASES', defaultValue: true, description: '🔄 Синхронная lockstep-установка RPM по всем серверам (Grafana -> Prometheus -> Harvest -> Node Exporter)')
         booleanParam(name: 'SKIP_IPTABLES', defaultValue: true, description: '✅ Пропустить настройку iptables (для non-root/ограниченных sudo)')

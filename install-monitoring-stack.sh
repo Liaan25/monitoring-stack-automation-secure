@@ -46,6 +46,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${DEPLOY_TARGET_NETAPP:=}"
 : "${NODE_EXPORTER_REPO_USER:=}"
 : "${NODE_EXPORTER_REPO_PASS:=}"
+: "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:=true}"
 : "${MONITORING_MOUNT_NAME:=monitoring}"
 : "${MONITORING_STACK_DIR_NAME:=mon-harvest-prometheus-grafana}"
 
@@ -98,6 +99,7 @@ HARVEST_URL="${HARVEST_URL:-}"
 GRAFANA_URL="${GRAFANA_URL:-}"
 NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-}"
 VICTORIA_METRICS_REMOTE_WRITE_URL="${VICTORIA_METRICS_REMOTE_WRITE_URL:-}"
+PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE="$(echo "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" | tr '[:upper:]' '[:lower:]')"
 
 # Глобальные переменные (будут инициализированы в detect_network_info)
 SERVER_IP=""
@@ -3015,12 +3017,14 @@ load_config_from_json() {
     echo "[DEBUG-CONFIG] HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}" >&2
+    echo "[DEBUG-CONFIG] PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" >&2
     log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
     log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
     log_debug "HARVEST_URL=${HARVEST_URL:-<НЕ ЗАДАН>}"
     log_debug "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<НЕ ЗАДАН>}"
     log_debug "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}"
+    log_debug "PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
     
     local missing=()
     [[ -z "$NETAPP_API_ADDR" ]] && missing+=("NETAPP_API_ADDR")
@@ -3974,6 +3978,124 @@ install_node_exporter_from_tarball() {
     return 0
 }
 
+install_prometheus_from_archive() {
+    local url="$1"
+    local target_server="${DEPLOY_TARGET_SERVER:-${SERVER_DOMAIN:-unknown-server}}"
+    local work_dir="/tmp/prometheus_install_${DATE_INSTALL}_$$"
+    local archive_path="${work_dir}/prometheus-download.bin"
+    local extract_dir="${work_dir}/extract"
+    local target_bin_dir="$HOME/bin"
+    local target_prometheus_bin="${target_bin_dir}/prometheus"
+    local target_promtool_bin="${target_bin_dir}/promtool"
+    local repo_user="${NODE_EXPORTER_REPO_USER:-}"
+    local repo_pass="${NODE_EXPORTER_REPO_PASS:-}"
+
+    print_step "Установка Prometheus из архива (user-space)"
+    print_info "Целевой сервер: ${target_server}"
+    print_info "URL архива Prometheus: ${url:-<empty>}"
+    write_diagnostic "Prometheus archive install: server=${target_server}, url=${url:-<empty>}"
+
+    if [[ -z "$url" ]]; then
+        print_error "URL Prometheus пустой: локальная установка невозможна"
+        write_diagnostic "Prometheus archive install: failed, empty URL"
+        return 1
+    fi
+
+    if [[ -z "$repo_user" || -z "$repo_pass" ]]; then
+        local cred_json_path=""
+        for p in \
+            "${CRED_JSON_PATH:-}" \
+            "$LOCAL_CRED_JSON" \
+            "$PWD/temp_data_cred.json" \
+            "$PWD"/temp_data_cred_*.json \
+            "$(dirname "$0")/temp_data_cred.json" \
+            "$(dirname "$0")"/temp_data_cred_*.json \
+            "/tmp/temp_data_cred.json" \
+            "/tmp"/temp_data_cred_*.json; do
+            [[ -z "$p" ]] && continue
+            for f in $p; do
+                if [[ -f "$f" ]]; then
+                    cred_json_path="$f"
+                    break 2
+                fi
+            done
+        done
+
+        if [[ -n "$cred_json_path" ]]; then
+            repo_user="$(jq -r '.node_exporter_tuz.user // empty' "$cred_json_path" 2>/dev/null || true)"
+            repo_pass="$(jq -r '.node_exporter_tuz.pass // empty' "$cred_json_path" 2>/dev/null || true)"
+            print_info "Креды для загрузки Prometheus взяты из: $cred_json_path"
+        fi
+    fi
+
+    if [[ -z "$repo_user" || -z "$repo_pass" ]]; then
+        print_error "Креды TUZ для загрузки Prometheus не найдены (node_exporter_tuz.user/pass)"
+        write_diagnostic "Prometheus archive install: failed, creds not found"
+        return 1
+    fi
+
+    rm -rf "$work_dir" >/dev/null 2>&1 || true
+    mkdir -p "$work_dir" "$extract_dir" "$target_bin_dir"
+
+    print_info "Скачивание архива Prometheus: $archive_path"
+    print_info "Команда: curl -k -fL -u <user>:*** -o ${archive_path} <PROMETHEUS_URL>"
+    if ! curl -k -fL --retry 2 --connect-timeout 20 --max-time 300 \
+        -u "${repo_user}:${repo_pass}" \
+        -o "$archive_path" \
+        "$url"; then
+        print_error "Не удалось скачать архив Prometheus"
+        write_diagnostic "Prometheus archive install: download failed"
+        rm -rf "$work_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    local archive_size archive_sha
+    archive_size=$(stat -c%s "$archive_path" 2>/dev/null || stat -f%z "$archive_path" 2>/dev/null || echo "0")
+    archive_sha="$(sha256sum "$archive_path" 2>/dev/null | awk '{print $1}' || true)"
+    print_info "Архив Prometheus скачан: ${archive_size} байт, sha256=${archive_sha:-n/a}"
+
+    if ! tar -xzf "$archive_path" -C "$extract_dir" 2>/dev/null; then
+        if ! tar -xf "$archive_path" -C "$extract_dir" 2>/dev/null; then
+            print_error "Не удалось распаковать архив Prometheus (tar -xzf/-xf)"
+            write_diagnostic "Prometheus archive install: extract failed"
+            rm -rf "$work_dir" >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+
+    local extracted_prometheus extracted_promtool
+    extracted_prometheus=$(find "$extract_dir" -type f -name "prometheus" -perm -111 2>/dev/null | head -1 || true)
+    extracted_promtool=$(find "$extract_dir" -type f -name "promtool" -perm -111 2>/dev/null | head -1 || true)
+
+    if [[ -z "$extracted_prometheus" || ! -x "$extracted_prometheus" ]]; then
+        print_error "В архиве не найден исполняемый бинарник prometheus"
+        write_diagnostic "Prometheus archive install: prometheus binary missing"
+        rm -rf "$work_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
+    if [[ -z "$extracted_promtool" || ! -x "$extracted_promtool" ]]; then
+        print_error "В архиве не найден исполняемый бинарник promtool"
+        write_diagnostic "Prometheus archive install: promtool binary missing"
+        rm -rf "$work_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    cp -f "$extracted_prometheus" "$target_prometheus_bin"
+    cp -f "$extracted_promtool" "$target_promtool_bin"
+    chmod 755 "$target_prometheus_bin" "$target_promtool_bin"
+
+    local prometheus_version
+    prometheus_version="$("$target_prometheus_bin" --version 2>/dev/null | head -1 | sed 's/^prometheus, version[[:space:]]*//' || true)"
+    DISCOVERED_PROMETHEUS_BIN="$target_prometheus_bin"
+    RUNTIME_PROMETHEUS_BIN_EXPECTED="$target_prometheus_bin"
+    print_success "Prometheus установлен локально: ${target_prometheus_bin} (version: ${prometheus_version:-unknown})"
+    print_success "Promtool установлен локально: ${target_promtool_bin}"
+    write_diagnostic "Prometheus archive install: success, prometheus=${target_prometheus_bin}, promtool=${target_promtool_bin}, version=${prometheus_version:-unknown}"
+
+    rm -rf "$work_dir" >/dev/null 2>&1 || true
+    return 0
+}
+
 check_all_package_test_download_access() {
     local target_server="${DEPLOY_TARGET_SERVER:-${SERVER_DOMAIN:-unknown-server}}"
     local repo_user="${NODE_EXPORTER_REPO_USER:-}"
@@ -4286,6 +4408,7 @@ create_rlm_install_tasks() {
     write_diagnostic "  PROMETHEUS_URL: ${PROMETHEUS_URL:-<не задан>}"
     write_diagnostic "  HARVEST_URL: ${HARVEST_URL:-<не задан>}"
     write_diagnostic "  NODE_EXPORTER_URL: ${NODE_EXPORTER_URL:-<не задан>}"
+    write_diagnostic "  PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE: ${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
     write_diagnostic "  VICTORIA_METRICS_REMOTE_WRITE_URL: ${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
 
     if [[ -z "$RLM_TOKEN" || -z "$RLM_API_URL" ]]; then
@@ -4357,6 +4480,22 @@ create_rlm_install_tasks() {
                 print_success "Node Exporter установлен локально (tar.gz) на ${target_server}"
             else
                 print_warning "Node Exporter не установлен (опционально), продолжаем"
+            fi
+            sleep 2
+            continue
+        fi
+
+        if [[ "$name" == "Prometheus" && "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" == "true" ]]; then
+            print_info "Prometheus: включен режим локальной установки из архива (без RLM-задачи)"
+            if install_prometheus_from_archive "$url"; then
+                RLM_ID_TASK_PROMETHEUS="local-bin:${target_server}"
+                export RLM_ID_TASK_PROMETHEUS
+                print_success "Prometheus установлен локально (archive) на ${target_server}"
+                write_diagnostic "Prometheus local archive install: SUCCESS on ${target_server}"
+            else
+                print_error "Prometheus local archive install: FAILED on ${target_server}"
+                write_diagnostic "Prometheus local archive install: FAILED on ${target_server}"
+                exit 1
             fi
             sleep 2
             continue
@@ -8593,6 +8732,7 @@ main() {
     write_diagnostic "PROMETHEUS_URL=${PROMETHEUS_URL:-<не задан>}"
     write_diagnostic "HARVEST_URL=${HARVEST_URL:-<не задан>}"
     write_diagnostic "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<не задан>}"
+    write_diagnostic "PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
     write_diagnostic "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
     write_diagnostic ""
     write_diagnostic "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<не задан>}"
