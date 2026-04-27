@@ -30,6 +30,17 @@ def rollbackEnabled(scriptContext) {
     return normalizeBool(scriptContext.params?.ROLLBACK_TO_STABLE, false)
 }
 
+def runStageWithForceSuccess(scriptContext, String stageTitle, Closure body) {
+    if (normalizeBool(scriptContext.params?.FORCE_TEST_SUCCESS, false)) {
+        scriptContext.echo "[FORCE-TEST] ${stageTitle}: errors will be converted to stage failure, build remains SUCCESS"
+        scriptContext.catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+            body()
+        }
+    } else {
+        body()
+    }
+}
+
 @NonCPS
 def parseStableIndex(def parsed) {
     if (parsed instanceof List) {
@@ -1273,7 +1284,9 @@ pipeline {
             agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             steps {
                 script {
-                    chooseAndApplyStableSnapshot(this)
+                    runStageWithForceSuccess(this, 'CI: Выбор stable snapshot (rollback)') {
+                        chooseAndApplyStableSnapshot(this)
+                    }
                 }
             }
         }
@@ -1286,7 +1299,9 @@ pipeline {
             agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             steps {
                 script {
-                    runCiVersionStage(this)
+                    runStageWithForceSuccess(this, 'CI: Информация о версии проекта') {
+                        runCiVersionStage(this)
+                    }
                 }
             }
         }
@@ -1298,7 +1313,9 @@ pipeline {
             }
             steps {
                 script {
-                    runCiWorkspaceCleanupStage(this)
+                    runStageWithForceSuccess(this, 'CI: Очистка workspace и отладка') {
+                        runCiWorkspaceCleanupStage(this)
+                    }
                 }
             }
         }
@@ -1310,7 +1327,9 @@ pipeline {
             }
             steps {
                 script {
-                    runCiParamsDebugStage(this)
+                    runStageWithForceSuccess(this, 'CI: Отладка параметров пайплайна') {
+                        runCiParamsDebugStage(this)
+                    }
                 }
             }
         }
@@ -1322,7 +1341,9 @@ pipeline {
             }
             steps {
                 script {
-                    runCiCodeInfoStage(this)
+                    runStageWithForceSuccess(this, 'CI: Информация о коде и окружении') {
+                        runCiCodeInfoStage(this)
+                    }
                 }
             }
         }
@@ -1334,7 +1355,9 @@ pipeline {
             }
             steps {
                 script {
-                    runCiNetworkDiagnosticsStage(this)
+                    runStageWithForceSuccess(this, 'CI: Расширенная диагностика сети и сервера') {
+                        runCiNetworkDiagnosticsStage(this)
+                    }
                 }
             }
         }
@@ -1343,7 +1366,9 @@ pipeline {
             agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             steps {
                 script {
-                    fetchVaultCredentialsForAllPairs(this)
+                    runStageWithForceSuccess(this, 'CI: Получение секретов из Vault') {
+                        fetchVaultCredentialsForAllPairs(this)
+                    }
                 }
             }
         }
@@ -1359,7 +1384,9 @@ pipeline {
             }
             steps {
                 script {
-                    runFsMountStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Подготовка mount через RLM') {
+                        runFsMountStage(this)
+                    }
                 }
             }
         }
@@ -1371,7 +1398,9 @@ pipeline {
             }
             steps {
                 script {
-                    runCopyStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Копирование файлов на сервер') {
+                        runCopyStage(this)
+                    }
                 }
             }
         }
@@ -1386,7 +1415,9 @@ pipeline {
             }
             steps {
                 script {
-                    runSyncRpmStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Синхронная фазовая установка RPM') {
+                        runSyncRpmStage(this)
+                    }
                 }
             }
         }
@@ -1398,7 +1429,9 @@ pipeline {
             }
             steps {
                 script {
-                    runDeployStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Выполнение развертывания') {
+                        runDeployStage(this)
+                    }
                 }
             }
         }
@@ -1410,7 +1443,9 @@ pipeline {
             }
             steps {
                 script {
-                    runVerifyStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Проверка результатов') {
+                        runVerifyStage(this)
+                    }
                 }
             }
         }
@@ -1422,7 +1457,9 @@ pipeline {
             }
             steps {
                 script {
-                    runCleanupStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Очистка') {
+                        runCleanupStage(this)
+                    }
                 }
             }
         }
@@ -1434,7 +1471,9 @@ pipeline {
             }
             steps {
                 script {
-                    runFinalInfoStage(this)
+                    runStageWithForceSuccess(this, 'CDL: Получение сведений о развертывании системы') {
+                        runFinalInfoStage(this)
+                    }
                 }
             }
         }
@@ -1446,7 +1485,9 @@ pipeline {
             }
             steps {
                 script {
-                    createStableSnapshotIfRequested(this)
+                    runStageWithForceSuccess(this, 'CI: Сохранение stable snapshot') {
+                        createStableSnapshotIfRequested(this)
+                    }
                 }
             }
         }
