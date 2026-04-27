@@ -3,22 +3,241 @@
 // ========================================================================
 
 @NonCPS
-def computeEnvironmentVariables() {
-    if (!env.KAE && params.NAMESPACE_CI) {
-        def parts = params.NAMESPACE_CI.split('_')
+def normalizeBool(def value, boolean defaultValue = false) {
+    if (value == null) {
+        return defaultValue
+    }
+    def s = value.toString().trim().toLowerCase()
+    if (!s) {
+        return defaultValue
+    }
+    return ['1', 'true', 'yes', 'y', 'on'].contains(s)
+}
+
+def runtimeParam(scriptContext, String key, String fallback = '') {
+    def overrideVal = scriptContext.env."OVERRIDE_${key}"
+    if (overrideVal != null && overrideVal.toString().trim()) {
+        return overrideVal.toString()
+    }
+    def p = scriptContext.params?."${key}"
+    if (p != null && p.toString().trim()) {
+        return p.toString()
+    }
+    return fallback
+}
+
+def rollbackEnabled(scriptContext) {
+    return normalizeBool(scriptContext.params?.ROLLBACK_TO_STABLE, false)
+}
+
+@NonCPS
+def parseStableIndex(def parsed) {
+    if (parsed instanceof List) {
+        return parsed
+    }
+    if (parsed instanceof Map && parsed.versions instanceof List) {
+        return parsed.versions
+    }
+    return []
+}
+
+def chooseAndApplyStableSnapshot(scriptContext) {
+    if (!rollbackEnabled(scriptContext)) {
+        scriptContext.echo "[STABLE] Rollback mode disabled; using manual parameters."
+        return
+    }
+
+    def indexPath = 'ci/stable/index.json'
+    if (!scriptContext.fileExists(indexPath)) {
+        scriptContext.error("❌ [STABLE] Не найден ${indexPath}. Невозможно выполнить rollback.")
+    }
+
+    def parsedIndex = new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(indexPath))
+    def versions = parseStableIndex(parsedIndex)
+    if (!versions || versions.isEmpty()) {
+        scriptContext.error("❌ [STABLE] В ${indexPath} нет стабильных snapshot-версий.")
+    }
+
+    def options = []
+    def optionToId = [:]
+    versions.each { item ->
+        def id = (item?.id ?: item?.tag ?: '').toString().trim()
+        if (!id) {
+            return
+        }
+        def label = (item?.label ?: "${id} | commit=${(item?.commit_sha ?: 'n/a')} | profile=${(item?.run_profile ?: 'n/a')}").toString()
+        options << label
+        optionToId[label] = id
+    }
+
+    if (options.isEmpty()) {
+        scriptContext.error("❌ [STABLE] Не удалось сформировать список выбора стабильных версий.")
+    }
+
+    def requestedId = (scriptContext.params?.STABLE_VERSION ?: '').toString().trim()
+    def selectedId = requestedId
+    if (!selectedId || !versions.find { ((it?.id ?: it?.tag ?: '').toString().trim()) == selectedId }) {
+        def selectedLabel = scriptContext.input(
+            message: 'Выберите стабильную версию для rollback',
+            ok: 'Use selected snapshot',
+            parameters: [[
+                $class: 'ChoiceParameterDefinition',
+                name: 'STABLE_VERSION',
+                choices: options.join('\n'),
+                description: 'Список стабильных snapshot-версий из ci/stable/index.json'
+            ]]
+        )
+        selectedId = optionToId[selectedLabel]
+    }
+
+    def selected = versions.find { ((it?.id ?: it?.tag ?: '').toString().trim()) == selectedId }
+    if (selected == null) {
+        scriptContext.error("❌ [STABLE] Snapshot ${selectedId} не найден в ${indexPath}.")
+    }
+
+    def manifestPath = (selected?.manifest_path ?: "ci/stable/${selectedId}.json").toString()
+    if (!scriptContext.fileExists(manifestPath)) {
+        scriptContext.error("❌ [STABLE] Не найден manifest ${manifestPath} для snapshot ${selectedId}.")
+    }
+    def manifest = new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(manifestPath))
+    def commitSha = (manifest?.commit_sha ?: '').toString().trim()
+    if (!commitSha) {
+        scriptContext.error("❌ [STABLE] В manifest отсутствует commit_sha: ${manifestPath}")
+    }
+
+    scriptContext.env.STABLE_SELECTED_ID = selectedId
+    scriptContext.env.STABLE_MANIFEST_PATH = manifestPath
+    scriptContext.env.ROLLBACK_COMMIT_SHA = commitSha
+
+    def paramMap = (manifest?.pipeline_params instanceof Map) ? manifest.pipeline_params : [:]
+    paramMap.each { k, v ->
+        scriptContext.env."OVERRIDE_${k}" = (v == null ? '' : v.toString())
+    }
+    def targets = (manifest?.targets instanceof Map) ? manifest.targets : [:]
+    targets.each { k, v ->
+        scriptContext.env."OVERRIDE_${k}" = (v == null ? '' : v.toString())
+    }
+
+    scriptContext.currentBuild.displayName = "#${scriptContext.env.BUILD_NUMBER} rollback:${selectedId}"
+    scriptContext.echo "[STABLE] Rollback selected: ${selectedId}"
+    scriptContext.echo "[STABLE] Manifest: ${manifestPath}"
+    scriptContext.echo "[STABLE] Commit: ${commitSha}"
+}
+
+def checkoutRollbackCommitIfNeeded(scriptContext) {
+    def rollbackSha = scriptContext.env.ROLLBACK_COMMIT_SHA?.trim()
+    if (!rollbackSha) {
+        return
+    }
+    scriptContext.echo "[STABLE] Checkout rollback commit: ${rollbackSha}"
+    scriptContext.sh """#!/bin/bash
+set -euo pipefail
+git fetch --all --tags --prune
+git checkout -f "${rollbackSha}"
+"""
+}
+
+def createStableSnapshotIfRequested(scriptContext) {
+    if (!normalizeBool(scriptContext.params?.MARK_BUILD_AS_STABLE, false)) {
+        scriptContext.echo "[STABLE] MARK_BUILD_AS_STABLE=false; snapshot creation skipped."
+        return
+    }
+    if (rollbackEnabled(scriptContext)) {
+        scriptContext.echo "[STABLE] Rollback run detected; stable snapshot auto-create skipped."
+        return
+    }
+
+    def ts = scriptContext.sh(script: "date '+%Y-%m-%dT%H:%M:%S%z'", returnStdout: true).trim()
+    def shortTs = scriptContext.sh(script: "date '+%Y%m%d-%H%M%S'", returnStdout: true).trim()
+    def commitSha = scriptContext.sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+    def commitShort = scriptContext.sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+    def branchName = scriptContext.sh(script: "git rev-parse --abbrev-ref HEAD", returnStdout: true).trim()
+    def stableId = "stable-${shortTs}-${commitShort}"
+    def stableDir = 'ci/stable'
+    def manifestPath = "${stableDir}/${stableId}.json"
+    def indexPath = "${stableDir}/index.json"
+
+    scriptContext.sh "mkdir -p '${stableDir}'"
+
+    def capturedParams = [:]
+    scriptContext.params.each { k, v ->
+        capturedParams[k.toString()] = (v == null ? '' : v.toString())
+    }
+    def pipelineParams = [:]
+    capturedParams.each { k, v ->
+        if (!['ROLLBACK_TO_STABLE', 'STABLE_VERSION', 'MARK_BUILD_AS_STABLE'].contains(k)) {
+            pipelineParams[k] = v
+        }
+    }
+
+    def manifest = [
+        id            : stableId,
+        tag           : stableId,
+        commit_sha    : commitSha,
+        git_branch    : branchName,
+        run_profile   : runtimeParam(scriptContext, 'RUN_PROFILE', ''),
+        pipeline_params: pipelineParams,
+        targets       : [
+            SERVER_ADDRESS : runtimeParam(scriptContext, 'SERVER_ADDRESS', ''),
+            NETAPP_API_ADDR: runtimeParam(scriptContext, 'NETAPP_API_ADDR', '')
+        ],
+        created_at    : ts,
+        created_by    : (scriptContext.env.BUILD_USER_ID ?: scriptContext.env.BUILD_USER ?: 'jenkins'),
+        build_url     : (scriptContext.env.BUILD_URL ?: ''),
+        result        : 'SUCCESS'
+    ]
+    scriptContext.writeFile(file: manifestPath, text: groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(manifest)))
+
+    def indexObj = [versions: []]
+    if (scriptContext.fileExists(indexPath)) {
+        def parsed = new groovy.json.JsonSlurperClassic().parseText(scriptContext.readFile(indexPath))
+        if (parsed instanceof Map && parsed.versions instanceof List) {
+            indexObj = parsed
+        } else if (parsed instanceof List) {
+            indexObj = [versions: parsed]
+        }
+    }
+
+    def entry = [
+        id          : stableId,
+        label       : "${stableId} | commit=${commitShort} | profile=${manifest.run_profile ?: 'n/a'} | ${ts}",
+        commit_sha  : commitSha,
+        run_profile : manifest.run_profile ?: '',
+        created_at  : ts,
+        result      : 'SUCCESS',
+        manifest_path: manifestPath
+    ]
+    indexObj.versions = ([entry] + (indexObj.versions ?: [])).unique { it.id }.take(50)
+    scriptContext.writeFile(file: indexPath, text: groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(indexObj)))
+
+    scriptContext.sh """#!/bin/bash
+set -euo pipefail
+git add "${manifestPath}" "${indexPath}"
+git -c user.name="jenkins" -c user.email="jenkins@local" commit -m "ci: add stable snapshot ${stableId}"
+git tag -f "${stableId}" "${commitSha}"
+git push origin HEAD
+git push origin "refs/tags/${stableId}" --force
+"""
+    scriptContext.echo "[STABLE] Snapshot created: ${stableId}"
+}
+
+def computeEnvironmentVariables(scriptContext) {
+    def namespaceCi = runtimeParam(scriptContext, 'NAMESPACE_CI', '')
+    if (!env.KAE && namespaceCi) {
+        def parts = namespaceCi.split('_')
         env.KAE = parts.size() > 1 ? parts[1] : 'UNKNOWN'
         env.DEPLOY_USER = "${env.KAE}-lnx-mon_ci"
         env.MON_SYS_USER = "${env.KAE}-lnx-mon_sys"
-        def mountName = (params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')
-        def stackDirName = params.MONITORING_STACK_DIR_NAME?.trim() ?: 'mon-harvest-prometheus-grafana'
+        def mountName = runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring').replaceAll('^/+', '')
+        def stackDirName = runtimeParam(scriptContext, 'MONITORING_STACK_DIR_NAME', 'mon-harvest-prometheus-grafana')
         env.DEPLOY_PATH = "/${mountName}/${stackDirName}/monitoring-deployment"
     }
-    def netappAddr = params.NETAPP_API_ADDR?.trim() ?: ''
+    def netappAddr = runtimeParam(scriptContext, 'NETAPP_API_ADDR', '')
     def netappHost = netappAddr.tokenize('.') ? netappAddr.tokenize('.')[0] : ''
     def netappPoller = netappHost ? (netappHost.substring(0, 1).toUpperCase() + netappHost.substring(1).toLowerCase()) : 'Unknown'
     def netappPollerSafe = netappPoller.replaceAll(/[^A-Za-z0-9_-]/, '_')
 
-    def serverAddr = params.SERVER_ADDRESS?.trim() ?: ''
+    def serverAddr = runtimeParam(scriptContext, 'SERVER_ADDRESS', '')
     def serverPrefix = serverAddr.tokenize('.') ? serverAddr.tokenize('.')[0] : 'server'
     def serverPrefixSafe = serverPrefix.replaceAll(/[^A-Za-z0-9_-]/, '_')
 
@@ -172,8 +391,8 @@ def printFinalDeploymentReport(scriptContext, List reports) {
         scriptContext.echo "  • Node Exporter:        ${s.node_exporter?.url ?: 'N/A'} (status: ${s.node_exporter?.code ?: '000'} - ${s.node_exporter?.status ?: 'fail'})"
     }
     scriptContext.echo "------------------------------------------------"
-    def mountName = (scriptContext.params.MONITORING_MOUNT_NAME?.trim() ?: 'monitoring').replaceAll('^/+', '')
-    def stackDirName = scriptContext.params.MONITORING_STACK_DIR_NAME?.trim() ?: 'mon-harvest-prometheus-grafana'
+    def mountName = runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring').replaceAll('^/+', '')
+    def stackDirName = runtimeParam(scriptContext, 'MONITORING_STACK_DIR_NAME', 'mon-harvest-prometheus-grafana')
     def runtimeBase = "/${mountName}/${stackDirName}"
     scriptContext.echo "📄 Конфигурационные файлы:"
     scriptContext.echo "  • Prometheus:           ${runtimeBase}/config/prometheus/prometheus.yml"
@@ -187,7 +406,7 @@ def printFinalDeploymentReport(scriptContext, List reports) {
 }
 
 def loadRlmTokenFromVaultJson(scriptContext) {
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     def primaryCred = deploymentPairs[0].credJsonFile
     if (!scriptContext.fileExists(primaryCred)) {
         scriptContext.error("❌ Не найден файл с секретами: ${primaryCred}")
@@ -202,12 +421,12 @@ def loadRlmTokenFromVaultJson(scriptContext) {
 }
 
 def withVaultSshCredentials(scriptContext, Closure body) {
-    def sshCredentialsId = scriptContext.params.SSH_CREDENTIALS_ID?.trim()
+    def sshCredentialsId = runtimeParam(scriptContext, 'SSH_CREDENTIALS_ID', '').trim()
     if (!sshCredentialsId) {
         scriptContext.error("❌ Не указан SSH_CREDENTIALS_ID (Jenkins credentials для SSH)")
     }
 
-    def sshLogin = scriptContext.params.SSH_LOGIN?.trim()
+    def sshLogin = runtimeParam(scriptContext, 'SSH_LOGIN', '').trim()
     if (!sshLogin) {
         scriptContext.error("❌ Не указан SSH_LOGIN (обязателен для Vault SSH credentials)")
     }
@@ -251,23 +470,23 @@ CRED_JSON_FILE='${pair.credJsonFile}' \
 TARGET_NETAPP='${pair.netapp}' \
 RLM_TOKEN="\$RLM_TOKEN" \
 PHASE_NAME='${phaseFilterSafe}' \
-LOG_LEVEL='${scriptContext.params.LOG_LEVEL ?: 'normal'}' \
-MONITORING_MOUNT_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
-MONITORING_STACK_DIR_NAME='${scriptContext.params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana'}' \
-SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
-NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
-RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
-GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3000'}' \
-PROMETHEUS_PORT='${scriptContext.params.PROMETHEUS_PORT ?: '9090'}' \
-RPM_URL_KV='${scriptContext.params.RPM_URL_KV ?: ''}' \
-NETAPP_SSH_KV='${scriptContext.params.NETAPP_SSH_KV ?: ''}' \
-GRAFANA_WEB_KV='${scriptContext.params.GRAFANA_WEB_KV ?: ''}' \
-SBERCA_CERT_KV='${scriptContext.params.SBERCA_CERT_KV ?: ''}' \
-ADMIN_EMAIL='${scriptContext.params.ADMIN_EMAIL ?: ''}' \
-VICTORIA_METRICS_REMOTE_WRITE_URL='${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}' \
-USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}' \
-PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false'}' \
-RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
+LOG_LEVEL='${runtimeParam(scriptContext, 'LOG_LEVEL', 'normal')}' \
+MONITORING_MOUNT_NAME='${runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring')}' \
+MONITORING_STACK_DIR_NAME='${runtimeParam(scriptContext, 'MONITORING_STACK_DIR_NAME', 'mon-harvest-prometheus-grafana')}' \
+SEC_MAN_ADDR='${runtimeParam(scriptContext, 'SEC_MAN_ADDR', '')}' \
+NAMESPACE_CI='${runtimeParam(scriptContext, 'NAMESPACE_CI', '')}' \
+RLM_API_URL='${runtimeParam(scriptContext, 'RLM_API_URL', '')}' \
+GRAFANA_PORT='${runtimeParam(scriptContext, 'GRAFANA_PORT', '3000')}' \
+PROMETHEUS_PORT='${runtimeParam(scriptContext, 'PROMETHEUS_PORT', '9090')}' \
+RPM_URL_KV='${runtimeParam(scriptContext, 'RPM_URL_KV', '')}' \
+NETAPP_SSH_KV='${runtimeParam(scriptContext, 'NETAPP_SSH_KV', '')}' \
+GRAFANA_WEB_KV='${runtimeParam(scriptContext, 'GRAFANA_WEB_KV', '')}' \
+SBERCA_CERT_KV='${runtimeParam(scriptContext, 'SBERCA_CERT_KV', '')}' \
+ADMIN_EMAIL='${runtimeParam(scriptContext, 'ADMIN_EMAIL', '')}' \
+VICTORIA_METRICS_REMOTE_WRITE_URL='${runtimeParam(scriptContext, 'VICTORIA_METRICS_REMOTE_WRITE_URL', '')}' \
+USE_SIMPLIFIED_CERT_FLOW='${normalizeBool(runtimeParam(scriptContext, 'USE_SIMPLIFIED_CERT_FLOW', scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')) ? 'true' : 'false'}' \
+PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${normalizeBool(runtimeParam(scriptContext, 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false')) ? 'true' : 'false'}' \
+RUN_SERVICES_AS_MON_CI='${normalizeBool(runtimeParam(scriptContext, 'RUN_SERVICES_AS_MON_CI', scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false')) ? 'true' : 'false'}' \
 DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
 DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
 DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_TIMESTAMP ?: 'unknown'}' \
@@ -284,26 +503,26 @@ DEPLOY_PATH='${scriptContext.env.DEPLOY_PATH}' \
 CRED_JSON_FILE='${pair.credJsonFile}' \
 TARGET_NETAPP='${pair.netapp}' \
 RLM_TOKEN="\$RLM_TOKEN" \
-LOG_LEVEL='${scriptContext.params.LOG_LEVEL ?: 'normal'}' \
-MONITORING_MOUNT_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
-MONITORING_STACK_DIR_NAME='${scriptContext.params.MONITORING_STACK_DIR_NAME ?: 'mon-harvest-prometheus-grafana'}' \
-SEC_MAN_ADDR='${scriptContext.params.SEC_MAN_ADDR ?: ''}' \
-NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
-RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
-GRAFANA_PORT='${scriptContext.params.GRAFANA_PORT ?: '3000'}' \
-PROMETHEUS_PORT='${scriptContext.params.PROMETHEUS_PORT ?: '9090'}' \
-RPM_URL_KV='${scriptContext.params.RPM_URL_KV ?: ''}' \
-NETAPP_SSH_KV='${scriptContext.params.NETAPP_SSH_KV ?: ''}' \
-GRAFANA_WEB_KV='${scriptContext.params.GRAFANA_WEB_KV ?: ''}' \
-SBERCA_CERT_KV='${scriptContext.params.SBERCA_CERT_KV ?: ''}' \
-ADMIN_EMAIL='${scriptContext.params.ADMIN_EMAIL ?: ''}' \
-VICTORIA_METRICS_REMOTE_WRITE_URL='${scriptContext.params.VICTORIA_METRICS_REMOTE_WRITE_URL ?: ''}' \
-RENEW_CERTIFICATES_ONLY='${scriptContext.params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false'}' \
-USE_SIMPLIFIED_CERT_FLOW='${scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false'}' \
-PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false'}' \
+LOG_LEVEL='${runtimeParam(scriptContext, 'LOG_LEVEL', 'normal')}' \
+MONITORING_MOUNT_NAME='${runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring')}' \
+MONITORING_STACK_DIR_NAME='${runtimeParam(scriptContext, 'MONITORING_STACK_DIR_NAME', 'mon-harvest-prometheus-grafana')}' \
+SEC_MAN_ADDR='${runtimeParam(scriptContext, 'SEC_MAN_ADDR', '')}' \
+NAMESPACE_CI='${runtimeParam(scriptContext, 'NAMESPACE_CI', '')}' \
+RLM_API_URL='${runtimeParam(scriptContext, 'RLM_API_URL', '')}' \
+GRAFANA_PORT='${runtimeParam(scriptContext, 'GRAFANA_PORT', '3000')}' \
+PROMETHEUS_PORT='${runtimeParam(scriptContext, 'PROMETHEUS_PORT', '9090')}' \
+RPM_URL_KV='${runtimeParam(scriptContext, 'RPM_URL_KV', '')}' \
+NETAPP_SSH_KV='${runtimeParam(scriptContext, 'NETAPP_SSH_KV', '')}' \
+GRAFANA_WEB_KV='${runtimeParam(scriptContext, 'GRAFANA_WEB_KV', '')}' \
+SBERCA_CERT_KV='${runtimeParam(scriptContext, 'SBERCA_CERT_KV', '')}' \
+ADMIN_EMAIL='${runtimeParam(scriptContext, 'ADMIN_EMAIL', '')}' \
+VICTORIA_METRICS_REMOTE_WRITE_URL='${runtimeParam(scriptContext, 'VICTORIA_METRICS_REMOTE_WRITE_URL', '')}' \
+RENEW_CERTIFICATES_ONLY='${normalizeBool(runtimeParam(scriptContext, 'RENEW_CERTIFICATES_ONLY', scriptContext.params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')) ? 'true' : 'false'}' \
+USE_SIMPLIFIED_CERT_FLOW='${normalizeBool(runtimeParam(scriptContext, 'USE_SIMPLIFIED_CERT_FLOW', scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')) ? 'true' : 'false'}' \
+PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${normalizeBool(runtimeParam(scriptContext, 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false')) ? 'true' : 'false'}' \
 EFFECTIVE_SKIP_RPM='${effectiveSkipRpm}' \
-SKIP_IPTABLES='${scriptContext.params.SKIP_IPTABLES ? 'true' : 'false'}' \
-RUN_SERVICES_AS_MON_CI='${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}' \
+SKIP_IPTABLES='${normalizeBool(runtimeParam(scriptContext, 'SKIP_IPTABLES', scriptContext.params.SKIP_IPTABLES ? 'true' : 'false')) ? 'true' : 'false'}' \
+RUN_SERVICES_AS_MON_CI='${normalizeBool(runtimeParam(scriptContext, 'RUN_SERVICES_AS_MON_CI', scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false')) ? 'true' : 'false'}' \
 DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
 DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
 DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_TIMESTAMP ?: 'unknown'}' \
@@ -314,11 +533,11 @@ DEPLOY_BUILD_DATE='${scriptContext.env.VERSION_BUILD_TIMESTAMP ?: 'unknown'}' \
 def runRemoteVerification(scriptContext, Map pair) {
     return scriptContext.withEnv([
         "TARGET_SERVER=${pair.server}",
-        "RUN_SERVICES_AS_MON_CI=${scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false'}",
+        "RUN_SERVICES_AS_MON_CI=${normalizeBool(runtimeParam(scriptContext, 'RUN_SERVICES_AS_MON_CI', scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false')) ? 'true' : 'false'}",
         "DEPLOY_USER=${scriptContext.env.DEPLOY_USER}",
         "MON_SYS_USER=${scriptContext.env.MON_SYS_USER}",
-        "PROMETHEUS_PORT=${scriptContext.params.PROMETHEUS_PORT ?: '9090'}",
-        "GRAFANA_PORT=${scriptContext.params.GRAFANA_PORT ?: '3300'}"
+        "PROMETHEUS_PORT=${runtimeParam(scriptContext, 'PROMETHEUS_PORT', '9090')}",
+        "GRAFANA_PORT=${runtimeParam(scriptContext, 'GRAFANA_PORT', '3300')}"
     ]) {
         scriptContext.sh(script: '''#!/bin/bash
 set -e
@@ -345,18 +564,18 @@ set -e
 chmod +x tools/rlm_monitoring_fs.sh
 set +e
 OUTPUT=\$(
-RLM_API_URL='${scriptContext.params.RLM_API_URL ?: ''}' \
+RLM_API_URL='${runtimeParam(scriptContext, 'RLM_API_URL', '')}' \
 RLM_TOKEN="\$RLM_TOKEN" \
-NAMESPACE_CI='${scriptContext.params.NAMESPACE_CI ?: ''}' \
+NAMESPACE_CI='${runtimeParam(scriptContext, 'NAMESPACE_CI', '')}' \
 SERVER_FQDN='${pair.server}' \
 SERVER_IP='${pair.server}' \
 TARGET_NETAPP='${pair.netapp}' \
-MOUNT_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
+MOUNT_NAME='${runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring')}' \
 VG_NAME='rootvg' \
-LV_NAME='${scriptContext.params.MONITORING_MOUNT_NAME ?: 'monitoring'}' \
-TABLE_ID='${scriptContext.params.RLM_FS_TABLE_ID ?: 'uvslinuxtemplatewithtestandpromandvirt'}' \
-SIZE_GB='${scriptContext.params.MONITORING_FS_EXTEND_GB ?: '0'}' \
-FORCE_FS_APPLY='${scriptContext.params.FORCE_RLM_FS_APPLY ? 'true' : 'false'}' \
+LV_NAME='${runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring')}' \
+TABLE_ID='${runtimeParam(scriptContext, 'RLM_FS_TABLE_ID', 'uvslinuxtemplatewithtestandpromandvirt')}' \
+SIZE_GB='${runtimeParam(scriptContext, 'MONITORING_FS_EXTEND_GB', '0')}' \
+FORCE_FS_APPLY='${normalizeBool(runtimeParam(scriptContext, 'FORCE_RLM_FS_APPLY', scriptContext.params.FORCE_RLM_FS_APPLY ? 'true' : 'false'), false) ? 'true' : 'false'}' \
 RLM_MAX_ATTEMPTS='120' \
 RLM_SLEEP_SEC='10' \
 SSH_USER="\$SSH_USER" \
@@ -401,45 +620,46 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
 }
 
 def fetchVaultCredentialsForAllPairs(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     def allServerNamesForSberca = deploymentPairs.collect { it.server }.findAll { it?.trim() }.collect { it.trim() }.unique().join(',')
     def primaryServerNameForSberca = deploymentPairs[0].server
-    def vaultCredId = scriptContext.params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev'
+    def vaultCredId = runtimeParam(scriptContext, 'VAULT_CREDENTIAL_ID', 'vault-agent-dev')
 
     scriptContext.echo "[STEP] Получение секретов из Vault..."
     scriptContext.echo "[INFO] Используется Vault Credential ID: ${vaultCredId}"
 
     def vaultSecrets = []
-    if (scriptContext.params.RPM_URL_KV?.trim()) {
-        vaultSecrets << [path: scriptContext.params.RPM_URL_KV, secretValues: [
+    if (runtimeParam(scriptContext, 'RPM_URL_KV', '').trim()) {
+        vaultSecrets << [path: runtimeParam(scriptContext, 'RPM_URL_KV', ''), secretValues: [
             [envVar: 'VA_RPM_HARVEST', vaultKey: 'harvest'],
             [envVar: 'VA_RPM_PROMETHEUS', vaultKey: 'prometheus'],
             [envVar: 'VA_RPM_GRAFANA', vaultKey: 'grafana'],
             [envVar: 'VA_RPM_NODE_EXPORTER', vaultKey: 'node_exporter']
         ]]
     }
-    if (scriptContext.params.NETAPP_SSH_KV?.trim()) {
-        vaultSecrets << [path: scriptContext.params.NETAPP_SSH_KV, secretValues: [
+    if (runtimeParam(scriptContext, 'NETAPP_SSH_KV', '').trim()) {
+        vaultSecrets << [path: runtimeParam(scriptContext, 'NETAPP_SSH_KV', ''), secretValues: [
             [envVar: 'VA_NETAPP_SSH_ADDR', vaultKey: 'addr'],
             [envVar: 'VA_NETAPP_SSH_USER', vaultKey: 'user'],
             [envVar: 'VA_NETAPP_SSH_PASS', vaultKey: 'pass']
         ]]
     }
-    if (scriptContext.params.NODE_EXPORTER_TUZ_KV?.trim()) {
-        vaultSecrets << [path: scriptContext.params.NODE_EXPORTER_TUZ_KV, secretValues: [
+    if (runtimeParam(scriptContext, 'NODE_EXPORTER_TUZ_KV', '').trim()) {
+        vaultSecrets << [path: runtimeParam(scriptContext, 'NODE_EXPORTER_TUZ_KV', ''), secretValues: [
             [envVar: 'VA_NODE_EXPORTER_TUZ_USER', vaultKey: 'user'],
             [envVar: 'VA_NODE_EXPORTER_TUZ_PASS', vaultKey: 'pass']
         ]]
     }
-    if (scriptContext.params.GRAFANA_WEB_KV?.trim()) {
-        vaultSecrets << [path: scriptContext.params.GRAFANA_WEB_KV, secretValues: [
+    if (runtimeParam(scriptContext, 'GRAFANA_WEB_KV', '').trim()) {
+        vaultSecrets << [path: runtimeParam(scriptContext, 'GRAFANA_WEB_KV', ''), secretValues: [
             [envVar: 'VA_GRAFANA_WEB_USER', vaultKey: 'user'],
             [envVar: 'VA_GRAFANA_WEB_PASS', vaultKey: 'pass']
         ]]
     }
-    if (scriptContext.params.RLM_TOKEN_KV?.trim()) {
-        vaultSecrets << [path: scriptContext.params.RLM_TOKEN_KV, secretValues: [
+    if (runtimeParam(scriptContext, 'RLM_TOKEN_KV', '').trim()) {
+        vaultSecrets << [path: runtimeParam(scriptContext, 'RLM_TOKEN_KV', ''), secretValues: [
             [envVar: 'VA_RLM_TOKEN', vaultKey: 'rlm-token']
         ]]
     }
@@ -460,11 +680,11 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
         try {
             scriptContext.withVault([
                 configuration: [
-                    vaultUrl: "https://${scriptContext.params.SEC_MAN_ADDR}",
+                    vaultUrl: "https://${runtimeParam(scriptContext, 'SEC_MAN_ADDR', '')}",
                     engineVersion: 1,
                     skipSslVerification: false,
                     vaultCredentialId: vaultCredId,
-                    vaultNamespace: scriptContext.params.NAMESPACE_CI?.trim()
+                    vaultNamespace: runtimeParam(scriptContext, 'NAMESPACE_CI', '').trim()
                 ],
                 vaultSecrets: vaultSecrets
             ]) {
@@ -472,9 +692,9 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
                 def caChainCrt = ''
                 def grafanaClientPem = ''
 
-                if (scriptContext.params.SBERCA_CERT_KV?.trim()) {
-                    def requestedPath = scriptContext.params.SBERCA_CERT_KV.trim()
-                    def vaultNamespace = scriptContext.params.NAMESPACE_CI?.trim()
+                if (runtimeParam(scriptContext, 'SBERCA_CERT_KV', '').trim()) {
+                    def requestedPath = runtimeParam(scriptContext, 'SBERCA_CERT_KV', '').trim()
+                    def vaultNamespace = runtimeParam(scriptContext, 'NAMESPACE_CI', '').trim()
                     def apiPath = requestedPath.replaceAll('^/+', '')
                     if (apiPath.startsWith('v1/')) { apiPath = apiPath.substring(3) }
                     if (vaultNamespace && apiPath.startsWith("${vaultNamespace}/")) { apiPath = apiPath.substring(vaultNamespace.length() + 1) }
@@ -492,7 +712,7 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
                     }
                     def certRequestPayload = groovy.json.JsonOutput.toJson([
                         common_name: (primaryServerNameForSberca ?: '').trim(),
-                        email: (scriptContext.params.ADMIN_EMAIL?.trim() ?: 'noreply@sberbank.ru'),
+                        email: (runtimeParam(scriptContext, 'ADMIN_EMAIL', '').trim() ?: 'noreply@sberbank.ru'),
                         format: 'pem',
                         alt_names: (allServerNamesForSberca ?: '').trim()
                     ])
@@ -500,11 +720,11 @@ def fetchVaultCredentialsForAllPairs(scriptContext) {
                         $class: 'VaultTokenCredentialBinding',
                         credentialsId: vaultCredId,
                         vaultNamespace: vaultNamespace,
-                        vaultAddr: "https://${scriptContext.params.SEC_MAN_ADDR}"
+                        vaultAddr: "https://${runtimeParam(scriptContext, 'SEC_MAN_ADDR', '')}"
                     ]]) {
                         def certPayloadEscaped = certRequestPayload.replace("'", "'\"'\"'")
                         def certResponseRaw = scriptContext.withEnv([
-                            'SBERCA_URL=https://' + (scriptContext.params.SEC_MAN_ADDR ?: ''),
+                            'SBERCA_URL=https://' + runtimeParam(scriptContext, 'SEC_MAN_ADDR', ''),
                             'SBERCA_API_PATH=' + apiPath,
                             'SBERCA_REQUEST_PAYLOAD=' + certPayloadEscaped
                         ]) {
@@ -565,8 +785,9 @@ fi
 }
 
 def runSyncRpmStage(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     restoreDeployStatus(scriptContext)
 
     scriptContext.echo "[STEP] Синхронная lockstep установка RPM по всем серверам"
@@ -625,13 +846,15 @@ def runSyncRpmStage(scriptContext) {
 }
 
 def runDeployStage(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     restoreDeployStatus(scriptContext)
-    def effectiveSkipRpm = scriptContext.params.SYNC_RPM_PHASES ? 'true' : (scriptContext.params.SKIP_RPM_INSTALL ? 'true' : 'false')
+    def syncRpmPhases = normalizeBool(runtimeParam(scriptContext, 'SYNC_RPM_PHASES', scriptContext.params.SYNC_RPM_PHASES ? 'true' : 'false'), false)
+    def effectiveSkipRpm = syncRpmPhases ? 'true' : (normalizeBool(runtimeParam(scriptContext, 'SKIP_RPM_INSTALL', scriptContext.params.SKIP_RPM_INSTALL ? 'true' : 'false'), false) ? 'true' : 'false')
 
     scriptContext.echo "[STEP] Запуск развертывания на удаленных серверах..."
-    if (scriptContext.params.SYNC_RPM_PHASES) {
+    if (syncRpmPhases) {
         scriptContext.echo "[INFO] Режим: SKIP_RPM_INSTALL=true (RPM уже установлены в lockstep-фазах)"
     } else {
         scriptContext.echo "[INFO] Режим: стандартный (учитываем параметр SKIP_RPM_INSTALL=${effectiveSkipRpm})"
@@ -679,8 +902,9 @@ def runDeployStage(scriptContext) {
 }
 
 def runVerifyStage(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     restoreDeployStatus(scriptContext)
 
     scriptContext.echo "[STEP] Проверка результатов развертывания (User Units)..."
@@ -698,8 +922,8 @@ def runVerifyStage(scriptContext) {
                     def fallback = buildVerifyFallbackReport(
                         p,
                         scriptContext.env.DEPLOY_USER ?: '',
-                        (scriptContext.params.PROMETHEUS_PORT ?: '9090').toString(),
-                        (scriptContext.params.GRAFANA_PORT ?: '3300').toString()
+                        runtimeParam(scriptContext, 'PROMETHEUS_PORT', '9090'),
+                        runtimeParam(scriptContext, 'GRAFANA_PORT', '3300')
                     )
                     scriptContext.writeFile file: ".deploy-status/verify_${p.serverPrefixSafe}.json", text: groovy.json.JsonOutput.toJson(fallback)
                 }
@@ -733,7 +957,8 @@ def runVerifyStage(scriptContext) {
 }
 
 def runCiVersionStage(scriptContext) {
-    computeEnvironmentVariables()
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
     scriptContext.echo "================================================"
     scriptContext.echo "=== ВЕРСИЯ ПРОЕКТА - SECURE EDITION ==="
     scriptContext.echo "================================================"
@@ -762,7 +987,8 @@ def runCiVersionStage(scriptContext) {
 }
 
 def runCiWorkspaceCleanupStage(scriptContext) {
-    computeEnvironmentVariables()
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
     scriptContext.env.DATE_INSTALL = scriptContext.sh(script: "date '+%Y%m%d_%H%M%S'", returnStdout: true).trim()
     scriptContext.echo "================================================"
     scriptContext.echo "=== НАЧАЛО ПАЙПЛАЙНА (SECURE MODE) ==="
@@ -781,23 +1007,26 @@ def runCiWorkspaceCleanupStage(scriptContext) {
 }
 
 def runCiParamsDebugStage(scriptContext) {
-    computeEnvironmentVariables()
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
     scriptContext.echo "================================================"
     scriptContext.echo "=== ПРОВЕРКА ПАРАМЕТРОВ (SECURE EDITION) ==="
     scriptContext.echo "================================================"
-    if (!scriptContext.params.SERVER_ADDRESS?.trim()) { scriptContext.error("❌ Не указан SERVER_ADDRESS") }
-    if (!scriptContext.params.SSH_CREDENTIALS_ID?.trim()) { scriptContext.error("❌ Не указан SSH_CREDENTIALS_ID") }
-    if (!scriptContext.params.SSH_LOGIN?.trim()) { scriptContext.error("❌ Не указан SSH_LOGIN") }
-    if (!scriptContext.params.RLM_TOKEN_KV?.trim()) { scriptContext.error("❌ Не указан RLM_TOKEN_KV (путь KV с RLM токеном)") }
-    if (!scriptContext.params.NAMESPACE_CI?.trim()) { scriptContext.error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)") }
-    if (!scriptContext.params.MONITORING_MOUNT_NAME?.trim() || !(scriptContext.params.MONITORING_MOUNT_NAME ==~ /[A-Za-z0-9._-]+/)) {
+    if (!runtimeParam(scriptContext, 'SERVER_ADDRESS', '').trim()) { scriptContext.error("❌ Не указан SERVER_ADDRESS") }
+    if (!runtimeParam(scriptContext, 'SSH_CREDENTIALS_ID', '').trim()) { scriptContext.error("❌ Не указан SSH_CREDENTIALS_ID") }
+    if (!runtimeParam(scriptContext, 'SSH_LOGIN', '').trim()) { scriptContext.error("❌ Не указан SSH_LOGIN") }
+    if (!runtimeParam(scriptContext, 'RLM_TOKEN_KV', '').trim()) { scriptContext.error("❌ Не указан RLM_TOKEN_KV (путь KV с RLM токеном)") }
+    if (!runtimeParam(scriptContext, 'NAMESPACE_CI', '').trim()) { scriptContext.error("❌ Не указан NAMESPACE_CI (требуется для определения KAE)") }
+    def mountName = runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', '')
+    if (!mountName.trim() || !(mountName ==~ /[A-Za-z0-9._-]+/)) {
         scriptContext.error("❌ MONITORING_MOUNT_NAME должен быть непустым и содержать только [A-Za-z0-9._-] (без /)")
     }
-    if (!scriptContext.params.MONITORING_FS_EXTEND_GB?.trim()) { scriptContext.error("❌ MONITORING_FS_EXTEND_GB не задан") }
-    if (!(scriptContext.params.MONITORING_FS_EXTEND_GB ==~ /[0-9]+/) || scriptContext.params.MONITORING_FS_EXTEND_GB.toInteger() <= 0) {
+    def fsExtendGb = runtimeParam(scriptContext, 'MONITORING_FS_EXTEND_GB', '')
+    if (!fsExtendGb.trim()) { scriptContext.error("❌ MONITORING_FS_EXTEND_GB не задан") }
+    if (!(fsExtendGb ==~ /[0-9]+/) || fsExtendGb.toInteger() <= 0) {
         scriptContext.error("❌ MONITORING_FS_EXTEND_GB должен быть положительным целым числом")
     }
-    scriptContext.echo "[INFO] FS mount: /${scriptContext.params.MONITORING_MOUNT_NAME}, size=${scriptContext.params.MONITORING_FS_EXTEND_GB}GB, force=${scriptContext.params.FORCE_RLM_FS_APPLY}, table_id=${scriptContext.params.RLM_FS_TABLE_ID}"
+    scriptContext.echo "[INFO] FS mount: /${mountName}, size=${fsExtendGb}GB, force=${runtimeParam(scriptContext, 'FORCE_RLM_FS_APPLY', '')}, table_id=${runtimeParam(scriptContext, 'RLM_FS_TABLE_ID', '')}"
     scriptContext.echo "[OK] Параметры проверены"
     scriptContext.echo "[INFO] Сервер: ${scriptContext.env.SERVER_ADDRESS_EFFECTIVE}"
     scriptContext.echo "[INFO] KAE: ${scriptContext.env.KAE}"
@@ -806,7 +1035,8 @@ def runCiParamsDebugStage(scriptContext) {
 }
 
 def runCiCodeInfoStage(scriptContext) {
-    computeEnvironmentVariables()
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
     scriptContext.echo "[INFO] === ИНФОРМАЦИЯ О КОДЕ ==="
     scriptContext.echo "[INFO] Версия проекта: ${scriptContext.env.VERSION_SHORT}"
     scriptContext.echo "[INFO] Git commit: ${scriptContext.env.VERSION_GIT_COMMIT_FULL}"
@@ -818,7 +1048,8 @@ def runCiCodeInfoStage(scriptContext) {
 }
 
 def runCiNetworkDiagnosticsStage(scriptContext) {
-    computeEnvironmentVariables()
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
     scriptContext.echo "================================================"
     scriptContext.echo "=== ДИАГНОСТИКА СЕТИ ==="
     scriptContext.echo "================================================"
@@ -829,13 +1060,14 @@ def runCiNetworkDiagnosticsStage(scriptContext) {
 }
 
 def runFsMountStage(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     restoreDeployStatus(scriptContext)
     scriptContext.unstash 'vault-credentials'
     def rlmToken = loadRlmTokenFromVaultJson(scriptContext)
     scriptContext.echo "[STEP] Обязательная подготовка mount ПЕРЕД копированием файлов"
-    scriptContext.echo "[INFO] mount=/${scriptContext.params.MONITORING_MOUNT_NAME}, size_gb=${scriptContext.params.MONITORING_FS_EXTEND_GB}, table_id=${scriptContext.params.RLM_FS_TABLE_ID}, vg=rootvg, lv=${scriptContext.params.MONITORING_MOUNT_NAME}, force=${scriptContext.params.FORCE_RLM_FS_APPLY}"
+    scriptContext.echo "[INFO] mount=/${runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring')}, size_gb=${runtimeParam(scriptContext, 'MONITORING_FS_EXTEND_GB', '')}, table_id=${runtimeParam(scriptContext, 'RLM_FS_TABLE_ID', '')}, vg=rootvg, lv=${runtimeParam(scriptContext, 'MONITORING_MOUNT_NAME', 'monitoring')}, force=${runtimeParam(scriptContext, 'FORCE_RLM_FS_APPLY', 'false')}"
     scriptContext.withEnv(['RLM_TOKEN=' + rlmToken]) {
         withVaultSshCredentials(scriptContext) {
             def parallelFs = [:]
@@ -872,8 +1104,9 @@ def runFsMountStage(scriptContext) {
 }
 
 def runCopyStage(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     restoreDeployStatus(scriptContext)
     scriptContext.echo "[INFO] Используем уже загруженный workspace без дополнительного checkout"
     scriptContext.unstash 'vault-credentials'
@@ -886,7 +1119,7 @@ def runCopyStage(scriptContext) {
         fi
     '''
     withVaultSshCredentials(scriptContext) {
-        def expectedSshUser = scriptContext.params.SSH_LOGIN?.trim() ? scriptContext.params.SSH_LOGIN.trim() : scriptContext.env.DEPLOY_USER
+        def expectedSshUser = runtimeParam(scriptContext, 'SSH_LOGIN', '').trim() ? runtimeParam(scriptContext, 'SSH_LOGIN', '').trim() : scriptContext.env.DEPLOY_USER
         scriptContext.echo '[INFO] Подключение под пользователем настроено (ожидается: ' + expectedSshUser + ')'
         def parallelCopies = [:]
         deploymentPairs.each { pair ->
@@ -919,8 +1152,9 @@ def runCopyStage(scriptContext) {
 }
 
 def runCleanupStage(scriptContext) {
-    computeEnvironmentVariables()
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     restoreDeployStatus(scriptContext)
     scriptContext.echo "[STEP] Очистка временных файлов..."
     scriptContext.sh "rm -rf temp_data_cred.json temp_data_cred_*.json"
@@ -943,9 +1177,10 @@ ssh -q -o StrictHostKeyChecking=no -o LogLevel=ERROR \
 }
 
 def runFinalInfoStage(scriptContext) {
-    computeEnvironmentVariables()
+    computeEnvironmentVariables(scriptContext)
+    checkoutRollbackCommitIfNeeded(scriptContext)
     restoreDeployStatus(scriptContext)
-    def deploymentPairs = buildDeploymentPairs(scriptContext.params.SERVER_ADDRESS, scriptContext.params.NETAPP_API_ADDR)
+    def deploymentPairs = buildDeploymentPairs(runtimeParam(scriptContext, 'SERVER_ADDRESS', ''), runtimeParam(scriptContext, 'NETAPP_API_ADDR', ''))
     def reports = []
     deploymentPairs.each { p ->
         def f = ".deploy-status/verify_${p.serverPrefixSafe}.json"
@@ -955,8 +1190,8 @@ def runFinalInfoStage(scriptContext) {
             reports << buildVerifyFallbackReport(
                 p,
                 scriptContext.env.DEPLOY_USER ?: '',
-                (scriptContext.params.PROMETHEUS_PORT ?: '9090').toString(),
-                (scriptContext.params.GRAFANA_PORT ?: '3300').toString()
+                runtimeParam(scriptContext, 'PROMETHEUS_PORT', '9090'),
+                runtimeParam(scriptContext, 'GRAFANA_PORT', '3300')
             )
         }
     }
@@ -986,6 +1221,9 @@ pipeline {
         string(name: 'RLM_API_URL',        defaultValue: params.RLM_API_URL ?: '',        description: 'Базовый URL RLM API')
         string(name: 'VAULT_CREDENTIAL_ID', defaultValue: params.VAULT_CREDENTIAL_ID ?: 'vault-agent-dev', description: 'Jenkins Credential ID для Vault')
         choice(name: 'LOG_LEVEL', choices: ['normal', 'debug'], description: 'Уровень логирования для консоли Jenkins (normal=минимум шума, debug=полный вывод)')
+        booleanParam(name: 'ROLLBACK_TO_STABLE', defaultValue: false, description: '↩️ Запустить rollback из сохраненного stable snapshot')
+        string(name: 'STABLE_VERSION', defaultValue: '', description: 'ID стабильной версии (опционально). Если пусто в rollback mode, выбор будет через input dropdown')
+        booleanParam(name: 'MARK_BUILD_AS_STABLE', defaultValue: false, description: '⭐ Пометить успешный запуск как stable snapshot и сохранить в ci/stable')
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
         booleanParam(name: 'USE_SIMPLIFIED_CERT_FLOW', defaultValue: true, description: '✅ Использовать non-root/simplified certificate flow (без /opt/vault/*). Отключите только для legacy rollback.')
         booleanParam(name: 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', defaultValue: true, description: '✅ Устанавливать Prometheus из архива по URL (без RLM-задачи). false = оставить текущую RLM-установку RPM.')
@@ -1017,6 +1255,15 @@ pipeline {
                     echo "[INFO] Agent profile: ${params.USE_PROD_AGENT_PROFILE ? 'PROD' : 'DEV'}"
                     echo "[INFO] CI label: ${selectedCi}"
                     echo "[INFO] CDL label: ${selectedCdl}"
+                }
+            }
+        }
+
+        stage('CI: Выбор stable snapshot (rollback)') {
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
+            steps {
+                script {
+                    chooseAndApplyStableSnapshot(this)
                 }
             }
         }
@@ -1122,7 +1369,10 @@ pipeline {
         stage('CDL: Синхронная фазовая установка RPM') {
             agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CDL_AGENT_LABEL : params.DEV_CDL_AGENT_LABEL}" }
             when {
-                expression { params.SKIP_DEPLOYMENT != true && params.SYNC_RPM_PHASES == true }
+                expression {
+                    params.SKIP_DEPLOYMENT != true &&
+                    normalizeBool(env.OVERRIDE_SYNC_RPM_PHASES ?: (params.SYNC_RPM_PHASES ? 'true' : 'false'), false)
+                }
             }
             steps {
                 script {
@@ -1175,6 +1425,18 @@ pipeline {
             steps {
                 script {
                     runFinalInfoStage(this)
+                }
+            }
+        }
+
+        stage('CI: Сохранение stable snapshot') {
+            agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
+            when {
+                expression { params.MARK_BUILD_AS_STABLE == true && params.ROLLBACK_TO_STABLE != true && params.SKIP_DEPLOYMENT != true }
+            }
+            steps {
+                script {
+                    createStableSnapshotIfRequested(this)
                 }
             }
         }
