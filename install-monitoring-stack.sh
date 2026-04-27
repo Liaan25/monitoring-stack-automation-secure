@@ -48,6 +48,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${NODE_EXPORTER_REPO_PASS:=}"
 : "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:=true}"
 : "${DOWNLOAD_CHECK_ENABLED:=false}"
+: "${SKIP_RLM_ADD_USER_GROUP_TASK:=false}"
 : "${MONITORING_MOUNT_NAME:=monitoring}"
 : "${MONITORING_STACK_DIR_NAME:=mon-harvest-prometheus-grafana}"
 
@@ -102,6 +103,7 @@ NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-}"
 VICTORIA_METRICS_REMOTE_WRITE_URL="${VICTORIA_METRICS_REMOTE_WRITE_URL:-}"
 PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE="$(echo "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" | tr '[:upper:]' '[:lower:]')"
 DOWNLOAD_CHECK_ENABLED="$(echo "${DOWNLOAD_CHECK_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')"
+SKIP_RLM_ADD_USER_GROUP_TASK="$(echo "${SKIP_RLM_ADD_USER_GROUP_TASK:-false}" | tr '[:upper:]' '[:lower:]')"
 
 # Глобальные переменные (будут инициализированы в detect_network_info)
 SERVER_IP=""
@@ -805,12 +807,21 @@ cleanup_secure_secrets_dir() {
     fi
 }
 
+should_skip_rlm_add_user_group_task() {
+    [[ "${SKIP_RLM_ADD_USER_GROUP_TASK:-false}" == "true" ]]
+}
+
 # Универсальная функция добавления пользователя в группу as-admin через RLM
 ensure_user_in_as_admin() {
     local user="$1"
 
     if [[ -z "$user" ]]; then
         print_warning "ensure_user_in_as_admin: пустое имя пользователя, пропускаем"
+        return 0
+    fi
+
+    if should_skip_rlm_add_user_group_task; then
+        print_warning "SKIP_RLM_ADD_USER_GROUP_TASK=true: пропускаем создание/проверку задачи UVS_LINUX_ADD_USERS_GROUP для ${user} -> as-admin"
         return 0
     fi
 
@@ -946,6 +957,11 @@ ensure_user_in_va_read_group() {
         print_warning "KAE не определён, пропускаем добавление в va-read"
         print_info "Добавьте пользователя $user в группу va-read вручную через IDM"
         return 1
+    fi
+
+    if should_skip_rlm_add_user_group_task; then
+        print_warning "SKIP_RLM_ADD_USER_GROUP_TASK=true: пропускаем создание/проверку задачи UVS_LINUX_ADD_USERS_GROUP для ${user} -> ${KAE}-lnx-va-read"
+        return 0
     fi
     
     local va_read_group="${KAE}-lnx-va-read"
@@ -1222,6 +1238,11 @@ ensure_user_in_va_start_group() {
         print_warning "KAE не определён, пропускаем добавление в va-start"
         print_info "Добавьте пользователя $user в группу va-start вручную через IDM"
         return 1
+    fi
+
+    if should_skip_rlm_add_user_group_task; then
+        print_warning "SKIP_RLM_ADD_USER_GROUP_TASK=true: пропускаем создание/проверку задачи UVS_LINUX_ADD_USERS_GROUP для ${user} -> ${KAE}-lnx-va-start"
+        return 0
     fi
     
     local va_start_group="${KAE}-lnx-va-start"
@@ -1584,6 +1605,11 @@ ensure_mon_sys_in_grafana_group() {
 
     if [[ -z "${KAE:-}" ]]; then
         print_warning "KAE не определён (NAMESPACE_CI пуст), пропускаем добавление mon_sys в grafana"
+        return 0
+    fi
+
+    if should_skip_rlm_add_user_group_task; then
+        print_warning "SKIP_RLM_ADD_USER_GROUP_TASK=true: пропускаем создание/проверку задачи UVS_LINUX_ADD_USERS_GROUP для ${KAE}-lnx-mon_sys -> grafana"
         return 0
     fi
 
@@ -3021,6 +3047,7 @@ load_config_from_json() {
     echo "[DEBUG-CONFIG] VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" >&2
     echo "[DEBUG-CONFIG] DOWNLOAD_CHECK_ENABLED=${DOWNLOAD_CHECK_ENABLED:-false}" >&2
+    echo "[DEBUG-CONFIG] SKIP_RLM_ADD_USER_GROUP_TASK=${SKIP_RLM_ADD_USER_GROUP_TASK:-false}" >&2
     log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
     log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
@@ -3029,6 +3056,7 @@ load_config_from_json() {
     log_debug "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
     log_debug "DOWNLOAD_CHECK_ENABLED=${DOWNLOAD_CHECK_ENABLED:-false}"
+    log_debug "SKIP_RLM_ADD_USER_GROUP_TASK=${SKIP_RLM_ADD_USER_GROUP_TASK:-false}"
     
     local missing=()
     [[ -z "$NETAPP_API_ADDR" ]] && missing+=("NETAPP_API_ADDR")
@@ -4414,6 +4442,7 @@ create_rlm_install_tasks() {
     write_diagnostic "  NODE_EXPORTER_URL: ${NODE_EXPORTER_URL:-<не задан>}"
     write_diagnostic "  PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE: ${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
     write_diagnostic "  DOWNLOAD_CHECK_ENABLED: ${DOWNLOAD_CHECK_ENABLED:-false}"
+    write_diagnostic "  SKIP_RLM_ADD_USER_GROUP_TASK: ${SKIP_RLM_ADD_USER_GROUP_TASK:-false}"
     write_diagnostic "  VICTORIA_METRICS_REMOTE_WRITE_URL: ${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
 
     if [[ -z "$RLM_TOKEN" || -z "$RLM_API_URL" ]]; then
@@ -8744,6 +8773,7 @@ main() {
     write_diagnostic "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<не задан>}"
     write_diagnostic "PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
     write_diagnostic "DOWNLOAD_CHECK_ENABLED=${DOWNLOAD_CHECK_ENABLED:-false}"
+    write_diagnostic "SKIP_RLM_ADD_USER_GROUP_TASK=${SKIP_RLM_ADD_USER_GROUP_TASK:-false}"
     write_diagnostic "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
     write_diagnostic ""
     write_diagnostic "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<не задан>}"
