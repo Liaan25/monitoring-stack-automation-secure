@@ -137,12 +137,12 @@ git checkout -f "${rollbackSha}"
 """
 }
 
-def createStableSnapshotIfRequested(scriptContext) {
-    if (!normalizeBool(scriptContext.params?.MARK_BUILD_AS_STABLE, false)) {
+def createStableSnapshotIfRequested(scriptContext, boolean forceMode = false) {
+    if (!forceMode && !normalizeBool(scriptContext.params?.MARK_BUILD_AS_STABLE, false)) {
         scriptContext.echo "[STABLE] MARK_BUILD_AS_STABLE=false; snapshot creation skipped."
         return
     }
-    if (rollbackEnabled(scriptContext)) {
+    if (!forceMode && rollbackEnabled(scriptContext)) {
         scriptContext.echo "[STABLE] Rollback run detected; stable snapshot auto-create skipped."
         return
     }
@@ -219,6 +219,9 @@ git push origin HEAD
 git push origin "refs/tags/${stableId}" --force
 """
     scriptContext.echo "[STABLE] Snapshot created: ${stableId}"
+    if (forceMode) {
+        scriptContext.echo "[STABLE] Force mode enabled: snapshot created regardless of build status/flags."
+    }
 }
 
 def computeEnvironmentVariables(scriptContext) {
@@ -1233,6 +1236,7 @@ pipeline {
         booleanParam(name: 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', defaultValue: true, description: '✅ Устанавливать Prometheus из архива по URL (без RLM-задачи). false = оставить текущую RLM-установку RPM.')
         booleanParam(name: 'DOWNLOAD_CHECK_ENABLED', defaultValue: false, description: '⬇️ Выполнять precheck тестовой загрузки пакетов перед установкой (Grafana/Prometheus/Harvest/Node Exporter)')
         booleanParam(name: 'SKIP_RLM_ADD_USER_GROUP_TASK', defaultValue: false, description: '👥 Пропустить создание и проверку RLM задачи UVS_LINUX_ADD_USERS_GROUP')
+        booleanParam(name: 'FORCE_TEST_SUCCESS', defaultValue: false, description: '🧪 Тестовый режим: принудительно завершать pipeline как SUCCESS и сохранять stable snapshot независимо от статуса/параметров')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов')
         booleanParam(name: 'SYNC_RPM_PHASES', defaultValue: true, description: '🔄 Синхронная lockstep-установка RPM по всем серверам (Grafana -> Prometheus -> Harvest -> Node Exporter)')
         booleanParam(name: 'SKIP_IPTABLES', defaultValue: true, description: '✅ Пропустить настройку iptables (для non-root/ограниченных sudo)')
@@ -1438,7 +1442,7 @@ pipeline {
         stage('CI: Сохранение stable snapshot') {
             agent { label "${params.USE_PROD_AGENT_PROFILE ? params.PROD_CI_AGENT_LABEL : params.DEV_CI_AGENT_LABEL}" }
             when {
-                expression { params.MARK_BUILD_AS_STABLE == true && params.ROLLBACK_TO_STABLE != true && params.SKIP_DEPLOYMENT != true }
+                expression { params.MARK_BUILD_AS_STABLE == true && params.ROLLBACK_TO_STABLE != true && params.SKIP_DEPLOYMENT != true && params.FORCE_TEST_SUCCESS != true }
             }
             steps {
                 script {
@@ -1462,6 +1466,19 @@ pipeline {
         }
         always {
             script {
+                if (normalizeBool(params.FORCE_TEST_SUCCESS, false)) {
+                    echo "================================================"
+                    echo "⚠️ FORCE_TEST_SUCCESS=true: принудительно помечаем запуск как SUCCESS (тестовый режим)"
+                    echo "⚠️ FORCE_TEST_SUCCESS=true: создаем stable snapshot независимо от статуса и параметров"
+                    echo "================================================"
+                    try {
+                        createStableSnapshotIfRequested(this, true)
+                    } catch (Exception e) {
+                        echo "⚠️ [STABLE] Не удалось создать force snapshot: ${e.message}"
+                    }
+                    currentBuild.result = 'SUCCESS'
+                }
+
                 if (currentBuild.currentResult != 'SUCCESS' && env.DEPLOY_STATUS_SUMMARY?.trim()) {
                     echo env.DEPLOY_STATUS_SUMMARY
                 } else if (currentBuild.currentResult != 'SUCCESS') {
