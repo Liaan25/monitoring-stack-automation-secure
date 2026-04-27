@@ -486,6 +486,7 @@ ADMIN_EMAIL='${runtimeParam(scriptContext, 'ADMIN_EMAIL', '')}' \
 VICTORIA_METRICS_REMOTE_WRITE_URL='${runtimeParam(scriptContext, 'VICTORIA_METRICS_REMOTE_WRITE_URL', '')}' \
 USE_SIMPLIFIED_CERT_FLOW='${normalizeBool(runtimeParam(scriptContext, 'USE_SIMPLIFIED_CERT_FLOW', scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')) ? 'true' : 'false'}' \
 PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${normalizeBool(runtimeParam(scriptContext, 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false')) ? 'true' : 'false'}' \
+DOWNLOAD_CHECK_ENABLED='${normalizeBool(runtimeParam(scriptContext, 'DOWNLOAD_CHECK_ENABLED', scriptContext.params.DOWNLOAD_CHECK_ENABLED ? 'true' : 'false')) ? 'true' : 'false'}' \
 RUN_SERVICES_AS_MON_CI='${normalizeBool(runtimeParam(scriptContext, 'RUN_SERVICES_AS_MON_CI', scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false')) ? 'true' : 'false'}' \
 DEPLOY_VERSION='${scriptContext.env.VERSION_SHORT ?: 'unknown'}' \
 DEPLOY_GIT_COMMIT='${scriptContext.env.VERSION_GIT_COMMIT ?: 'unknown'}' \
@@ -520,6 +521,7 @@ VICTORIA_METRICS_REMOTE_WRITE_URL='${runtimeParam(scriptContext, 'VICTORIA_METRI
 RENEW_CERTIFICATES_ONLY='${normalizeBool(runtimeParam(scriptContext, 'RENEW_CERTIFICATES_ONLY', scriptContext.params.RENEW_CERTIFICATES_ONLY ? 'true' : 'false')) ? 'true' : 'false'}' \
 USE_SIMPLIFIED_CERT_FLOW='${normalizeBool(runtimeParam(scriptContext, 'USE_SIMPLIFIED_CERT_FLOW', scriptContext.params.USE_SIMPLIFIED_CERT_FLOW ? 'true' : 'false')) ? 'true' : 'false'}' \
 PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE='${normalizeBool(runtimeParam(scriptContext, 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', scriptContext.params.PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE ? 'true' : 'false')) ? 'true' : 'false'}' \
+DOWNLOAD_CHECK_ENABLED='${normalizeBool(runtimeParam(scriptContext, 'DOWNLOAD_CHECK_ENABLED', scriptContext.params.DOWNLOAD_CHECK_ENABLED ? 'true' : 'false')) ? 'true' : 'false'}' \
 EFFECTIVE_SKIP_RPM='${effectiveSkipRpm}' \
 SKIP_IPTABLES='${normalizeBool(runtimeParam(scriptContext, 'SKIP_IPTABLES', scriptContext.params.SKIP_IPTABLES ? 'true' : 'false')) ? 'true' : 'false'}' \
 RUN_SERVICES_AS_MON_CI='${normalizeBool(runtimeParam(scriptContext, 'RUN_SERVICES_AS_MON_CI', scriptContext.params.RUN_SERVICES_AS_MON_CI ? 'true' : 'false')) ? 'true' : 'false'}' \
@@ -1227,6 +1229,7 @@ pipeline {
         booleanParam(name: 'RENEW_CERTIFICATES_ONLY', defaultValue: false, description: '🔄 Только обновить сертификаты')
         booleanParam(name: 'USE_SIMPLIFIED_CERT_FLOW', defaultValue: true, description: '✅ Использовать non-root/simplified certificate flow (без /opt/vault/*). Отключите только для legacy rollback.')
         booleanParam(name: 'PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE', defaultValue: true, description: '✅ Устанавливать Prometheus из архива по URL (без RLM-задачи). false = оставить текущую RLM-установку RPM.')
+        booleanParam(name: 'DOWNLOAD_CHECK_ENABLED', defaultValue: false, description: '⬇️ Выполнять precheck тестовой загрузки пакетов перед установкой (Grafana/Prometheus/Harvest/Node Exporter)')
         booleanParam(name: 'SKIP_RPM_INSTALL', defaultValue: false, description: '⚠️ Пропустить установку RPM пакетов')
         booleanParam(name: 'SYNC_RPM_PHASES', defaultValue: true, description: '🔄 Синхронная lockstep-установка RPM по всем серверам (Grafana -> Prometheus -> Harvest -> Node Exporter)')
         booleanParam(name: 'SKIP_IPTABLES', defaultValue: true, description: '✅ Пропустить настройку iptables (для non-root/ограниченных sudo)')

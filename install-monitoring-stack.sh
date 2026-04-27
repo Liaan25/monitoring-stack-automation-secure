@@ -47,6 +47,7 @@ echo "[SCRIPT_START] Initializing variables..." >&2
 : "${NODE_EXPORTER_REPO_USER:=}"
 : "${NODE_EXPORTER_REPO_PASS:=}"
 : "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:=true}"
+: "${DOWNLOAD_CHECK_ENABLED:=false}"
 : "${MONITORING_MOUNT_NAME:=monitoring}"
 : "${MONITORING_STACK_DIR_NAME:=mon-harvest-prometheus-grafana}"
 
@@ -100,6 +101,7 @@ GRAFANA_URL="${GRAFANA_URL:-}"
 NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-}"
 VICTORIA_METRICS_REMOTE_WRITE_URL="${VICTORIA_METRICS_REMOTE_WRITE_URL:-}"
 PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE="$(echo "${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" | tr '[:upper:]' '[:lower:]')"
+DOWNLOAD_CHECK_ENABLED="$(echo "${DOWNLOAD_CHECK_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')"
 
 # Глобальные переменные (будут инициализированы в detect_network_info)
 SERVER_IP=""
@@ -3018,6 +3020,7 @@ load_config_from_json() {
     echo "[DEBUG-CONFIG] NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}" >&2
     echo "[DEBUG-CONFIG] PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}" >&2
+    echo "[DEBUG-CONFIG] DOWNLOAD_CHECK_ENABLED=${DOWNLOAD_CHECK_ENABLED:-false}" >&2
     log_debug "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<НЕ ЗАДАН>}"
     log_debug "GRAFANA_URL=${GRAFANA_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_URL=${PROMETHEUS_URL:-<НЕ ЗАДАН>}"
@@ -3025,6 +3028,7 @@ load_config_from_json() {
     log_debug "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<НЕ ЗАДАН>}"
     log_debug "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<НЕ ЗАДАН>}"
     log_debug "PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
+    log_debug "DOWNLOAD_CHECK_ENABLED=${DOWNLOAD_CHECK_ENABLED:-false}"
     
     local missing=()
     [[ -z "$NETAPP_API_ADDR" ]] && missing+=("NETAPP_API_ADDR")
@@ -4409,6 +4413,7 @@ create_rlm_install_tasks() {
     write_diagnostic "  HARVEST_URL: ${HARVEST_URL:-<не задан>}"
     write_diagnostic "  NODE_EXPORTER_URL: ${NODE_EXPORTER_URL:-<не задан>}"
     write_diagnostic "  PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE: ${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
+    write_diagnostic "  DOWNLOAD_CHECK_ENABLED: ${DOWNLOAD_CHECK_ENABLED:-false}"
     write_diagnostic "  VICTORIA_METRICS_REMOTE_WRITE_URL: ${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
 
     if [[ -z "$RLM_TOKEN" || -z "$RLM_API_URL" ]]; then
@@ -4441,10 +4446,15 @@ create_rlm_install_tasks() {
     )
     local processed_packages=0
 
-    # До создания RLM-задач проверяем доступность всех package URLs прямой загрузкой с сервера.
-    if ! check_all_package_test_download_access; then
-        print_error "Проверка тестовой загрузки пакетов завершилась ошибкой. Прерываем RLM фазу для корректного root-cause."
-        exit 1
+    # Опциональная precheck-проверка доступности package URLs прямой загрузкой с сервера.
+    if [[ "${DOWNLOAD_CHECK_ENABLED:-false}" == "true" ]]; then
+        if ! check_all_package_test_download_access; then
+            print_error "Проверка тестовой загрузки пакетов завершилась ошибкой. Прерываем RLM фазу для корректного root-cause."
+            exit 1
+        fi
+    else
+        print_info "[DOWNLOAD-CHECK] Проверка тестовой загрузки отключена (DOWNLOAD_CHECK_ENABLED=false)"
+        write_diagnostic "[DOWNLOAD-CHECK] skipped: DOWNLOAD_CHECK_ENABLED=false"
     fi
 
     for package in "${packages[@]}"; do
@@ -8733,6 +8743,7 @@ main() {
     write_diagnostic "HARVEST_URL=${HARVEST_URL:-<не задан>}"
     write_diagnostic "NODE_EXPORTER_URL=${NODE_EXPORTER_URL:-<не задан>}"
     write_diagnostic "PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE=${PROMETHEUS_LOCAL_INSTALL_FROM_ARCHIVE:-true}"
+    write_diagnostic "DOWNLOAD_CHECK_ENABLED=${DOWNLOAD_CHECK_ENABLED:-false}"
     write_diagnostic "VICTORIA_METRICS_REMOTE_WRITE_URL=${VICTORIA_METRICS_REMOTE_WRITE_URL:-<не задан>}"
     write_diagnostic ""
     write_diagnostic "NETAPP_API_ADDR=${NETAPP_API_ADDR:-<не задан>}"
